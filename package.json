@@ -1,0 +1,22 @@
+{
+  "name": "master-leeter",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "sim": "pnpm --filter @master-leeter/contracts test",
+    "dev:api": "pnpm --filter @master-leeter/api dev",
+    "dev:web": "pnpm --filter @master-leeter/web dev",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

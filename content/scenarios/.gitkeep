@@ -1,0 +1,8 @@
+# Scenario content lives here (M1-1).
+#
+# One directory per scenario, one file per immutable version. Versions are never
+# edited in place — retire and supersede (CLAUDE.md invariant 4). Every file
+# requires a provenance block: author, ORIGINAL | LICENSED, review status,
+# similarity-check result.
+#
+# Reviewed by pull request. There is no authoring UI in the MVP (docs/MVP.md).

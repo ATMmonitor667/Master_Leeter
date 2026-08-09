@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.local
+.env.*.local
+
+.DS_Store
+*.log
+.pnpm-store/
+
+# pnpm scratch files (safe to delete)
+_tmp_*

@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: leeter
+      POSTGRES_PASSWORD: leeter
+      POSTGRES_DB: leeter
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leeter"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Code execution (M0-2 spike / M2-4). Judge0 needs its own compose bundle;
+  # see docs/adr once the spike lands. Kept commented so `infra:up` stays fast
+  # for lanes that don't need it.
+  #
+  # judge0:
+  #   image: judge0/judge0:1.13.1
+  #   ...
+
+volumes:
+  pgdata:
