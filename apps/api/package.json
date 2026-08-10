@@ -10,6 +10,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.0.1",
     "@master-leeter/contracts": "workspace:*",
     "fastify": "^5.2.0",
     "tree-sitter-python": "^0.23.6",

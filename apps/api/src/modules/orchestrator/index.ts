@@ -12,6 +12,20 @@ import { type GateDecision, type InterviewContext, isActionAllowed } from "@mast
 
 export { decideAction, type GateDependencies } from "./gate.js";
 export {
+  InterviewRuntime,
+  type EventSink,
+  type InterviewRuntimeDeps,
+  type RuntimeResult,
+  type Utterance,
+} from "./runtime.js";
+export {
+  RuleBasedClassifier,
+  ruleBasedClassifier,
+  type ClassifierInput,
+  type IntentClassifier,
+  type TurnClassification,
+} from "./classifier.js";
+export {
   ForbiddenTransitionError,
   INITIAL_STATE,
   applyEvent,

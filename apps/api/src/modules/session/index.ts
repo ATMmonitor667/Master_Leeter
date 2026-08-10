@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { InterviewModeSchema } from "@master-leeter/contracts";
+import { InterviewModeSchema, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { InterviewRuntime } from "../orchestrator/index.js";
 import { DEFAULT_LIMITS, RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
@@ -9,6 +10,7 @@ import { InMemoryEventLog } from "./event-log.js";
 import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
 import { reconstruct } from "./resume.js";
 import { InMemorySessionStore, SessionNotFoundError, remainingSeconds } from "./session-store.js";
+import { registerEventsSocket } from "./ws.js";
 
 /**
  * Session module — session lifecycle, the app WebSocket, and the event log.
@@ -38,6 +40,7 @@ export {
   type LeaseState,
 } from "./lease.js";
 export { reconstruct, type ResumeState } from "./resume.js";
+export { handleConnection, registerEventsSocket, type SocketLike } from "./ws.js";
 
 const CreateSessionBody = z.object({
   /** Opaque public ref from GET /scenarios. Internal ids are also accepted. */
@@ -82,6 +85,77 @@ export async function registerSessionModule(
   /** Per-session connection leases. Per-process for now; Redis when multi-node. */
   const leases = new Map<string, LeaseState>();
 
+  /**
+   * Live orchestrators, one per active session.
+   *
+   * Created lazily on first event rather than at session creation, because a
+   * session that is created and abandoned should not hold interview state. Also
+   * per-process — a multi-node deployment needs the lease to pin a session to
+   * one node, which is the same constraint the WebSocket already imposes.
+   */
+  const runtimes = new Map<string, InterviewRuntime>();
+
+  async function runtimeFor(sessionId: string): Promise<InterviewRuntime | null> {
+    const existing = runtimes.get(sessionId);
+    if (existing) return existing;
+
+    const session = await store.get(sessionId);
+    if (!session || session.endedAt) return null;
+
+    const scenario = opts.library.get(session.scenarioVersionId);
+    if (!scenario) return null;
+
+    const runtime = new InterviewRuntime({
+      sessionId: session.id,
+      scenario: scenario.version,
+      // The policy PINNED at session creation, not looked up by mode. A policy
+      // change deployed mid-interview must not alter a session in flight.
+      policy: session.policy,
+      scenarioVersionId: session.scenarioVersionId,
+      traceId: session.traceId,
+      events: eventLog,
+      remainingSeconds: () => remainingSeconds(session, Date.now()),
+    });
+
+    runtimes.set(session.id, runtime);
+    return runtime;
+  }
+
+  /**
+   * Hands a committed event to the orchestrator.
+   *
+   * Failures are logged and swallowed on purpose. The event is already durable;
+   * an orchestrator that throws must not roll back evidence or drop the
+   * candidate's connection. A quiet interviewer is a degraded interview, a lost
+   * event log is an unrecoverable one.
+   */
+  async function dispatch(event: SessionEvent): Promise<void> {
+    const runtime = await runtimeFor(event.sessionId);
+    if (!runtime) return;
+
+    try {
+      const { decision, utterance } = await runtime.ingest(event);
+      if (decision && decision.action !== "STAY_SILENT") {
+        // M3-5 wires this to realtime response creation. Until then the
+        // decision and its authored wording live in the log, which is what the
+        // eval harness reads — so silence quality is measurable before a single
+        // byte of audio exists.
+        app.log.info(
+          { sessionId: event.sessionId, action: decision.action, reason: decision.reason },
+          "interviewer authorized to speak",
+        );
+        void utterance;
+
+        // No audio pipeline yet, so the utterance is "finished" the instant it
+        // is produced. M3-5 replaces this with the realtime response-done
+        // event, at which point barge-in has a real window to interrupt.
+        runtime.markSpeechFinished();
+      }
+    } catch (err) {
+      app.log.error({ sessionId: event.sessionId, err }, "orchestrator ingest failed");
+    }
+  }
+
   const queue = opts.runner
     ? new RunQueue({
         runner: opts.runner,
@@ -90,7 +164,7 @@ export async function registerSessionModule(
           runContext.delete(result.runId);
           if (!ctx) return;
 
-          await eventLog.append({
+          const appended = await eventLog.append({
             sessionId: ctx.sessionId,
             type: "RUN_COMPLETED",
             actor: "SYSTEM",
@@ -99,6 +173,11 @@ export async function registerSessionModule(
             traceId: ctx.traceId,
             idempotencyKey: `run-completed:${result.runId}`,
           });
+
+          // The observer needs run results as much as it needs code: a green
+          // run is what clears the stuck score, and a third identical failure
+          // is what makes a debugging probe defensible.
+          if (!appended.duplicate) await dispatch(appended.event);
         },
         onUnavailable: (request, error) => {
           // Logged, not thrown. A runner outage must not end the interview.
@@ -190,6 +269,16 @@ export async function registerSessionModule(
         // Idempotent by construction: ending twice appends once.
         idempotencyKey: `session-ended:${session.id}`,
       });
+
+      // Let the orchestrator settle its final observation pass before the
+      // evaluator reads the log, then drop it. Without this the last code delta
+      // of a session can lose its snapshot to the process moving on.
+      const runtime = runtimes.get(session.id);
+      if (runtime) {
+        await runtime.settled();
+        runtimes.delete(session.id);
+      }
+      channel.forget(session.id);
 
       // Fire and forget. The live phase must complete regardless of evaluator
       // health, so this is deliberately not awaited and its failure cannot
@@ -335,7 +424,8 @@ export async function registerSessionModule(
     return reply.code(202).send({ runId, revision: body.data.revision });
   });
 
-  // The channel is used by the WebSocket adapter; kept on the module rather
-  // than decorated, since plugin-scope decorations are not visible at the root.
-  void channel;
+  // WS /v1/interview-sessions/:id/events — M2-2's transport, finally attached.
+  // The channel owns the protocol and the runtime owns the interview; this only
+  // moves bytes between them.
+  await registerEventsSocket(app, { channel, dispatch });
 }

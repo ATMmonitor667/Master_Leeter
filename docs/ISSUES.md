@@ -11,11 +11,23 @@ Status key: `[ ]` open · `[~]` in progress · `[x]` done
 
 **Progress:** M0, M1, M2 complete except M2-8 (auth). M6 complete except calibration (M6-5),
 which needs human graders. M5-1 half done — the code-derived half of CandidateState works;
-the transcript half waits on the intent classifier (M4-1).
+the transcript half waits on a real intent classifier (M4-1).
 
 The loop is closed end to end without voice: pick a scenario, write and run code, end the
 session, read an evidence-backed report. Five scenarios in the library, covering hashing,
 two pointers, sliding window, top-k selection, and data-structure design.
+
+> **Correction, and it was a big one.** Until the integration pass, the modules above were
+> built and individually tested but **not connected**. `decideAction` had exactly one caller
+> — the simulator. No WebSocket route was ever registered, so every code delta the client
+> sent went nowhere. Nothing called the observer, so no `SEMANTIC_SNAPSHOT` or `MILESTONE`
+> event was ever produced in the running server and reports were blank on interviewer
+> activity. "Complete" meant "the unit exists and its tests pass", which is not the same
+> claim and should not have been written as though it were.
+>
+> `InterviewRuntime` (`modules/orchestrator/runtime.ts`) is the piece that was missing: the
+> per-session state holder that the gate, observer and state machine all hang off. The path
+> is now client → socket → channel → event log → runtime → gate → recorded decision.
 
 Two components are written but UNVERIFIED against real infrastructure, and are marked as
 such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (no Judge0
@@ -164,6 +176,12 @@ Mock and Learning as data: hint levels available, stall thresholds, probe cadenc
 `WS /v1/interview-sessions/{id}/events` — auth, Redis session lease, monotonic seq, duplicate-safe on reconnect, trace ID propagation.
 **Acceptance:** replaying a duplicate event after reconnect is a no-op.
 
+Protocol lives in `SessionChannel` (transport-free, tested with no socket); the route is a
+thin adapter in `session/ws.ts`, tested against a fake socket. Session lease is still
+per-process, not Redis — fine for one node, and the socket pins a session to one node anyway.
+`@fastify/websocket` is optional at boot: absent, the HTTP surface still serves and the route
+logs a warning rather than failing to start.
+
 ### `[x]` M2-3 · Candidate workspace UI · L
 **Deps:** M0-4.
 Monaco (Python), notepad with **no AI autocomplete**, timer, custom test input, stdout/stderr panel, interviewer status indicator (Listening / Waiting / Speaking).
@@ -231,9 +249,18 @@ Manual response creation only. The gate's authorized action is the sole trigger 
 
 **The milestone that decides whether the product is real.**
 
-### `[ ]` M4-1 · Semantic intent classifier · M
+### `[~]` M4-1 · Semantic intent classifier · M — rules-only stub in place; model still needed
 **Deps:** M1-3.
 Classes: `THINK_ALOUD`, `EXPLICIT_QUESTION`, `CLARIFICATION_REQUEST`, `HINT_REQUEST`, `COMPLEXITY_CLAIM`, `APPROACH_COMMITMENT`, `TEST_PLAN`, `CONFUSION`, `DONE_SIGNAL`, `SOCIAL_SMALL_TALK`. Returns probabilities; the deterministic gate decides consequences. Cache obvious cases.
+
+`RuleBasedClassifier` (`orchestrator/classifier.ts`, id `stub-rules-v1`) satisfies the
+interface so the gate could go live. It is deliberately biased toward silence: unpunctuated
+speech scores 0.55 end-probability, below every mode's threshold, so the stub **under-responds
+rather than interrupts**. Intent detection is serviceable; turn completion is not, and that
+is M4-2's whole job. Every decision persists `classifierId`, so sessions graded under the stub
+are identifiable later.
+
+**Still open:** replace with a small fast model, keeping the interface and the silence bias.
 
 ### `[ ]` M4-2 · Turn-completion confidence · M
 **Deps:** M4-1. Semantic end-of-turn probability feeding `END_THRESHOLD`.

@@ -1,4 +1,4 @@
-import type { CandidateState, RunResult } from "@master-leeter/contracts";
+import type { CandidateState, MilestoneKind, RunResult } from "@master-leeter/contracts";
 import { type MilestoneState, applyRunResult, applySnapshot } from "./milestones.js";
 import { type SemanticSnapshot, detectSolutionFamily } from "./semantic-snapshot.js";
 
@@ -42,7 +42,11 @@ export interface ObserverInput {
   run?: RunResult | undefined;
   /** Seconds since the last code edit. Drives activity level and stuck score. */
   secondsSinceCodeActivity: number;
-  /** Consecutive identical failures, from milestone state. */
+  /**
+   * Consecutive identical failures. Ignored when `run` is supplied, because the
+   * milestone state has just recomputed it and two sources of truth for one
+   * number is how they drift.
+   */
   consecutiveFailures: number;
   now: string;
 }
@@ -50,15 +54,27 @@ export interface ObserverInput {
 export interface ObserverResult {
   state: CandidateState;
   milestones: MilestoneState;
+  /**
+   * Milestones newly reached by THIS call.
+   *
+   * Distinct from `state.milestonesReached`, which is cumulative. The caller
+   * needs the delta because `REPEATED_SAME_FAILURE` is deliberately
+   * re-emittable — a candidate stuck at their sixth identical failure is still
+   * stuck, and a cumulative set cannot express that.
+   */
+  emitted: MilestoneKind[];
 }
 
 export function observe(input: ObserverInput): ObserverResult {
   let milestones = input.milestones;
+  const emitted: MilestoneKind[] = [];
   const next: CandidateState = { ...input.previous, updatedAt: input.now };
+  let runApplied = false;
 
   if (input.snapshot) {
     const update = applySnapshot(milestones, input.snapshot);
     milestones = update.state;
+    emitted.push(...update.emitted);
 
     next.detectedSolutionFamilyId = detectSolutionFamily(input.snapshot);
     next.implementationProgress = estimateProgress(input.snapshot);
@@ -75,13 +91,19 @@ export function observe(input: ObserverInput): ObserverResult {
   if (input.run) {
     const update = applyRunResult(milestones, input.run);
     milestones = update.state;
+    emitted.push(...update.emitted);
+    runApplied = true;
   }
 
   next.milestonesReached = [...milestones.reached];
   next.recentCodeActivity = activityLevel(input.secondsSinceCodeActivity);
-  next.stuckScore = stuckScore(input);
+  // Scored against the milestones as of AFTER this call, not before it. Reading
+  // the incoming state meant a run that finally went green left the candidate
+  // marked stuck until the next observation — the interviewer could offer a
+  // hint for a problem the candidate had just solved.
+  next.stuckScore = stuckScore(input, milestones, runApplied);
 
-  return { state: next, milestones };
+  return { state: next, milestones, emitted };
 }
 
 function activityLevel(secondsSince: number): CandidateState["recentCodeActivity"] {
@@ -123,11 +145,22 @@ function estimateProgress(snapshot: SemanticSnapshot): number {
  * impatience rule, which is the failure mode this whole product exists to
  * avoid.
  */
-function stuckScore(input: ObserverInput): number {
+function stuckScore(
+  input: ObserverInput,
+  milestones: MilestoneState,
+  runApplied: boolean,
+): number {
   let score = 0;
 
+  // When a run was applied here, the milestone state is authoritative — it just
+  // counted this failure. Otherwise fall back to the caller's figure, which is
+  // how the simulator and unit tests drive this without a RunResult.
+  const consecutiveFailures = runApplied
+    ? milestones.consecutiveIdenticalFailures
+    : input.consecutiveFailures;
+
   // Each repeat past the first is real evidence of being stuck.
-  score += Math.min(0.6, Math.max(0, input.consecutiveFailures - 1) * 0.3);
+  score += Math.min(0.6, Math.max(0, consecutiveFailures - 1) * 0.3);
 
   const progress = input.snapshot
     ? estimateProgress(input.snapshot)
@@ -136,7 +169,7 @@ function stuckScore(input: ObserverInput): number {
   // Inactive AND barely started. Either alone means nothing.
   if (input.secondsSinceCodeActivity > 90 && progress < 0.5) score += 0.3;
 
-  const solved = input.milestones.reached.includes("BASE_TESTS_PASS");
+  const solved = milestones.reached.includes("BASE_TESTS_PASS");
   if (solved) score = 0;
 
   return Math.min(1, Number(score.toFixed(2)));

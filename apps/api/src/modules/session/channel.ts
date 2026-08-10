@@ -1,4 +1,4 @@
-import { ClientEventSchema, type ServerMessage } from "@master-leeter/contracts";
+import { ClientEventSchema, type SessionEvent, type ServerMessage } from "@master-leeter/contracts";
 import type { EventLog } from "./event-log.js";
 import { type SessionStore, remainingSeconds } from "./session-store.js";
 
@@ -31,6 +31,15 @@ export interface HandleResult {
   messages: ServerMessage[];
   /** False when the event was rejected outright (unknown session, bad payload). */
   accepted: boolean;
+  /**
+   * The persisted event, when one was appended.
+   *
+   * Returned rather than dispatched: the channel's job ends at the log, and the
+   * orchestrator consumes committed evidence, not client requests. Absent on
+   * rejection, and absent on a duplicate — a replayed event must not drive the
+   * interview state twice.
+   */
+  event?: SessionEvent;
 }
 
 export class SessionChannel {
@@ -108,8 +117,10 @@ export class SessionChannel {
       { kind: "ACK", clientSeq: event.clientSeq, seq: appended.seq },
     ];
 
-    // Duplicates are acknowledged but produce no downstream effect.
-    return { accepted: !duplicate, messages };
+    // Duplicates are acknowledged but produce no downstream effect — the ACK is
+    // identical so blind retry stays safe, but the event is withheld so the
+    // orchestrator never applies the same evidence twice.
+    return { accepted: !duplicate, messages, ...(duplicate ? {} : { event: appended }) };
   }
 
   /**
