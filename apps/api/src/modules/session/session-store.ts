@@ -106,6 +106,11 @@ export class InMemorySessionStore implements SessionStore {
     return this.sessions.get(id) ?? null;
   }
 
+  /** Every session belonging to a user. Drives account-scope deletion (M7-3). */
+  async idsForUser(userId: string): Promise<string[]> {
+    return [...this.sessions.values()].filter((s) => s.userId === userId).map((s) => s.id);
+  }
+
   async end(id: string, at?: string): Promise<InterviewSession> {
     const session = this.require(id);
     if (session.endedAt) return session;

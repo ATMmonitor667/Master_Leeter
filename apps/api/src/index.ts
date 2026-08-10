@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { Judge0Runner, type CodeRunner } from "./modules/runner/index.js";
+import { registerPrivacyModule } from "./modules/privacy/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
@@ -56,6 +57,12 @@ export function buildServer(opts: ServerOptions) {
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
+  void app.register(registerPrivacyModule, {
+    prefix: "/v1",
+    eventLog,
+    sessions: store,
+    evaluationQueue,
+  });
 
   return app;
 }

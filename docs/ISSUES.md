@@ -22,9 +22,9 @@ such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (
 instance). Both satisfy the same interfaces as their tested in-memory/fake counterparts.
 Verifying them is M0-2 and a Postgres CI service, not new code.
 
-Everything buildable without an external credential is done except M7-3 (privacy controls).
-What remains needs a Judge0 instance (M0-2), an auth provider (M2-8), a realtime API key
-(M0-1, and all of M3/M4), or human graders (M4-5, M6-5).
+**Everything buildable without an external credential is now done.** Every remaining issue
+needs a Judge0 instance (M0-2), an auth provider (M2-8), a realtime API key (M0-1 and all of
+M3/M4), human graders (M4-5, M6-5), or observability infrastructure (M7-2).
 
 ---
 
@@ -302,7 +302,7 @@ Voice disconnect pauses timer after grace; browser refresh restores editor revis
 ### `[ ]` M7-2 · Observability · M
 OpenTelemetry traces joining audio turns → gate decisions → model calls → code runs → report generation.
 
-### `[ ]` M7-3 · Privacy controls · M
+### `[x]` M7-3 · Privacy controls · M
 No raw audio by default; session and account deletion propagating to transcripts, derived reports, and analytics; consent surface.
 
 ### `[x]` M7-4 · Scenarios #2–5 · L

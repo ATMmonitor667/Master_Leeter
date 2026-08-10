@@ -187,6 +187,91 @@ describe("GET /v1/interview-sessions/:id/report", () => {
   });
 });
 
+describe("privacy routes", () => {
+  const USER = "user-privacy";
+
+  async function session(server: ReturnType<typeof app>) {
+    const created = await server.inject({
+      method: "POST",
+      url: "/v1/interview-sessions",
+      headers: { "idempotency-key": `p-${Math.random()}`, "x-user-id": USER },
+      payload: { scenarioRef: scenarioRef("conveyor-rescan@1") },
+    });
+    return created.json().sessionId as string;
+  }
+
+  it("reports every consent scope as off by default", async () => {
+    const res = await app().inject({
+      method: "GET",
+      url: "/v1/privacy/consent",
+      headers: { "x-user-id": USER },
+    });
+    expect(res.json()).toMatchObject({ transcript: false, rawAudio: false, calibration: false });
+  });
+
+  it("records a grant and reflects it back", async () => {
+    const server = app();
+    await server.inject({
+      method: "POST",
+      url: "/v1/privacy/consent",
+      headers: { "x-user-id": USER },
+      payload: { scope: "TRANSCRIPT", granted: true },
+    });
+
+    const res = await server.inject({
+      method: "GET",
+      url: "/v1/privacy/consent",
+      headers: { "x-user-id": USER },
+    });
+    expect(res.json()).toMatchObject({ transcript: true, rawAudio: false });
+  });
+
+  it("deletes a session and returns a receipt", async () => {
+    const server = app();
+    const id = await session(server);
+
+    const res = await server.inject({
+      method: "DELETE",
+      url: `/v1/privacy/sessions/${id}`,
+      headers: { "x-user-id": USER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().eventsRedacted).toBeGreaterThan(0);
+  });
+
+  it("refuses to delete somebody else's session", async () => {
+    const server = app();
+    const id = await session(server);
+
+    const res = await server.inject({
+      method: "DELETE",
+      url: `/v1/privacy/sessions/${id}`,
+      headers: { "x-user-id": "someone-else" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("exports a session's own data without the scenario content", async () => {
+    // The scenario is the product's content, not the user's data. Exporting it
+    // would hand over the problem set to anyone who ran one interview.
+    const server = app();
+    const id = await session(server);
+
+    const res = await server.inject({
+      method: "GET",
+      url: `/v1/privacy/sessions/${id}/export`,
+      headers: { "x-user-id": USER },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().events.length).toBeGreaterThan(0);
+    for (const forbidden of ["conveyor", "openingScript", "hiddenTests", "hintLadder"]) {
+      expect(res.body).not.toContain(forbidden);
+    }
+  });
+});
+
 describe("routes still blocked on external decisions", () => {
   it("realtime token is explicit about why", async () => {
     const res = await app().inject({

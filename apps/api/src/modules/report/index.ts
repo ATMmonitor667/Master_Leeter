@@ -76,6 +76,17 @@ export class EvaluationQueue {
   }
 
   /**
+   * Drops a generated report (M7-3).
+   *
+   * Reports are derived data — regenerable from events while those exist, and
+   * meaningless once they are redacted. Deleting one destroys nothing that the
+   * event log does not already hold.
+   */
+  forget(sessionId: string): boolean {
+    return this.jobs.delete(sessionId);
+  }
+
+  /**
    * Re-runs evaluation from the immutable events.
    *
    * This is why the log is append-only: improving the rubric re-scores every

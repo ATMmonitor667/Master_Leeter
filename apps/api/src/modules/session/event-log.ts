@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Actor, EventType, SessionEvent } from "@master-leeter/contracts";
+import { redactionFor } from "../privacy/deletion.js";
 
 /**
  * Append-only session event log (M2-7).
@@ -116,5 +117,33 @@ export class InMemoryEventLog implements EventLog {
   async latestSeq(sessionId: string): Promise<number> {
     const list = this.events.get(sessionId);
     return list && list.length > 0 ? list.length - 1 : -1;
+  }
+
+  /**
+   * Redacts a session's payloads in place of deleting its events (M7-3).
+   *
+   * The ONLY mutating operation on this interface, and it removes content
+   * rather than records. Sequence numbers, types and timestamps survive, so the
+   * log keeps its shape and a gap never appears — a gap is indistinguishable
+   * from data loss, which would make every future audit suspect.
+   *
+   * Deliberately not part of the EventLog interface. Callers that append and
+   * read must not be able to reach this by accident; deletion goes through the
+   * privacy module, which produces a receipt.
+   */
+  async redact(sessionId: string): Promise<number> {
+    const list = this.events.get(sessionId);
+    if (!list) return 0;
+
+    const redacted = list.map(redactionFor);
+    this.events.set(sessionId, redacted);
+
+    // Drop the idempotency index too. Replaying an old client event after a
+    // deletion request must not resurrect its payload.
+    for (const [key, event] of this.byKey) {
+      if (event.sessionId === sessionId) this.byKey.delete(key);
+    }
+
+    return redacted.length;
   }
 }
