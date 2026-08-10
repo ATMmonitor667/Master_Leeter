@@ -174,3 +174,30 @@ export async function loadScenarioLibrary(contentRoot: string): Promise<Map<stri
 export function selectableScenarios(library: Map<string, LoadedScenario>): LoadedScenario[] {
   return [...library.values()].filter((s) => s.version.status === "ACTIVE");
 }
+
+/**
+ * Opaque public handle for a scenario version.
+ *
+ * Scenario ids are descriptive by design — `conveyor-rescan@1` tells an author
+ * exactly what they're editing. But the id would otherwise reach the browser in
+ * the setup catalogue, and "conveyor rescan" gives away the framing of a problem
+ * the candidate is supposed to hear for the first time, out loud. Descriptive
+ * internally, opaque externally.
+ */
+export function scenarioRef(versionId: string): string {
+  return `scn_${createHash("sha256").update(versionId, "utf8").digest("hex").slice(0, 16)}`;
+}
+
+/** Resolves a public ref, or an internal id, back to a loaded scenario. */
+export function resolveScenario(
+  library: Map<string, LoadedScenario>,
+  refOrId: string,
+): LoadedScenario | null {
+  const direct = library.get(refOrId);
+  if (direct) return direct;
+
+  for (const scenario of library.values()) {
+    if (scenarioRef(scenario.version.id) === refOrId) return scenario;
+  }
+  return null;
+}
