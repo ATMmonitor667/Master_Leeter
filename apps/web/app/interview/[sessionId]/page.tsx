@@ -43,6 +43,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   const [running, setRunning] = useState(false);
   const [runnerAvailable, setRunnerAvailable] = useState(true);
   const [result, setResult] = useState<RunResult | null>(null);
+  const [ending, setEnding] = useState(false);
 
   const clientRef = useRef<SessionClient | null>(null);
 
@@ -115,6 +116,20 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     clientRef.current?.requestRun(testInput);
   }, [testInput]);
 
+  const onEnd = useCallback(async () => {
+    // Flush before ending so the final revision is in the log the evaluator
+    // will read. An unflushed last edit is evidence that never existed.
+    clientRef.current?.flush();
+    setEnding(true);
+
+    const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
+    try {
+      await fetch(`${api}/v1/interview-sessions/${sessionId}/end`, { method: "POST" });
+    } finally {
+      window.location.href = `/report/${sessionId}`;
+    }
+  }, [sessionId]);
+
   const header = useMemo(
     () => (
       <header
@@ -136,10 +151,15 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <InterviewerStatus state={interviewer} />
           <Timer remainingSeconds={remaining} />
+          {/* Deliberately plain. Ending an interview is a decision, not a
+              call to action, and a prominent button invites misclicks. */}
+          <button onClick={onEnd} disabled={ending} style={{ fontSize: 12, padding: "4px 10px" }}>
+            {ending ? "Ending…" : "End interview"}
+          </button>
         </div>
       </header>
     ),
-    [connected, interviewer, remaining],
+    [connected, interviewer, remaining, onEnd, ending],
   );
 
   return (

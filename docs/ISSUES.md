@@ -9,9 +9,12 @@ Lanes: **A** Interview Brain · **B** Workspace & Runtime · **C** Voice & Evide
 
 Status key: `[ ]` open · `[~]` in progress · `[x]` done
 
-**Progress:** M0, M1, M2 complete except M2-8 (auth). M6 evidence pipeline done except the
-report UI (M6-3) and calibration (M6-5). M5-1 half done — the code-derived half of
-CandidateState works; the transcript half waits on the intent classifier (M4-1).
+**Progress:** M0, M1, M2 complete except M2-8 (auth). M6 complete except calibration (M6-5),
+which needs human graders. M5-1 half done — the code-derived half of CandidateState works;
+the transcript half waits on the intent classifier (M4-1).
+
+The loop is closed end to end without voice: pick a scenario, write and run code, end the
+session, read an evidence-backed report.
 
 Two components are written but UNVERIFIED against real infrastructure, and are marked as
 such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (no Judge0
@@ -278,7 +281,7 @@ Versioned config, 7 dimensions, starting weights 15/25/25/10/10/10/5.
 **Deps:** M2-7, M6-1. Queue consumer over the immutable event log. Dimension score + confidence + 2–4 evidence moments each.
 **Acceptance:** cannot block, touch, or read into the live session path.
 
-### `[ ]` M6-3 · Report UI · M
+### `[x]` M6-3 · Report UI · M
 **Deps:** M6-2. Scores, evidence clips, probe intents, hint usage and strength, missed opportunities, code timeline, three targeted drills.
 
 ### `[x]` M6-4 · Report endpoint with job status · S
