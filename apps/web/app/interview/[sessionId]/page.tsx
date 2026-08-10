@@ -44,6 +44,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   const [runnerAvailable, setRunnerAvailable] = useState(true);
   const [result, setResult] = useState<RunResult | null>(null);
   const [ending, setEnding] = useState(false);
+  const [restored, setRestored] = useState(false);
 
   const clientRef = useRef<SessionClient | null>(null);
 
@@ -65,8 +66,41 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     }
   }, []);
 
+  /**
+   * Restore before connecting (M7-1).
+   *
+   * A refresh mid-interview should cost the candidate nothing but a moment.
+   * State comes from the append-only event log rather than localStorage: the
+   * server already holds the evidence, and a client-side cache could disagree
+   * with the log the evaluator reads.
+   */
+  useEffect(() => {
+    const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
+    let cancelled = false;
+
+    fetch(`${api}/v1/interview-sessions/${sessionId}/resume`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return setRestored(true);
+        if (data.ended) {
+          window.location.href = `/report/${sessionId}`;
+          return;
+        }
+        if (data.code) setCode(data.code);
+        if (data.notes) setNotes(data.notes);
+        if (typeof data.remainingSeconds === "number") setRemaining(data.remainingSeconds);
+        setRestored(true);
+      })
+      .catch(() => setRestored(true));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
   useEffect(() => {
     const wsBase = process.env["NEXT_PUBLIC_WS_URL"] ?? "ws://localhost:4000";
+    const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
 
     const client = new SessionClient({
       sessionId,
@@ -78,7 +112,15 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       connect: (handlers) => {
         const socket = new WebSocket(`${wsBase}/v1/interview-sessions/${sessionId}/events`);
         socket.onopen = () => handlers.onOpen();
-        socket.onclose = () => handlers.onClose();
+        socket.onclose = () => {
+          // Tell the server the socket went down so the grace window starts and
+          // a sustained outage gets credited back to the clock.
+          void fetch(`${api}/v1/interview-sessions/${sessionId}/disconnected`, {
+            method: "POST",
+            keepalive: true,
+          }).catch(() => {});
+          handlers.onClose();
+        };
         socket.onmessage = (e) => handlers.onMessage(String(e.data));
 
         return {
@@ -169,6 +211,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       <div
         style={{
           flex: 1,
+          opacity: restored ? 1 : 0.5,
           display: "grid",
           gridTemplateColumns: "minmax(0, 1.9fr) minmax(280px, 1fr)",
           minHeight: 0,

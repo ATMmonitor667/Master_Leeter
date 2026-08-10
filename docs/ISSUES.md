@@ -22,8 +22,9 @@ such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (
 instance). Both satisfy the same interfaces as their tested in-memory/fake counterparts.
 Verifying them is M0-2 and a Postgres CI service, not new code.
 
-Everything buildable without an external credential is done. What remains needs a Judge0
-instance (M0-2), an auth provider (M2-8), or a realtime API key (M0-1, and all of M3/M4).
+Everything buildable without an external credential is done except M7-3 (privacy controls).
+What remains needs a Judge0 instance (M0-2), an auth provider (M2-8), a realtime API key
+(M0-1, and all of M3/M4), or human graders (M4-5, M6-5).
 
 ---
 
@@ -295,7 +296,7 @@ Versioned config, 7 dimensions, starting weights 15/25/25/10/10/10/5.
 
 ## M7 — Hardening · all hands
 
-### `[ ]` M7-1 · Reconnect and failure paths · M
+### `[x]` M7-1 · Reconnect and failure paths · M
 Voice disconnect pauses timer after grace; browser refresh restores editor revision + timer + state via session lease and last-acked seq; runner-unavailable keeps the interview alive; delayed transcript prefers silence over guessing.
 
 ### `[ ]` M7-2 · Observability · M

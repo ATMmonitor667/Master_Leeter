@@ -6,6 +6,8 @@ import { DEFAULT_LIMITS, RunQueue, type CodeRunner, hashInput } from "../runner/
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
 import { InMemoryEventLog } from "./event-log.js";
+import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
+import { reconstruct } from "./resume.js";
 import { InMemorySessionStore, SessionNotFoundError, remainingSeconds } from "./session-store.js";
 
 /**
@@ -25,6 +27,17 @@ export {
   type SessionStore,
 } from "./session-store.js";
 export { SessionChannel, type ChannelDeps } from "./channel.js";
+export {
+  GRACE_SECONDS,
+  isAbandoned,
+  isTimerRunning,
+  newLease,
+  onDisconnect,
+  onReconnect,
+  pendingCredit,
+  type LeaseState,
+} from "./lease.js";
+export { reconstruct, type ResumeState } from "./resume.js";
 
 const CreateSessionBody = z.object({
   /** Opaque public ref from GET /scenarios. Internal ids are also accepted. */
@@ -65,6 +78,9 @@ export async function registerSessionModule(
    * unusable evidence.
    */
   const runContext = new Map<string, { sessionId: string; scenarioVersionId: string; traceId: string }>();
+
+  /** Per-session connection leases. Per-process for now; Redis when multi-node. */
+  const leases = new Map<string, LeaseState>();
 
   const queue = opts.runner
     ? new RunQueue({
@@ -186,6 +202,73 @@ export async function registerSessionModule(
       if (err instanceof SessionNotFoundError) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
       throw err;
     }
+  });
+
+  /**
+   * Resume after a refresh or a drop.
+   *
+   * Rebuilt from the append-only log rather than a cache. If the log cannot
+   * restore the candidate's screen, it cannot be trusted to justify their score
+   * either -- so this endpoint doubles as a standing check that the log is
+   * complete.
+   */
+  app.get("/interview-sessions/:id/resume", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+
+    const resumed = await reconstruct(eventLog, id, session.state);
+    if (!resumed) return reply.code(404).send({ error: "NO_EVENTS" });
+
+    const lease = leases.get(id) ?? newLease();
+    const credited = onReconnect(lease, Date.now());
+    leases.set(id, credited.lease);
+
+    if (credited.creditedSeconds > 0) {
+      // Credit the clock before reporting remaining time, so the candidate
+      // never sees the minutes they lost to a drop.
+      await store.addPause(id, credited.creditedSeconds);
+      await eventLog.append({
+        sessionId: id,
+        type: "TIMER_RESUMED",
+        actor: "SYSTEM",
+        scenarioVersionId: session.scenarioVersionId,
+        payload: { creditedSeconds: credited.creditedSeconds, drops: credited.lease.dropCount },
+        traceId: session.traceId,
+        idempotencyKey: `resume:${id}:${credited.lease.dropCount}`,
+      });
+    }
+
+    const current = (await store.get(id)) ?? session;
+
+    return reply.send({
+      ...resumed,
+      remainingSeconds: remainingSeconds(current, Date.now()),
+      creditedSeconds: credited.creditedSeconds,
+      drops: credited.lease.dropCount,
+    });
+  });
+
+  /** Called by the client when its socket closes. Starts the grace window. */
+  app.post("/interview-sessions/:id/disconnected", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+
+    const lease = onDisconnect(leases.get(id) ?? newLease(), Date.now());
+    leases.set(id, lease);
+
+    await eventLog.append({
+      sessionId: id,
+      type: "CONNECTION_LOST",
+      actor: "SYSTEM",
+      scenarioVersionId: session.scenarioVersionId,
+      payload: { drop: lease.dropCount },
+      traceId: session.traceId,
+      idempotencyKey: `disconnect:${id}:${lease.dropCount}`,
+    });
+
+    return reply.send({ ok: true, pendingCredit: pendingCredit(lease, Date.now()) });
   });
 
   app.post("/interview-sessions/:id/realtime-token", async (_req, reply) => {
