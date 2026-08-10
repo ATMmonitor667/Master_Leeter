@@ -9,10 +9,15 @@ Lanes: **A** Interview Brain · **B** Workspace & Runtime · **C** Voice & Evide
 
 Status key: `[ ]` open · `[~]` in progress · `[x]` done
 
-**Progress:** M0 and M1 complete. M2 mostly complete — M2-1, M2-2, M2-3, M2-7, M2-9 done,
-plus the client half of M2-5 (debounced deltas, revisions, note activity). Remaining:
-M2-4 (blocked on a Judge0 instance), M2-6 (needs M2-4), M2-8 (blocked on an auth provider),
-and the server-side Tree-sitter half of M2-5.
+**Progress:** M0, M1, and M2 complete except M2-8 (auth — blocked on a provider choice).
+
+Two components are written but UNVERIFIED against real infrastructure, and are marked as
+such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (no Judge0
+instance). Both satisfy the same interfaces as their tested in-memory/fake counterparts.
+Verifying them is M0-2 and a Postgres CI service, not new code.
+
+Everything buildable without an external credential is done. What remains needs a Judge0
+instance (M0-2), an auth provider (M2-8), or a realtime API key (M0-1, and all of M3/M4).
 
 ---
 
@@ -157,17 +162,17 @@ Mock and Learning as data: hint levels available, stall thresholds, probe cadenc
 Monaco (Python), notepad with **no AI autocomplete**, timer, custom test input, stdout/stderr panel, interviewer status indicator (Listening / Waiting / Speaking).
 **Acceptance:** the full problem statement appears nowhere in the DOM, network payloads, or client bundle.
 
-### `[ ]` M2-4 · Runner service · M
+### `[x]` M2-4 · Runner service · M
 **Deps:** M0-2, M2-2.
 Queue-backed: enqueue → Judge0 → normalized result event appended → pushed to client → observer notified.
 **Acceptance:** a runaway execution never blocks the session service.
 
-### `[ ]` M2-5 · Code + note event pipeline · M
+### `[x]` M2-5 · Code + note event pipeline · M
 **Deps:** M2-2.
 Client-side debounced diffing with monotonic revision numbers; server-side Tree-sitter semantic snapshot (functions, data structures, loops, recursion, changed regions). Also emits debounced **note activity** events — session evidence and a stall signal, not graded unless rubric-relevant.
 **Acceptance:** typing continuously for 60s produces bounded event volume, not one event per keystroke.
 
-### `[ ]` M2-6 · Milestone detection · M
+### `[x]` M2-6 · Milestone detection · M
 **Deps:** M2-4, M2-5.
 Derive `FIRST_COMPILES`, `BASE_TESTS_PASS`, `REPEATED_SAME_FAILURE`, `LARGE_REWRITE`. (`COMPLEXITY_CLAIM_MISMATCH` needs the observer — M5-2.)
 

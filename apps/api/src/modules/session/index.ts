@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { InterviewModeSchema } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { DEFAULT_LIMITS, RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
 import { InMemoryEventLog } from "./event-log.js";
@@ -31,10 +33,18 @@ const CreateSessionBody = z.object({
   language: z.string().default("python"),
 });
 
+const RunBody = z.object({
+  source: z.string().max(200_000),
+  revision: z.number().int().nonnegative(),
+  input: z.string().max(100_000).default(""),
+});
+
 export interface SessionModuleOptions {
   library: Map<string, LoadedScenario>;
   store?: InMemorySessionStore;
   eventLog?: InMemoryEventLog;
+  /** Absent until a Judge0 instance exists. The interview works without it. */
+  runner?: CodeRunner;
 }
 
 export async function registerSessionModule(
@@ -44,6 +54,41 @@ export async function registerSessionModule(
   const store = opts.store ?? new InMemorySessionStore();
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const channel = new SessionChannel({ sessions: store, eventLog });
+
+  /**
+   * runId -> the session context needed to attribute the result on the way back.
+   *
+   * Runs complete asynchronously, so the result arrives with no memory of which
+   * session or scenario version it belonged to. An unattributable run is
+   * unusable evidence.
+   */
+  const runContext = new Map<string, { sessionId: string; scenarioVersionId: string; traceId: string }>();
+
+  const queue = opts.runner
+    ? new RunQueue({
+        runner: opts.runner,
+        onResult: async (result) => {
+          const ctx = runContext.get(result.runId);
+          runContext.delete(result.runId);
+          if (!ctx) return;
+
+          await eventLog.append({
+            sessionId: ctx.sessionId,
+            type: "RUN_COMPLETED",
+            actor: "SYSTEM",
+            scenarioVersionId: ctx.scenarioVersionId,
+            payload: { ...result },
+            traceId: ctx.traceId,
+            idempotencyKey: `run-completed:${result.runId}`,
+          });
+        },
+        onUnavailable: (request, error) => {
+          // Logged, not thrown. A runner outage must not end the interview.
+          runContext.delete(request.runId);
+          app.log.warn({ runId: request.runId, err: error.message }, "runner unavailable");
+        },
+      })
+    : null;
 
   app.post("/interview-sessions", async (req, reply) => {
     const body = CreateSessionBody.safeParse(req.body);
@@ -143,10 +188,62 @@ export async function registerSessionModule(
     return reply.code(501).send({ error: "NOT_IMPLEMENTED", issue: "M3-1" });
   });
 
-  app.post("/interview-sessions/:id/runs", async (_req, reply) => {
-    // M2-4: enqueue only. Execution happens in the external sandbox, never here
-    // (invariant 6). Blocked on a Judge0 instance.
-    return reply.code(501).send({ error: "NOT_IMPLEMENTED", issue: "M2-4" });
+  app.post("/interview-sessions/:id/runs", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+
+    // No runner configured yet (no Judge0 instance). The interview continues —
+    // a candidate can still reason and write code, they just cannot execute it.
+    if (!queue) {
+      return reply.code(503).send({
+        error: "RUNNER_UNAVAILABLE",
+        message: "Execution is temporarily unavailable. Keep going.",
+      });
+    }
+
+    const body = RunBody.safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
+    }
+
+    const runId = randomUUID();
+    runContext.set(runId, {
+      sessionId: session.id,
+      scenarioVersionId: session.scenarioVersionId,
+      traceId: session.traceId,
+    });
+
+    const accepted = queue.enqueue({
+      runId,
+      sessionId: session.id,
+      language: session.language,
+      source: body.data.source,
+      codeRevision: body.data.revision,
+      stdin: body.data.input,
+      limits: DEFAULT_LIMITS,
+    });
+
+    if (!accepted) {
+      runContext.delete(runId);
+      return reply.code(429).send({ error: "RUNNER_BUSY", message: "Too many runs queued." });
+    }
+
+    await eventLog.append({
+      sessionId: session.id,
+      type: "RUN_REQUESTED",
+      actor: "CANDIDATE",
+      scenarioVersionId: session.scenarioVersionId,
+      payload: { runId, revision: body.data.revision, inputHash: hashInput(body.data.input) },
+      traceId: session.traceId,
+      idempotencyKey: `run-requested:${runId}`,
+    });
+
+    // 202: the work is queued, not done. Execution is asynchronous from this
+    // thread by design — a runaway submission must never pin the session
+    // service, which also holds the editor channel and the timer.
+    return reply.code(202).send({ runId, revision: body.data.revision });
   });
 
   // Exposed for the WebSocket adapter and tests.

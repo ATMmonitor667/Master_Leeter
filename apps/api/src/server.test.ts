@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { CONTENT_ROOT, buildServer } from "./index.js";
+import { FakeRunner } from "./modules/runner/index.js";
 import { loadScenarioLibrary, scenarioRef } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
 
@@ -136,9 +137,72 @@ describe("routes still blocked on external decisions", () => {
     expect(res.json().issue).toBe("M3-1");
   });
 
-  it("code runs are explicit about why", async () => {
-    const res = await app().inject({ method: "POST", url: "/v1/interview-sessions/x/runs" });
-    expect(res.statusCode).toBe(501);
-    expect(res.json().issue).toBe("M2-4");
+});
+
+describe("POST /v1/interview-sessions/:id/runs", () => {
+  async function session(server: ReturnType<typeof app>) {
+    const created = await server.inject({
+      method: "POST",
+      url: "/v1/interview-sessions",
+      headers: { "idempotency-key": `run-${Math.random()}` },
+      payload: { scenarioRef: scenarioRef("conveyor-rescan@1") },
+    });
+    return created.json().sessionId as string;
+  }
+
+  it("accepts a run and returns 202 — execution is asynchronous by design", async () => {
+    const runner = new FakeRunner();
+    runner.queueResult({ status: "PASSED", stdout: "B2" });
+    const server = buildServer({ library, runner });
+
+    const id = await session(server);
+    const res = await server.inject({
+      method: "POST",
+      url: `/v1/interview-sessions/${id}/runs`,
+      payload: { source: "print('B2')", revision: 3, input: "" },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ revision: 3 });
+  });
+
+  it("tells the candidate plainly when no runner is configured", async () => {
+    // Without Judge0 the interview still runs. Refusing to start, or returning
+    // an opaque 500, would turn missing infrastructure into a ruined session.
+    const server = app();
+    const id = await session(server);
+    const res = await server.inject({
+      method: "POST",
+      url: `/v1/interview-sessions/${id}/runs`,
+      payload: { source: "x", revision: 1, input: "" },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe("RUNNER_UNAVAILABLE");
+  });
+
+  it("refuses runs after the session has ended", async () => {
+    const runner = new FakeRunner();
+    const server = buildServer({ library, runner });
+    const id = await session(server);
+    await server.inject({ method: "POST", url: `/v1/interview-sessions/${id}/end` });
+
+    const res = await server.inject({
+      method: "POST",
+      url: `/v1/interview-sessions/${id}/runs`,
+      payload: { source: "x", revision: 1, input: "" },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("404s an unknown session", async () => {
+    const runner = new FakeRunner();
+    const server = buildServer({ library, runner });
+    const res = await server.inject({
+      method: "POST",
+      url: "/v1/interview-sessions/00000000-0000-4000-8000-0000000000ff/runs",
+      payload: { source: "x", revision: 1, input: "" },
+    });
+    expect(res.statusCode).toBe(404);
   });
 });

@@ -5,6 +5,7 @@ import { registerReportModule } from "./modules/report/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { registerSessionModule } from "./modules/session/index.js";
+import { Judge0Runner, type CodeRunner } from "./modules/runner/index.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
 
 /**
@@ -22,6 +23,8 @@ export const CONTENT_ROOT = join(here, "../../../content/scenarios");
 export interface ServerOptions {
   library: Map<string, LoadedScenario>;
   logger?: boolean;
+  /** Absent until a Judge0 instance exists. Runs then return 503, and say so. */
+  runner?: CodeRunner;
 }
 
 export function buildServer(opts: ServerOptions) {
@@ -29,7 +32,11 @@ export function buildServer(opts: ServerOptions) {
 
   app.get("/health", async () => ({ ok: true, scenarios: opts.library.size }));
 
-  void app.register(registerSessionModule, { prefix: "/v1", library: opts.library });
+  void app.register(registerSessionModule, {
+    prefix: "/v1",
+    library: opts.library,
+    ...(opts.runner ? { runner: opts.runner } : {}),
+  });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library });
   void app.register(registerReportModule, { prefix: "/v1" });
 
@@ -41,10 +48,23 @@ export async function start(): Promise<void> {
   // not surface mid-interview as an interviewer that cannot answer questions.
   const library = await loadScenarioLibrary(CONTENT_ROOT);
 
-  const app = buildServer({ library, logger: true });
+  // Judge0 is optional at boot. Without it the interview runs, minus execution
+  // -- which is far better than refusing to start (M2-4 / M0-2).
+  const judge0Url = process.env["JUDGE0_URL"];
+  const runner: CodeRunner | undefined = judge0Url
+    ? new Judge0Runner({
+        baseUrl: judge0Url,
+        ...(process.env["JUDGE0_AUTH_TOKEN"] ? { authToken: process.env["JUDGE0_AUTH_TOKEN"] } : {}),
+      })
+    : undefined;
+
+  const app = buildServer({ library, logger: true, ...(runner ? { runner } : {}) });
   const port = Number(process.env["API_PORT"] ?? 4000);
 
-  app.log.info({ scenarios: [...library.keys()] }, "scenario library loaded");
+  app.log.info(
+    { scenarios: [...library.keys()], runner: runner ? "judge0" : "none" },
+    "scenario library loaded",
+  );
   await app.listen({ port, host: "0.0.0.0" });
 }
 
