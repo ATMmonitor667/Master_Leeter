@@ -132,6 +132,11 @@ export const InterviewPolicySchema = z.object({
   stallThreshold: z.number().min(0).max(1),
   /** Minimum seconds between two interviewer-initiated utterances. */
   minSecondsBetweenProbes: z.number().int().min(0),
+  /**
+   * Whether social small talk earns a brief acknowledgement.
+   * Off in Mock and Strict: a real interviewer does not fill every silence.
+   */
+  acknowledgeSmallTalk: z.boolean(),
   /** Semantic end-of-turn probability required before any response is considered. */
   endOfTurnThreshold: z.number().min(0).max(1),
   /** Maximum age, in seconds, of a code revision an interviewer response may reference. */

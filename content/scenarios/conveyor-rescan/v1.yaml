@@ -1,0 +1,389 @@
+# Scenario: Conveyor Rescan
+#
+# ORIGINAL content. The framing, variable model, examples, constraints, and
+# follow-up structure were authored for this product from the underlying
+# algorithmic concept (first-repeated-element detection). Hiding the statement
+# is a UX decision, not legal clearance — see CLAUDE.md legal posture.
+#
+# This file is an IMMUTABLE version. To change behavior, add v2 and retire v1.
+# Never edit a version a session may have pinned.
+
+id: conveyor-rescan@1
+scenarioId: conveyor-rescan
+version: 1
+status: ACTIVE
+
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  reviewNotes: >
+    Authored from the first-repeated-element concept. Warehouse conveyor framing,
+    identifier model, examples, and the windowed-stream follow-up are original to
+    this product. No third-party problem statement was consulted or paraphrased.
+  similarityCheck:
+    performedAt: "2026-08-09T00:00:00.000Z"
+    method: manual-review
+    result: CLEAR
+    notes: Concept is a standard algorithmic idea; expression is original.
+
+target:
+  level: MID
+  topics: [hashing, sets, streaming, complexity-analysis]
+  expectedMinutes: 40
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Oral brief. SPOKEN, never rendered (invariant 2).
+#
+# Written for the ear: short sentences, no bullet lists, no notation the
+# candidate would need to see. Deliberately omits several facts so the
+# clarification map has something to do.
+# ─────────────────────────────────────────────────────────────────────────────
+oralBrief:
+  openingScript: >
+    Here's the situation. We run a warehouse, and packages move along a conveyor
+    past a barcode scanner. Every time a package passes, the scanner records that
+    package's identifier, and we end up with the full list of readings from a
+    shift, in the order they were scanned.
+
+    Sometimes a package gets pulled off the line and put back on further upstream,
+    so it goes past the scanner more than once. We want to catch that. Specifically,
+    I'd like you to write a function that takes the list of readings from a shift
+    and tells me the identifier of the first package that got scanned a second time.
+
+    By first, I mean the one whose second scan happens earliest in the shift.
+
+    Take a minute if you want, and ask me anything you need to.
+
+  repeatVariants:
+    - >
+      Sure. A scanner reads package identifiers as packages go by, and we get the
+      shift's readings in scan order. A package can pass the scanner more than once.
+      Write a function that returns the identifier of the first package to be scanned
+      a second time — first meaning its repeat scan comes earliest in the list.
+    - >
+      Of course. You're given the shift's scanner readings in order. Some packages
+      appear more than once. Return the identifier of the package whose second
+      appearance comes earliest in that list.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Canonical facts.
+#
+# ALWAYS      — stated in the brief whether or not they ask
+# IF_ASKED    — answered truthfully, but only on request
+# AFTER_PROBE — withheld until they've been probed on the relevant issue
+#
+# The clarification tool returns one of these or NOT_ANSWERABLE. There is no
+# path by which the model supplies a fact that is not in this list (invariant 3).
+# ─────────────────────────────────────────────────────────────────────────────
+facts:
+  - key: ordering
+    value: The readings are in scan order. They are not sorted by identifier.
+    disclosure: ALWAYS
+    askedAs:
+      - is the list sorted
+      - are they in order
+      - what order are the readings in
+
+  - key: repeat_count
+    value: Yes. A package can be scanned more than twice.
+    disclosure: IF_ASKED
+    askedAs:
+      - can something appear more than twice
+      - can a package repeat three times
+      - is it always exactly two
+
+  - key: no_repeats_behavior
+    value: If no package was scanned twice, return nothing — null, or whatever the language's equivalent is.
+    disclosure: IF_ASKED
+    askedAs:
+      - what if there are no duplicates
+      - what do I return if nothing repeats
+      - what if every package is unique
+
+  - key: empty_input
+    value: Yes, a shift can have no readings at all. Same as the no-repeat case — return nothing.
+    disclosure: IF_ASKED
+    askedAs:
+      - can the list be empty
+      - what about an empty shift
+
+  - key: identifier_type
+    value: Treat identifiers as opaque strings. Don't assume they're numeric or bounded.
+    disclosure: IF_ASKED
+    askedAs:
+      - what type are the identifiers
+      - are they integers
+      - are ids numbers or strings
+
+  - key: input_size
+    value: A shift is a few hundred thousand readings at most. It fits comfortably in memory.
+    disclosure: IF_ASKED
+    askedAs:
+      - how big is the input
+      - how many readings
+      - does it fit in memory
+
+  - key: mutation_allowed
+    value: Don't modify the input list. Treat it as read-only.
+    disclosure: IF_ASKED
+    askedAs:
+      - can I modify the input
+      - can I sort the list in place
+      - is the input mutable
+
+  # Held back on purpose. A candidate who sorts will lose scan order and get the
+  # wrong answer; that mistake is more instructive discovered than pre-empted.
+  - key: sorting_loses_order
+    value: >
+      Right — sorting rearranges the readings, and "first" is defined by position in
+      the original scan order, so a sort has to preserve that information somehow.
+    disclosure: AFTER_PROBE
+    askedAs:
+      - can I sort it
+      - would sorting work
+
+examples:
+  - input: "[A7, B2, C9, B2, A7]"
+    output: "B2"
+    note: B2's second scan is at index 3; A7's is at index 4. B2 repeats first.
+  - input: "[A7, B2, C9]"
+    output: "null"
+    note: No package scanned twice.
+  - input: "[A7, A7, A7]"
+    output: "A7"
+    note: More than two scans of the same package is fine; the second one is what counts.
+
+visibleStarterTests:
+  - id: t-basic
+    input: "A7 B2 C9 B2 A7"
+    expectedOutput: "B2"
+    hidden: false
+    description: The example from the conversation.
+
+hiddenTests:
+  - id: h-empty
+    input: ""
+    expectedOutput: "null"
+    hidden: true
+    description: Empty shift.
+  - id: h-no-repeat
+    input: "A1 B1 C1 D1"
+    expectedOutput: "null"
+    hidden: true
+    description: All unique.
+  - id: h-immediate
+    input: "A1 A1 B1 B1"
+    expectedOutput: "A1"
+    hidden: true
+    description: Adjacent repeat at the very start.
+  - id: h-triple
+    input: "A1 B1 C1 B1 B1 A1"
+    expectedOutput: "B1"
+    hidden: true
+    description: One package scanned three times.
+  - id: h-last-pair
+    input: "A1 B1 C1 D1 A1"
+    expectedOutput: "A1"
+    hidden: true
+    description: Repeat only at the final reading.
+  - id: h-single
+    input: "A1"
+    expectedOutput: "null"
+    hidden: true
+    description: One reading.
+  - id: h-order-trap
+    input: "Z9 A1 B2 A1 Z9"
+    expectedOutput: "A1"
+    hidden: true
+    description: >
+      Catches candidates who return the lexicographically or first-seen element
+      rather than the earliest repeat.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Solution families. Used to recognize which approach the candidate is on, and
+# to detect a claimed complexity that the code doesn't support.
+# ─────────────────────────────────────────────────────────────────────────────
+solutionFamilies:
+  - id: sf-set-single-pass
+    name: Seen-set single pass
+    timeComplexity: O(n)
+    spaceComplexity: O(n)
+    isOptimal: true
+    recognitionSignals:
+      - allocates a set or hash-based container before the loop
+      - single loop over the readings
+      - membership check before insertion
+      - returns from inside the loop on first hit
+    invariants:
+      - The set holds exactly the identifiers seen strictly before the current index.
+      - The first index whose identifier is already in the set is the answer.
+    failureModes:
+      - inserts before checking membership, so every element looks like a repeat
+      - collects all duplicates and returns the wrong one (e.g. last, or min)
+      - returns the index rather than the identifier
+
+  - id: sf-count-then-scan
+    name: Count first, then rescan
+    timeComplexity: O(n)
+    spaceComplexity: O(n)
+    isOptimal: false
+    recognitionSignals:
+      - builds a frequency map in a first pass
+      - second loop over the readings
+    invariants:
+      - A second pass in original order is required to recover "first".
+    failureModes:
+      - returns the first element with count > 1 by map iteration order, not scan order
+      - two passes where one suffices
+
+  - id: sf-sort
+    name: Sort and compare neighbours
+    timeComplexity: O(n log n)
+    spaceComplexity: O(n)
+    isOptimal: false
+    recognitionSignals:
+      - sorts the readings or a copy
+      - compares adjacent elements
+    invariants:
+      - Sorting groups equal identifiers, but original positions must be carried alongside to recover which repeat came first.
+    failureModes:
+      - destroys scan order, so "first" becomes unrecoverable
+      - mutates the input, which the constraints forbid
+
+  - id: sf-nested-loop
+    name: Nested scan
+    timeComplexity: O(n^2)
+    spaceComplexity: O(1)
+    isOptimal: false
+    recognitionSignals:
+      - two nested loops over the same list
+      - no auxiliary container
+    invariants:
+      - For each index, the inner loop searches only the readings strictly before it.
+    failureModes:
+      - too slow at the stated input size
+      - inner loop bounds off by one
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Probes. Triggers are machine-checkable expressions over CandidateState and
+# milestones (M1-5). Wording is AUTHORED — the model selects a variant, it does
+# not invent probes.
+# ─────────────────────────────────────────────────────────────────────────────
+probes:
+  - id: complexity_claim
+    trigger: claimedTime.present && claimedTime != detectedFamily.timeComplexity
+    questionIntent: >
+      Test whether the candidate can defend an asymptotic claim, or is repeating a
+      memorized association between hash maps and O(1).
+    authoredVariants:
+      - When you say that's constant time, constant with respect to what?
+      - Walk me through where the n went in that analysis.
+      - You said O(1). Over the whole list of readings, what's the total cost?
+    maxUses: 2
+    priority: 100
+
+  - id: why_this_structure
+    trigger: currentApproach.present && state == APPROACH_EXPLORATION
+    questionIntent: Test whether the data-structure choice was reasoned or reflexive.
+    authoredVariants:
+      - What made you reach for a set there rather than something else?
+      - What does that structure give you that a list wouldn't?
+    maxUses: 1
+    priority: 60
+
+  - id: sorting_order_loss
+    trigger: detectedFamily == sf-sort
+    questionIntent: >
+      Surface that sorting destroys the ordering the answer is defined by, without
+      stating the problem for them.
+    authoredVariants:
+      - After you sort, how do you know which repeat came first on the conveyor?
+      - What happens to scan order once you've sorted?
+    maxUses: 1
+    priority: 95
+
+  - id: edge_empty
+    trigger: milestone(BASE_TESTS_PASS) && !understoodConstraints.includes(empty_input)
+    questionIntent: Test edge-case discipline without naming the case.
+    authoredVariants:
+      - What does your function do on a shift with no readings at all?
+      - Are there inputs where this returns something you wouldn't want?
+    maxUses: 1
+    priority: 70
+
+  - id: invariant_proof
+    trigger: milestone(BASE_TESTS_PASS) && state == TEST_AND_DEBUG
+    questionIntent: Test whether the candidate can state why the approach is correct, not just that it passes.
+    authoredVariants:
+      - Convince me the first one you hit is always the right answer.
+      - What's true about your set at the moment you return?
+    maxUses: 1
+    priority: 50
+
+  - id: repeated_failure_trace
+    trigger: milestone(REPEATED_SAME_FAILURE)
+    questionIntent: Redirect toward diagnosis rather than revealing the defect.
+    authoredVariants:
+      - Take that failing case and walk me through your loop one step at a time.
+      - What did you expect that case to return, and where does it diverge?
+    maxUses: 2
+    priority: 90
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Hint ladder. L1 directs attention; L4 approaches the approach. Mode policy
+# caps which levels are reachable. Score impact is recorded on every use.
+# ─────────────────────────────────────────────────────────────────────────────
+hintLadder:
+  - level: 1
+    text: Think about what you'd need to remember as you move down the list.
+    scoreImpact: 0.05
+  - level: 2
+    text: >
+      You're re-scanning earlier readings to check whether you've seen something.
+      Is there a cheaper way to answer "have I seen this before?"
+    scoreImpact: 0.15
+  - level: 3
+    text: >
+      Consider keeping a collection of the identifiers you've already passed, and
+      checking each new reading against it before you add it.
+    scoreImpact: 0.3
+  - level: 4
+    text: >
+      One pass, with a set of seen identifiers. For each reading, if it's already in
+      the set, that's your answer; otherwise add it and continue.
+    scoreImpact: 0.5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Follow-ups. Authored branches, selected from candidate evidence. Never an
+# arbitrary constraint change that invalidates the rubric.
+# ─────────────────────────────────────────────────────────────────────────────
+followUps:
+  - id: fu-streaming-window
+    trigger: solvedOptimally && remainingMinutes >= 8
+    oralDelta: >
+      Good. Now change the setup slightly. Instead of a finished shift, readings arrive
+      continuously and we can't hold the whole day in memory. We only care about a
+      repeat if the two scans happen within ten minutes of each other. How does your
+      approach change?
+    rubricDelta:
+      adaptability: 0.1
+      approach: 0.05
+    expectedAdaptation: >
+      Recognizes the seen-set must become time-bounded: entries expire, so a plain set
+      is insufficient. Reaches for a queue or deque of (id, timestamp) alongside the set,
+      evicting from the front as the window slides. Should notice memory is now bounded
+      by window occupancy rather than shift length.
+
+  - id: fu-first-unique
+    trigger: solvedOptimally && remainingMinutes >= 5 && !usedFollowUp(fu-streaming-window)
+    oralDelta: >
+      Quick variation. Same list of readings, but now I want the first package that was
+      scanned exactly once — the earliest reading with no repeat anywhere in the shift.
+    rubricDelta:
+      approach: 0.05
+    expectedAdaptation: >
+      Recognizes a single pass no longer suffices, since "no repeat anywhere" depends on
+      the future. Counts first, then rescans in order. Should articulate why the original
+      single-pass structure breaks.
+
+rubricId: rubric-coding-v1

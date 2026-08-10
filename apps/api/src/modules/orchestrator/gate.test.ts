@@ -1,110 +1,267 @@
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import {
   type InterviewContext,
-  type InterviewPolicy,
+  type InterviewScenarioVersion,
   emptyCandidateState,
 } from "@master-leeter/contracts";
-import { describe, expect, it } from "vitest";
-import { assertActionPermitted, decideAction } from "./index.js";
+import { beforeAll, describe, expect, it } from "vitest";
+import { loadScenarioFile } from "../scenario/loader.js";
+import { type GateDependencies, decideAction } from "./gate.js";
+import { assertActionPermitted } from "./index.js";
+import { POLICIES } from "./policy.js";
 
-const NOW = "2026-08-08T00:00:00.000Z";
+const here = dirname(fileURLToPath(import.meta.url));
+const SCENARIO_PATH = join(here, "../../../../../content/scenarios/conveyor-rescan/v1.yaml");
+const NOW = "2026-08-09T00:00:00.000Z";
 
-const policy: InterviewPolicy = {
-  mode: "MOCK",
-  maxHintLevel: 2,
-  hintBudget: 3,
-  stallThreshold: 0.7,
-  minSecondsBetweenProbes: 45,
-  endOfTurnThreshold: 0.8,
-  maxCodeStalenessSeconds: 20,
-  expectedMinutes: 40,
-};
+let scenario: InterviewScenarioVersion;
+
+beforeAll(async () => {
+  scenario = (await loadScenarioFile(SCENARIO_PATH)).version;
+});
+
+function deps(overrides: Partial<GateDependencies> = {}): GateDependencies {
+  return { scenario, probeUseCounts: {}, followUpsUsed: [], solvedOptimally: false, ...overrides };
+}
 
 function ctx(overrides: Partial<InterviewContext> = {}): InterviewContext {
   return {
     sessionId: "00000000-0000-4000-8000-000000000000",
     state: "IMPLEMENTATION",
-    policy,
+    policy: POLICIES.MOCK,
     candidateState: emptyCandidateState(NOW),
     turn: null,
     interviewerCurrentlySpeaking: false,
     candidateSpeechStarted: false,
     secondsSinceInterviewerLastSpoke: 120,
-    secondsSinceCodeActivity: 2,
+    secondsSinceCodeActivity: 60,
     remainingSeconds: 1200,
     hintsUsedCount: 0,
     latestCodeRevision: 12,
-    scenarioVersionId: "scn-1@1",
+    scenarioVersionId: "conveyor-rescan@1",
     traceId: "trace-1",
     ...overrides,
   };
 }
 
-const finalizedTurn = (semanticEndProbability: number) => ({
+const turn = (transcript: string, intent: InterviewContext["turn"] extends null ? never : NonNullable<InterviewContext["turn"]>["intent"], p = 0.95) => ({
   turnId: "t1",
   finalized: true,
-  transcript: "so I think I'll use a map here",
-  semanticEndProbability,
-  intent: "THINK_ALOUD" as const,
-  intentProbabilities: { THINK_ALOUD: 0.9 },
+  transcript,
+  semanticEndProbability: p,
+  intent,
+  intentProbabilities: { [intent]: 0.9 },
   endedAt: NOW,
 });
 
-describe("Response Gate — silence is the default", () => {
-  it("stays silent when there is no turn at all", () => {
-    expect(decideAction(ctx()).action).toBe("STAY_SILENT");
+describe("gate — silence guards run first", () => {
+  it("stays silent with no turn", () => {
+    expect(decideAction(ctx(), deps()).action).toBe("STAY_SILENT");
   });
 
-  it("stays silent on a non-finalized turn", () => {
-    const d = decideAction(ctx({ turn: { ...finalizedTurn(0.99), finalized: false } }));
+  it("stays silent on an unfinalized turn, however confident", () => {
+    const d = decideAction(
+      ctx({ turn: { ...turn("is the list sorted", "CLARIFICATION_REQUEST", 0.99), finalized: false } }),
+      deps(),
+    );
     expect(d.action).toBe("STAY_SILENT");
     expect(d.reason).toMatch(/not finalized/);
   });
 
-  it("stays silent when the candidate is mid-thought (below end threshold)", () => {
-    const d = decideAction(ctx({ turn: finalizedTurn(0.4) }));
+  it("stays silent mid-thought even for a question-shaped utterance", () => {
+    const d = decideAction(ctx({ turn: turn("is the list sorted", "CLARIFICATION_REQUEST", 0.4) }), deps());
     expect(d.action).toBe("STAY_SILENT");
     expect(d.reason).toMatch(/below threshold/);
   });
 
-  it("stays silent on barge-in rather than talking over the candidate", () => {
+  it("yields the floor on barge-in", () => {
     const d = decideAction(
       ctx({
         interviewerCurrentlySpeaking: true,
         candidateSpeechStarted: true,
-        turn: finalizedTurn(0.99),
+        turn: turn("wait, actually", "THINK_ALOUD", 0.99),
       }),
+      deps(),
     );
-    expect(d.action).toBe("STAY_SILENT");
     expect(d.reason).toMatch(/barge-in/);
   });
 
-  it("decides by rule, without a model call, in every current path", () => {
-    for (const c of [ctx(), ctx({ turn: finalizedTurn(0.4) }), ctx({ turn: finalizedTurn(0.99) })]) {
-      expect(decideAction(c).decidedByRule).toBe(true);
-    }
+  it("applies the mode's threshold, not a global one", () => {
+    const t = turn("okay I think that's it", "DONE_SIGNAL", 0.82);
+    expect(decideAction(ctx({ policy: POLICIES.MOCK, turn: t }), deps()).reason).not.toMatch(
+      /below threshold/,
+    );
+    // Strict waits longer before accepting a turn has ended.
+    expect(decideAction(ctx({ policy: POLICIES.STRICT, turn: t }), deps()).reason).toMatch(
+      /below threshold/,
+    );
+  });
+});
+
+describe("gate — clarifications", () => {
+  it("answers from a canonical fact", () => {
+    const d = decideAction(
+      ctx({ state: "CLARIFICATION", turn: turn("is the list sorted", "CLARIFICATION_REQUEST") }),
+      deps(),
+    );
+    expect(d.action).toBe("ANSWER_CLARIFICATION");
+    expect(d.factKey).toBe("ordering");
   });
 
-  it("always explains itself, including when silent", () => {
-    expect(decideAction(ctx()).reason.length).toBeGreaterThan(0);
+  it("acknowledges rather than inventing when no fact exists", () => {
+    const d = decideAction(
+      ctx({ state: "CLARIFICATION", turn: turn("what algorithm should I use", "EXPLICIT_QUESTION") }),
+      deps(),
+    );
+    expect(d.action).toBe("ACKNOWLEDGE_BRIEFLY");
+    expect(d.factKey).toBeUndefined();
+  });
+});
+
+describe("gate — hints", () => {
+  it("gives the next allowed level on request", () => {
+    const d = decideAction(
+      ctx({ state: "TEST_AND_DEBUG", turn: turn("can I get a hint", "HINT_REQUEST") }),
+      deps(),
+    );
+    expect(d.action).toBe("GIVE_HINT_L1");
+    expect(d.hintLevel).toBe(1);
+  });
+
+  it("goes silent rather than repeating a hint once the ceiling is hit", () => {
+    const d = decideAction(
+      ctx({
+        state: "TEST_AND_DEBUG",
+        candidateState: { ...emptyCandidateState(NOW), hintsUsed: [1, 2] },
+        turn: turn("can I get a hint", "HINT_REQUEST"),
+      }),
+      deps(),
+    );
+    expect(d.action).toBe("STAY_SILENT");
+    expect(d.reason).toMatch(/exhausted/);
+  });
+
+  it("withholds entirely in a mode with no budget left", () => {
+    const d = decideAction(
+      ctx({
+        state: "TEST_AND_DEBUG",
+        policy: POLICIES.STRICT,
+        candidateState: { ...emptyCandidateState(NOW), hintsUsed: [1] },
+        turn: turn("any hint", "HINT_REQUEST"),
+      }),
+      deps(),
+    );
+    expect(d.action).toBe("STAY_SILENT");
+  });
+});
+
+describe("gate — small talk is policy, not instinct", () => {
+  const t = turn("this is fun, how's your day", "SOCIAL_SMALL_TALK");
+
+  it("is ignored in Mock", () => {
+    expect(decideAction(ctx({ state: "CLARIFICATION", turn: t }), deps()).action).toBe("STAY_SILENT");
+  });
+
+  it("is acknowledged in Learning", () => {
+    expect(
+      decideAction(ctx({ state: "CLARIFICATION", policy: POLICIES.LEARNING, turn: t }), deps()).action,
+    ).toBe("ACKNOWLEDGE_BRIEFLY");
+  });
+});
+
+describe("gate — stale code", () => {
+  it("refuses to probe while the observer is behind and code is still moving", () => {
+    const d = decideAction(
+      ctx({
+        latestCodeRevision: 20,
+        secondsSinceCodeActivity: 2,
+        candidateState: {
+          ...emptyCandidateState(NOW),
+          derivedFromRevision: 12,
+          claimedTime: "O(1)",
+          detectedSolutionFamilyId: "sf-set-single-pass",
+        },
+        turn: turn("this is all constant time", "COMPLEXITY_CLAIM"),
+      }),
+      deps(),
+    );
+    expect(d.action).toBe("STAY_SILENT");
+    expect(d.reason).toMatch(/observer behind/);
+  });
+
+  it("probes once the observer has caught up", () => {
+    const d = decideAction(
+      ctx({
+        latestCodeRevision: 20,
+        secondsSinceCodeActivity: 40,
+        candidateState: {
+          ...emptyCandidateState(NOW),
+          derivedFromRevision: 20,
+          claimedTime: "O(1)",
+          detectedSolutionFamilyId: "sf-set-single-pass",
+        },
+        turn: turn("this is all constant time", "COMPLEXITY_CLAIM"),
+      }),
+      deps(),
+    );
+    expect(d.action).toBe("ASK_PROBE");
+    expect(d.groundedInRevision).toBe(20);
+  });
+});
+
+describe("gate — pacing", () => {
+  it("suppresses an otherwise justified probe that comes too soon", () => {
+    const d = decideAction(
+      ctx({
+        secondsSinceInterviewerLastSpoke: 5,
+        candidateState: {
+          ...emptyCandidateState(NOW),
+          derivedFromRevision: 12,
+          claimedTime: "O(1)",
+          detectedSolutionFamilyId: "sf-set-single-pass",
+        },
+        turn: turn("constant time overall", "COMPLEXITY_CLAIM"),
+      }),
+      deps(),
+    );
+    expect(d.action).toBe("STAY_SILENT");
+    expect(d.reason).toMatch(/since last utterance/);
+  });
+});
+
+describe("gate — state limits override everything", () => {
+  it("will not hint during oral delivery even when asked", () => {
+    const d = decideAction(
+      ctx({ state: "ORAL_PROBLEM_DELIVERY", turn: turn("give me a hint", "HINT_REQUEST") }),
+      deps(),
+    );
+    expect(d.action).toBe("STAY_SILENT");
+    expect(d.reason).toMatch(/not permitted/);
+  });
+
+  it("will not answer clarifications during oral delivery", () => {
+    const d = decideAction(
+      ctx({ state: "ORAL_PROBLEM_DELIVERY", turn: turn("is the list sorted", "CLARIFICATION_REQUEST") }),
+      deps(),
+    );
+    expect(d.action).toBe("STAY_SILENT");
+  });
+
+  it("is silent in EVALUATION no matter what arrives", () => {
+    for (const intent of ["EXPLICIT_QUESTION", "HINT_REQUEST", "CONFUSION"] as const) {
+      const d = decideAction(ctx({ state: "EVALUATION", turn: turn("anything", intent) }), deps());
+      expect(d.action).toBe("STAY_SILENT");
+    }
   });
 });
 
 describe("orchestrator is the policy authority", () => {
-  it("throws when an action is not permitted in the current state", () => {
+  it("throws when an action bypasses the gate into a state that forbids it", () => {
     expect(() =>
       assertActionPermitted(ctx({ state: "ORAL_PROBLEM_DELIVERY" }), {
         action: "GIVE_HINT_L1",
         reason: "model asked for it",
-        decidedByRule: false,
-      }),
-    ).toThrow(/not permitted/);
-  });
-
-  it("throws when the evaluator tries to speak into the live round", () => {
-    expect(() =>
-      assertActionPermitted(ctx({ state: "EVALUATION" }), {
-        action: "ACKNOWLEDGE_BRIEFLY",
-        reason: "…",
         decidedByRule: false,
       }),
     ).toThrow(/not permitted/);

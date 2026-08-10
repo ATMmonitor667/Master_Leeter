@@ -1,0 +1,220 @@
+import {
+  type GateDecision,
+  type InterviewContext,
+  type InterviewScenarioVersion,
+  SILENT,
+  isActionAllowed,
+} from "@master-leeter/contracts";
+import { getClarificationFact } from "../scenario/clarification.js";
+import {
+  canProbeNow,
+  highestPriorityEligibleProbe,
+  nextAllowedHintLevel,
+  selectFollowUp,
+} from "../scenario/probes.js";
+import type { ProbeSelectionContext } from "../scenario/probes.js";
+import { canHintNow } from "./policy.js";
+
+/**
+ * The Response Gate (M1-3).
+ *
+ * This is the product. Everything else is scaffolding around the question
+ * "should the interviewer speak right now?", and the answer is almost always no.
+ *
+ * Structure matters as much as the rules:
+ *
+ *   - Deterministic rules run before any model reasoning (invariant 9). The
+ *     classifier hands us probabilities; the consequences are decided here, in
+ *     code you can read, test, and replay.
+ *   - Every exit path returns a reason, including silence. "Why didn't it
+ *     speak?" is the question you will ask a hundred times while tuning this.
+ *   - The default at the bottom is STAY_SILENT. New behavior gets added as an
+ *     explicit authorization above it, never by changing the default.
+ */
+
+export interface GateDependencies {
+  scenario: InterviewScenarioVersion;
+  probeUseCounts: Readonly<Record<string, number>>;
+  followUpsUsed: readonly string[];
+  /** True when base tests pass and the detected family is the optimal one. */
+  solvedOptimally: boolean;
+}
+
+export function decideAction(ctx: InterviewContext, deps: GateDependencies): GateDecision {
+  const decision = decide(ctx, deps);
+
+  // A decision the current stage forbids is a bug upstream, but the gate is the
+  // last thing between a decision and a human hearing it, so it degrades to
+  // silence rather than trusting the caller. The orchestrator's
+  // assertActionPermitted then catches the same class of error loudly for
+  // anything that bypasses the gate.
+  if (!isActionAllowed(ctx.state, decision.action)) {
+    return SILENT(`${decision.action} not permitted in ${ctx.state} (wanted: ${decision.reason})`);
+  }
+
+  return decision;
+}
+
+function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
+  // ── 1. Barge-in ────────────────────────────────────────────────────────────
+  // The candidate talking over the interviewer is never a cue to talk more.
+  // Output audio is cancelled client-side; here we simply yield the floor.
+  if (ctx.interviewerCurrentlySpeaking && ctx.candidateSpeechStarted) {
+    return SILENT("barge-in: candidate started speaking while interviewer was speaking");
+  }
+
+  // ── 2. Unfinalized turn ────────────────────────────────────────────────────
+  // Acting on a partial transcript means answering a question the candidate
+  // hasn't finished asking. Waiting costs a beat; guessing costs the illusion.
+  if (!ctx.turn || !ctx.turn.finalized) {
+    return SILENT("turn not finalized");
+  }
+
+  // ── 3. Mid-thought ─────────────────────────────────────────────────────────
+  // A pause is not a turn end. This single threshold is responsible for most of
+  // the unwanted-interruption metric.
+  if (ctx.turn.semanticEndProbability < ctx.policy.endOfTurnThreshold) {
+    return SILENT(
+      `semantic end probability ${ctx.turn.semanticEndProbability.toFixed(2)} below threshold ${ctx.policy.endOfTurnThreshold}`,
+    );
+  }
+
+  const { turn } = ctx;
+
+  // ── 4. The candidate asked something ───────────────────────────────────────
+  // Direct questions are the one case where silence is the wrong answer.
+  // Missed-response rate is a tracked metric precisely because a gate tuned for
+  // quiet will fail here first.
+  if (turn.intent === "EXPLICIT_QUESTION" || turn.intent === "CLARIFICATION_REQUEST") {
+    const fact = getClarificationFact({
+      scenario: deps.scenario,
+      utterance: turn.transcript,
+      state: ctx.state,
+      probeHistory: ctx.candidateState.probeHistory,
+    });
+
+    if (fact.answerable) {
+      return {
+        action: "ANSWER_CLARIFICATION",
+        reason: `canonical fact "${fact.factKey}"`,
+        decidedByRule: true,
+        factKey: fact.factKey,
+      };
+    }
+
+    // No canonical answer exists. The interviewer acknowledges and hands the
+    // decision back — it does not invent a constraint (invariant 3).
+    return {
+      action: "ACKNOWLEDGE_BRIEFLY",
+      reason: `no canonical answer (${fact.reason})`,
+      decidedByRule: true,
+    };
+  }
+
+  // ── 5. The candidate asked for help ────────────────────────────────────────
+  if (turn.intent === "HINT_REQUEST") {
+    const level = nextAllowedHintLevel({
+      policy: ctx.policy,
+      hintsUsed: ctx.candidateState.hintsUsed,
+    });
+
+    if (level === null) {
+      // Budget or ceiling exhausted. Silence, not a smaller hint — a mode that
+      // withholds help has to actually withhold it.
+      return SILENT("hint requested but budget or level ceiling exhausted");
+    }
+
+    return {
+      action: level === 1 ? "GIVE_HINT_L1" : "GIVE_HINT_L2",
+      reason: `hint requested, level ${level} permitted`,
+      decidedByRule: true,
+      hintLevel: level,
+    };
+  }
+
+  // ── 6. Small talk ──────────────────────────────────────────────────────────
+  if (turn.intent === "SOCIAL_SMALL_TALK") {
+    return ctx.policy.acknowledgeSmallTalk
+      ? { action: "ACKNOWLEDGE_BRIEFLY", reason: "small talk, policy acknowledges", decidedByRule: true }
+      : SILENT("small talk, policy does not acknowledge");
+  }
+
+  // ── 7. Follow-up ───────────────────────────────────────────────────────────
+  if (ctx.state === "FOLLOW_UP") {
+    const followUp = selectFollowUp(deps.scenario, triggerCtx(ctx, deps));
+    if (followUp) {
+      return {
+        action: "PRESENT_FOLLOW_UP",
+        reason: `follow-up "${followUp.id}" eligible`,
+        decidedByRule: true,
+        followUpId: followUp.id,
+      };
+    }
+  }
+
+  // ── 8. Stale observer state ────────────────────────────────────────────────
+  // Below here, every remaining action reasons about what the candidate is
+  // doing. If the observer hasn't caught up with the latest code revision, any
+  // probe risks commenting on code that no longer exists — a visible failure.
+  // Silence is cheap; being wrong out loud is not.
+  const observerBehind = ctx.latestCodeRevision - ctx.candidateState.derivedFromRevision;
+  if (observerBehind > 0 && ctx.secondsSinceCodeActivity < ctx.policy.maxCodeStalenessSeconds) {
+    return SILENT(
+      `observer behind by ${observerBehind} revision(s) and code is still moving`,
+    );
+  }
+
+  // ── 9. An authored probe is justified ──────────────────────────────────────
+  const probeCtx = triggerCtx(ctx, deps);
+  const probe = highestPriorityEligibleProbe(deps.scenario, probeCtx);
+  if (probe) {
+    if (!canProbeNow(probeCtx)) {
+      return SILENT(
+        `probe "${probe.id}" eligible but only ${ctx.secondsSinceInterviewerLastSpoke}s since last utterance (min ${ctx.policy.minSecondsBetweenProbes})`,
+      );
+    }
+    return {
+      action: "ASK_PROBE",
+      reason: `probe "${probe.id}": ${probe.questionIntent}`,
+      decidedByRule: true,
+      probeId: probe.id,
+      groundedInRevision: ctx.candidateState.derivedFromRevision,
+    };
+  }
+
+  // ── 10. The candidate is stuck ─────────────────────────────────────────────
+  // Unsolicited help is the biggest intervention the interviewer makes, so it
+  // sits last and requires a measurably stuck candidate, not merely a quiet one.
+  if (canHintNow(ctx.policy, ctx.candidateState.stuckScore, ctx.candidateState.hintsUsed.length)) {
+    const level = nextAllowedHintLevel({
+      policy: ctx.policy,
+      hintsUsed: ctx.candidateState.hintsUsed,
+    });
+    if (level !== null && level <= 2) {
+      return {
+        action: level === 1 ? "GIVE_HINT_L1" : "GIVE_HINT_L2",
+        reason: `stuck score ${ctx.candidateState.stuckScore.toFixed(2)} over threshold ${ctx.policy.stallThreshold}`,
+        decidedByRule: true,
+        hintLevel: level,
+        groundedInRevision: ctx.candidateState.derivedFromRevision,
+      };
+    }
+  }
+
+  // ── Default ────────────────────────────────────────────────────────────────
+  return SILENT("no rule authorized speech");
+}
+
+function triggerCtx(ctx: InterviewContext, deps: GateDependencies): ProbeSelectionContext {
+  return {
+    scenario: deps.scenario,
+    candidateState: ctx.candidateState,
+    state: ctx.state,
+    remainingMinutes: Math.floor(ctx.remainingSeconds / 60),
+    followUpsUsed: deps.followUpsUsed,
+    solvedOptimally: deps.solvedOptimally,
+    policy: ctx.policy,
+    probeUseCounts: deps.probeUseCounts,
+    secondsSinceInterviewerLastSpoke: ctx.secondsSinceInterviewerLastSpoke,
+  };
+}
