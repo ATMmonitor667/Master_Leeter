@@ -15,3 +15,6 @@ coverage/
 
 # pnpm scratch files (safe to delete)
 _tmp_*
+
+# Personal working notes, not project documentation
+docs/YOUR-TASKS.md
