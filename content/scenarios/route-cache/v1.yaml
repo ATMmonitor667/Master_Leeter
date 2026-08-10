@@ -1,0 +1,316 @@
+# Scenario: Route Cache
+#
+# ORIGINAL content. Framing, API shape, eviction rule, examples and follow-ups
+# authored for this product from the underlying algorithmic concept
+# (least-recently-used eviction).
+#
+# Pattern: API design under a constraint. Deliberately different in kind from the
+# other four — the candidate is asked to design a small class rather than a
+# function, so the interview observes interface decisions, not just an algorithm.
+
+id: route-cache@1
+scenarioId: route-cache
+version: 1
+status: ACTIVE
+
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  reviewNotes: >
+    Authored from the least-recently-used eviction concept. Delivery-routing framing,
+    method names, capacity semantics and both follow-ups are original to this product.
+    No third-party problem statement was consulted.
+  similarityCheck:
+    performedAt: "2026-08-10T00:00:00.000Z"
+    method: manual-review
+    result: CLEAR
+
+target:
+  level: SENIOR
+  topics: [data-structure-design, api-design, hashing, linked-lists]
+  expectedMinutes: 45
+
+oralBrief:
+  openingScript: >
+    We run a delivery routing service. Working out the best route between two depots
+    is expensive — it takes a couple of seconds — so we cache the results.
+
+    The problem is memory. We can only afford to hold a fixed number of routes, say a
+    thousand. When the cache is full and we need to store a new one, we have to throw
+    something out, and the sensible thing to throw out is whichever route we haven't
+    used in the longest time.
+
+    I'd like you to design that cache. Give me the class and its methods. Then we'll
+    talk about how it works underneath.
+
+    Ask me whatever you need first.
+
+  repeatVariants:
+    - >
+      Sure. Design a fixed-capacity cache for computed routes. When it's full and
+      something new arrives, evict whichever entry was used least recently. Show me the
+      class and its methods.
+    - >
+      Of course. A cache holding at most N routes. On insert into a full cache, drop the
+      one that hasn't been touched for longest. Design the interface, then the internals.
+
+facts:
+  - key: operations
+    value: Two operations — look up a route by depot pair, and store one.
+    disclosure: ALWAYS
+    askedAs:
+      - what operations do you need
+      - what methods should it have
+      - what's the interface
+
+  - key: lookup_counts_as_use
+    value: Yes. A successful lookup counts as using that entry — it becomes the most recently used.
+    disclosure: IF_ASKED
+    askedAs:
+      - does a read count as a use
+      - does lookup refresh recency
+      - does getting something make it recent
+
+  - key: miss_behavior
+    value: A lookup that isn't in the cache just reports a miss. The cache doesn't compute routes itself.
+    disclosure: IF_ASKED
+    askedAs:
+      - what happens on a miss
+      - should the cache compute the route
+      - what does lookup return if absent
+
+  - key: overwrite
+    value: Storing a key that's already there replaces the value and refreshes its recency.
+    disclosure: IF_ASKED
+    askedAs:
+      - what if the key already exists
+      - can you store the same key twice
+      - what happens on overwrite
+
+  - key: capacity
+    value: Capacity is fixed at construction and is at least one.
+    disclosure: IF_ASKED
+    askedAs:
+      - can capacity change
+      - can capacity be zero
+      - is capacity fixed
+
+  - key: concurrency
+    value: Single-threaded for now. Assume one caller.
+    disclosure: IF_ASKED
+    askedAs:
+      - is it thread safe
+      - do I need locks
+      - is it concurrent
+
+  - key: performance_target
+    value: Both operations should be constant time. It sits on a hot path.
+    disclosure: IF_ASKED
+    askedAs:
+      - what performance do you need
+      - how fast should lookup be
+      - is O(n) acceptable
+
+  # Held back. A candidate who reaches for a list-scan to find the oldest entry
+  # has designed something correct and slow, and noticing that themselves is the
+  # observation worth having.
+  - key: scan_defeats_purpose
+    value: >
+      Right — if finding the least recently used entry means scanning, the cache costs
+      you time on every insert, which partly defeats the point of caching at all.
+    disclosure: AFTER_PROBE
+    askedAs:
+      - is scanning to find the oldest ok
+      - can I just search for the minimum timestamp
+      - does eviction need to be constant time
+
+examples:
+  - input: "capacity 2; store A; store B; lookup A; store C"
+    output: "B evicted"
+    note: The lookup of A made B the least recently used.
+  - input: "capacity 1; store A; store B; lookup A"
+    output: "miss"
+  - input: "capacity 2; store A; store A again"
+    output: "no eviction"
+    note: Overwrite, not insert.
+
+visibleStarterTests:
+  - id: t-basic
+    input: "2|put A|put B|get A|put C|get B"
+    expectedOutput: "MISS"
+    hidden: false
+    description: B was evicted because A's lookup refreshed it.
+
+hiddenTests:
+  - id: h-capacity-one
+    input: "1|put A|put B|get A"
+    expectedOutput: "MISS"
+    hidden: true
+  - id: h-overwrite-no-evict
+    input: "2|put A|put A|put B|get A"
+    expectedOutput: "HIT"
+    hidden: true
+    description: Overwrite must not count against capacity.
+  - id: h-get-refreshes
+    input: "2|put A|put B|get A|put C|get A"
+    expectedOutput: "HIT"
+    hidden: true
+    description: Catches implementations where only writes update recency.
+  - id: h-miss-does-not-refresh
+    input: "2|put A|put B|get Z|put C|get A"
+    expectedOutput: "MISS"
+    hidden: true
+    description: >
+      A miss on an absent key must not disturb ordering. Catches implementations that
+      touch the recency structure before checking membership.
+  - id: h-repeated-get
+    input: "2|put A|put B|get B|get B|put C|get A"
+    expectedOutput: "MISS"
+    hidden: true
+
+solutionFamilies:
+  - id: sf-hash-linked-list
+    name: Hash map plus doubly linked list
+    timeComplexity: O(1)
+    spaceComplexity: O(capacity)
+    isOptimal: true
+    recognitionSignals:
+      - a dict mapping key to node
+      - node objects with previous and next references
+      - explicit unlink and move-to-front helpers
+      - head and tail sentinels
+    invariants:
+      - The list is ordered by recency; the tail is always the eviction candidate.
+      - Every key in the map has exactly one node in the list, and vice versa.
+    failureModes:
+      - forgets to remove the evicted key from the map, leaking entries
+      - pointer surgery drops a neighbour link on unlink
+      - misses the sentinel case when the list has one element
+
+  - id: sf-ordered-dict
+    name: Language-provided ordered map
+    timeComplexity: O(1)
+    spaceComplexity: O(capacity)
+    isOptimal: true
+    recognitionSignals:
+      - imports OrderedDict, or relies on insertion-ordered dicts
+      - move_to_end or delete-and-reinsert on access
+    invariants:
+      - Insertion order stands in for recency, maintained on every access.
+    failureModes:
+      - forgets to refresh order on a read
+      - relies on dict ordering guarantees without stating the assumption
+
+  - id: sf-timestamp-scan
+    name: Timestamps with a scan to evict
+    timeComplexity: O(n) per eviction
+    spaceComplexity: O(capacity)
+    isOptimal: false
+    recognitionSignals:
+      - a counter or clock stored per entry
+      - a loop over all entries to find the minimum
+    invariants:
+      - Correct, but eviction cost grows with capacity.
+    failureModes:
+      - eviction on a hot path costs more than the cache saves
+      - counter overflow or reuse never considered
+
+probes:
+  - id: interface_first
+    trigger: state == APPROACH_EXPLORATION && currentApproach.present
+    questionIntent: >
+      Test whether the candidate designs the interface before the internals, and can
+      justify the shape they chose.
+    authoredVariants:
+      - Before the internals — what does a caller see, and what does a miss look like to them?
+      - Why those method names and return types rather than something else?
+    maxUses: 1
+    priority: 85
+
+  - id: eviction_cost
+    trigger: detectedFamily == sf-timestamp-scan
+    questionIntent: Surface that eviction is on the hot path, without saying so.
+    authoredVariants:
+      - How long does an insert take when the cache is full?
+      - What's the cost you're paying on every eviction, and how does it grow?
+    maxUses: 1
+    priority: 95
+
+  - id: complexity_claim
+    trigger: claimedTime.present && claimedTime != detectedFamily.timeComplexity
+    questionIntent: Test whether a constant-time claim covers eviction too.
+    authoredVariants:
+      - Does that bound hold for the insert that triggers an eviction?
+      - Which operation is the expensive one, if any?
+    maxUses: 2
+    priority: 100
+
+  - id: read_refreshes
+    trigger: milestone(FIRST_COMPILES)
+    questionIntent: Probe the defect the hidden tests are built around.
+    authoredVariants:
+      - Does a lookup change anything about the cache's state?
+      - Walk me through what happens to ordering when I read a key twice in a row.
+    maxUses: 1
+    priority: 80
+
+  - id: invariant_proof
+    trigger: milestone(BASE_TESTS_PASS)
+    questionIntent: Test whether the two-structure invariant is understood, not just typed.
+    authoredVariants:
+      - What has to stay true between your map and your list at all times?
+      - What breaks if those two ever disagree?
+    maxUses: 1
+    priority: 60
+
+  - id: repeated_failure_trace
+    trigger: milestone(REPEATED_SAME_FAILURE)
+    questionIntent: Redirect toward diagnosis rather than revealing the defect.
+    authoredVariants:
+      - Print the order of your list after each operation in the failing case.
+      - Which key is in the wrong place, and which operation put it there?
+    maxUses: 2
+    priority: 90
+
+hintLadder:
+  - level: 1
+    text: You need two different things quickly — find by key, and find the oldest. Consider whether one structure gives you both.
+    scoreImpact: 0.05
+  - level: 2
+    text: Finding the least recently used entry by searching costs you time on every insert. What would let you know it immediately?
+    scoreImpact: 0.15
+  - level: 3
+    text: Consider keeping the entries in an order you maintain as you go, so the eviction candidate is always at one end, with a map for direct lookup.
+    scoreImpact: 0.3
+  - level: 4
+    text: A hash map from key to a node in a doubly linked list. Every access unlinks the node and moves it to the front. Eviction takes the node at the back and deletes its key from the map.
+    scoreImpact: 0.5
+
+followUps:
+  - id: fu-thread-safety
+    trigger: solvedOptimally && remainingMinutes >= 8
+    oralDelta: >
+      Now several threads use this cache at once. What breaks, and what would you do
+      about it?
+    rubricDelta:
+      adaptability: 0.1
+      approach: 0.05
+    expectedAdaptation: >
+      Identifies that read operations mutate the recency structure, so even lookups
+      need synchronization — the surprising part. Should weigh a single lock against
+      sharding, and notice that fine-grained locking over a linked list is hard because
+      every access touches the head.
+
+  - id: fu-ttl
+    trigger: solvedOptimally && remainingMinutes >= 6 && !usedFollowUp(fu-thread-safety)
+    oralDelta: >
+      Routes go stale — a road closes. Say every entry also expires ten minutes after it
+      was computed. How does the design change?
+    rubricDelta:
+      adaptability: 0.05
+    expectedAdaptation: >
+      Recognizes recency order and expiry order are different orderings over the same
+      entries, so one structure can no longer serve both. Should consider lazy expiry on
+      read versus a second structure ordered by expiry time, and discuss the trade.
+
+rubricId: rubric-coding-v1

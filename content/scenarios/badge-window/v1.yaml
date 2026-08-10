@@ -1,0 +1,293 @@
+# Scenario: Badge Window
+#
+# ORIGINAL content. Framing, variable model, examples and follow-ups authored for
+# this product from the underlying algorithmic concept (longest substring without
+# repetition).
+#
+# Pattern: sliding window. Chosen because the naive answer is easy to state and
+# the optimal one requires noticing that the left edge never moves backwards —
+# a genuinely interesting thing to watch someone realize out loud.
+
+id: badge-window@1
+scenarioId: badge-window
+version: 1
+status: ACTIVE
+
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  reviewNotes: >
+    Authored from the longest-window-without-repeats concept. Security-desk framing,
+    badge model, return contract and both follow-ups are original to this product.
+    No third-party problem statement was consulted.
+  similarityCheck:
+    performedAt: "2026-08-10T00:00:00.000Z"
+    method: manual-review
+    result: CLEAR
+
+target:
+  level: MID
+  topics: [sliding-window, hashing, sequences]
+  expectedMinutes: 40
+
+oralBrief:
+  openingScript: >
+    Picture a security desk at an office. Every time somebody badges in, we record
+    their badge id, and we end up with the sequence of badge-ins for the day, in
+    order.
+
+    We're interested in stretches of the day where nobody badged in twice. So: a run
+    of consecutive badge-ins where every id in that run is different.
+
+    I'd like you to write a function that takes the day's badge-ins and tells me the
+    length of the longest such stretch.
+
+    Take a moment, and ask me whatever you need.
+
+  repeatVariants:
+    - >
+      Sure. You have the day's badge-ins as a sequence, in order. Find the longest run
+      of consecutive badge-ins in which no badge id repeats, and return its length.
+    - >
+      Of course. Given the ordered list of badge scans, what is the length of the
+      longest consecutive stretch with no repeated badge?
+
+facts:
+  - key: consecutive
+    value: The stretch has to be consecutive badge-ins. You can't skip over people.
+    disclosure: ALWAYS
+    askedAs:
+      - does it have to be contiguous
+      - can I skip entries
+      - is it a subsequence or a substring
+
+  - key: return_value
+    value: Return the length, not the stretch itself.
+    disclosure: IF_ASKED
+    askedAs:
+      - what do I return
+      - do you want the length or the actual run
+      - should I return the indices
+
+  - key: empty_input
+    value: A day can have no badge-ins at all. Return zero.
+    disclosure: IF_ASKED
+    askedAs:
+      - can the list be empty
+      - what if nobody badged in
+
+  - key: badge_type
+    value: Treat badge ids as opaque strings. Don't assume a small alphabet.
+    disclosure: IF_ASKED
+    askedAs:
+      - what type are the ids
+      - are badges numbers
+      - is the alphabet bounded
+
+  - key: input_size
+    value: A busy day is a few hundred thousand scans. It fits in memory.
+    disclosure: IF_ASKED
+    askedAs:
+      - how big is the input
+      - how many scans
+      - does it fit in memory
+
+  - key: ties
+    value: If several stretches tie for longest, the length is the same either way — just return it.
+    disclosure: IF_ASKED
+    askedAs:
+      - what if there are ties
+      - what if two stretches are equal
+
+  # Held back. The realization that the left edge only ever moves forward is the
+  # insight this scenario exists to observe.
+  - key: left_edge_monotonic
+    value: >
+      Right — once you've moved the start of the window past a position, you never need
+      to go back to it, which is what turns the repeated rescanning into a single pass.
+    disclosure: AFTER_PROBE
+    askedAs:
+      - does the window ever move backwards
+      - can the start go back
+      - do I need to restart the scan
+
+examples:
+  - input: "[A, B, C, A, D]"
+    output: "3"
+    note: B, C, A — or A, B, C. Both length 3.
+  - input: "[A, A, A]"
+    output: "1"
+  - input: "[]"
+    output: "0"
+
+visibleStarterTests:
+  - id: t-basic
+    input: "A B C A D"
+    expectedOutput: "3"
+    hidden: false
+
+hiddenTests:
+  - id: h-empty
+    input: ""
+    expectedOutput: "0"
+    hidden: true
+  - id: h-all-same
+    input: "A A A A"
+    expectedOutput: "1"
+    hidden: true
+  - id: h-all-unique
+    input: "A B C D E"
+    expectedOutput: "5"
+    hidden: true
+    description: The whole day qualifies.
+  - id: h-single
+    input: "A"
+    expectedOutput: "1"
+    hidden: true
+  - id: h-repeat-outside-window
+    input: "A B C B D E F"
+    expectedOutput: "5"
+    hidden: true
+    description: >
+      Catches the classic defect — resetting the window start to just after the first
+      occurrence rather than to the maximum of that and the current start.
+  - id: h-late-best
+    input: "A A B C D E"
+    expectedOutput: "5"
+    hidden: true
+    description: The best stretch is at the end; catches early returns.
+
+solutionFamilies:
+  - id: sf-sliding-window
+    name: Sliding window with last-seen map
+    timeComplexity: O(n)
+    spaceComplexity: O(n)
+    isOptimal: true
+    recognitionSignals:
+      - a dict or map from id to index
+      - a left/start variable that only increases
+      - single loop with a running max
+    invariants:
+      - The window from start to the current index contains no repeats.
+      - Start never decreases, so each element enters and leaves the window once.
+    failureModes:
+      - moves start backwards on a repeat outside the current window
+      - updates the max before shrinking the window
+      - stores a boolean rather than an index, losing the information needed to jump
+
+  - id: sf-set-shrink
+    name: Sliding window with a set
+    timeComplexity: O(n)
+    spaceComplexity: O(n)
+    isOptimal: true
+    recognitionSignals:
+      - a set of ids currently in the window
+      - an inner while loop removing from the left until the repeat is gone
+    invariants:
+      - The set holds exactly the ids between start and the current index.
+    failureModes:
+      - forgets to discard from the set when advancing start
+      - inner loop condition off by one
+
+  - id: sf-nested-scan
+    name: Check every stretch
+    timeComplexity: O(n^2)
+    spaceComplexity: O(n)
+    isOptimal: false
+    recognitionSignals:
+      - two nested loops over positions
+      - a fresh set or dict built inside the outer loop
+    invariants:
+      - Correct, but re-examines positions the window has already cleared.
+    failureModes:
+      - too slow at the stated input size
+
+probes:
+  - id: complexity_claim
+    trigger: claimedTime.present && claimedTime != detectedFamily.timeComplexity
+    questionIntent: Test whether an asymptotic claim survives contact with the code.
+    authoredVariants:
+      - How many times does a single badge get looked at, across the whole run?
+      - Walk me through that bound — where does the n come from?
+    maxUses: 2
+    priority: 100
+
+  - id: window_direction
+    trigger: detectedFamily == sf-nested-scan
+    questionIntent: >
+      Surface the monotonic-left-edge insight through a question rather than by
+      stating it.
+    authoredVariants:
+      - When you find a repeat, how far back do you actually have to go?
+      - Is there anything you learned in the first pass that the second pass repeats?
+    maxUses: 1
+    priority: 95
+
+  - id: why_this_structure
+    trigger: currentApproach.present && state == APPROACH_EXPLORATION
+    questionIntent: Test whether the data-structure choice was reasoned or reflexive.
+    authoredVariants:
+      - What are you storing in that map, and why the index rather than a flag?
+      - What does that structure give you that a list wouldn't?
+    maxUses: 1
+    priority: 60
+
+  - id: edge_repeat_outside
+    trigger: milestone(BASE_TESTS_PASS)
+    questionIntent: Probe the defect the hidden tests are built around, without naming it.
+    authoredVariants:
+      - What happens when you meet a badge you've seen, but seen before the window started?
+      - Are there inputs where your start jumps somewhere you didn't intend?
+    maxUses: 1
+    priority: 80
+
+  - id: repeated_failure_trace
+    trigger: milestone(REPEATED_SAME_FAILURE)
+    questionIntent: Redirect toward diagnosis rather than revealing the defect.
+    authoredVariants:
+      - Step through the failing case and say where start and the index are each time.
+      - What did you expect that case to return, and where does it first diverge?
+    maxUses: 2
+    priority: 90
+
+hintLadder:
+  - level: 1
+    text: Think about what has to be true of the stretch you're currently looking at.
+    scoreImpact: 0.05
+  - level: 2
+    text: You're re-checking positions you've already cleared. Is there a way to keep a stretch and adjust it, rather than rebuilding it?
+    scoreImpact: 0.15
+  - level: 3
+    text: Consider a window with a start and an end. Move the end forward one at a time, and when the new badge is already inside, move the start forward.
+    scoreImpact: 0.3
+  - level: 4
+    text: Keep a map from badge to the last index you saw it. Walk an end pointer forward; on a repeat, set start to the max of its current value and one past that last index. Track the best length as you go.
+    scoreImpact: 0.5
+
+followUps:
+  - id: fu-return-window
+    trigger: solvedOptimally && remainingMinutes >= 6
+    oralDelta: >
+      Now I want the actual stretch, not just its length — the badges in order. What
+      changes?
+    rubricDelta:
+      adaptability: 0.05
+    expectedAdaptation: >
+      Records the start index alongside the best length rather than reconstructing
+      afterwards. Should notice this is a small change precisely because the window
+      bounds were already being tracked.
+
+  - id: fu-at-most-two
+    trigger: solvedOptimally && remainingMinutes >= 10 && !usedFollowUp(fu-return-window)
+    oralDelta: >
+      Change the rule slightly. A stretch is now allowed as long as no badge appears
+      more than twice in it. How does your approach adapt?
+    rubricDelta:
+      adaptability: 0.1
+      approach: 0.05
+    expectedAdaptation: >
+      Replaces the last-seen index map with a count map, and shrinks from the left
+      while any count exceeds two. Should recognize the window structure survives and
+      only the admission condition changes.
+
+rubricId: rubric-coding-v1

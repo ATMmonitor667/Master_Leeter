@@ -14,7 +14,8 @@ which needs human graders. M5-1 half done — the code-derived half of Candidate
 the transcript half waits on the intent classifier (M4-1).
 
 The loop is closed end to end without voice: pick a scenario, write and run code, end the
-session, read an evidence-backed report.
+session, read an evidence-backed report. Five scenarios in the library, covering hashing,
+two pointers, sliding window, top-k selection, and data-structure design.
 
 Two components are written but UNVERIFIED against real infrastructure, and are marked as
 such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (no Judge0
@@ -303,7 +304,7 @@ OpenTelemetry traces joining audio turns → gate decisions → model calls → 
 ### `[ ]` M7-3 · Privacy controls · M
 No raw audio by default; session and account deletion propagating to transcripts, derived reports, and analytics; consent surface.
 
-### `[ ]` M7-4 · Scenarios #2–5 · L
+### `[x]` M7-4 · Scenarios #2–5 · L
 Authored, reviewed, provenance recorded.
 
 ### `[ ]` M7-5 · Eval dashboard · M

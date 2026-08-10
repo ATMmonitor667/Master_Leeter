@@ -1,0 +1,308 @@
+# Scenario: Parts Bin
+#
+# ORIGINAL content. Framing, variable model, tie rule, examples and follow-ups
+# authored for this product from the underlying algorithmic concept (top-k by
+# frequency).
+#
+# Pattern: counting plus partial selection. Chosen because the interesting
+# decision is *not* the counting — it's whether the candidate reaches for a full
+# sort without noticing k is small, and whether they can defend the difference.
+
+id: parts-bin@1
+scenarioId: parts-bin
+version: 1
+status: ACTIVE
+
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  reviewNotes: >
+    Authored from the top-k-by-frequency concept. Warehouse parts framing, request
+    model, alphabetical tie rule and both follow-ups are original to this product.
+    No third-party problem statement was consulted.
+  similarityCheck:
+    performedAt: "2026-08-10T00:00:00.000Z"
+    method: manual-review
+    result: CLEAR
+
+target:
+  level: MID
+  topics: [hashing, heaps, sorting, selection]
+  expectedMinutes: 35
+
+oralBrief:
+  openingScript: >
+    We run a parts store for a repair shop. Every time a technician needs something,
+    they log the part number they requested. Over a month that's a long list, with
+    plenty of repeats — some parts get requested constantly, most barely at all.
+
+    We want to know what to keep on the front shelf. So I'd like a function that takes
+    the month's requests and a number k, and gives back the k most frequently
+    requested part numbers.
+
+    Go ahead and ask me anything.
+
+  repeatVariants:
+    - >
+      Sure. You get a list of part numbers, one per request, with repeats. And a number
+      k. Return the k part numbers that were requested most often.
+    - >
+      Of course. A month of part requests, and a number k. Which k parts came up most
+      often?
+
+facts:
+  - key: order_of_output
+    value: Most frequent first.
+    disclosure: ALWAYS
+    askedAs:
+      - what order should the output be in
+      - does the output need to be sorted
+      - most frequent first or last
+
+  - key: ties
+    value: If two parts have the same count, put the lower part number first. Alphabetical order.
+    disclosure: IF_ASKED
+    askedAs:
+      - how do I break ties
+      - what if counts are equal
+      - what order for ties
+
+  - key: k_larger_than_distinct
+    value: If k is bigger than the number of distinct parts, return all of them.
+    disclosure: IF_ASKED
+    askedAs:
+      - what if k is too big
+      - what if k is larger than the list
+      - what if there aren't k distinct parts
+
+  - key: k_zero
+    value: k can be zero. Return nothing.
+    disclosure: IF_ASKED
+    askedAs:
+      - can k be zero
+      - what if k is 0
+
+  - key: part_type
+    value: Part numbers are opaque strings. Don't assume they're numeric.
+    disclosure: IF_ASKED
+    askedAs:
+      - what type are part numbers
+      - are they integers
+      - are part numbers numeric
+
+  - key: sizes
+    value: >
+      About a million requests a month, but only a few thousand distinct parts. k is
+      usually ten or twenty.
+    disclosure: IF_ASKED
+    askedAs:
+      - how big is the input
+      - how many distinct parts
+      - how big is k
+
+  # Held back. That k is tiny relative to the number of distinct parts is the
+  # whole reason a full sort is the wrong instinct — but a candidate who asks
+  # about sizes gets told, and one who assumes gets probed.
+  - key: k_much_smaller
+    value: >
+      Right — k is tiny compared to the number of distinct parts, so ordering all of them
+      does far more work than the question asks for.
+    disclosure: AFTER_PROBE
+    askedAs:
+      - is sorting everything fine
+      - does k matter for complexity
+      - is a full sort ok
+
+examples:
+  - input: "requests=[A, B, A, C, A, B], k=2"
+    output: "[A, B]"
+    note: A three times, B twice.
+  - input: "requests=[A, B], k=5"
+    output: "[A, B]"
+    note: Fewer distinct parts than k.
+  - input: "requests=[B, A], k=1"
+    output: "[A]"
+    note: Both appear once; A wins the tie alphabetically.
+
+visibleStarterTests:
+  - id: t-basic
+    input: "2|A B A C A B"
+    expectedOutput: "A B"
+    hidden: false
+
+hiddenTests:
+  - id: h-k-zero
+    input: "0|A B C"
+    expectedOutput: ""
+    hidden: true
+  - id: h-empty-requests
+    input: "3|"
+    expectedOutput: ""
+    hidden: true
+  - id: h-k-too-big
+    input: "10|A B"
+    expectedOutput: "A B"
+    hidden: true
+  - id: h-all-tied
+    input: "3|C B A"
+    expectedOutput: "A B C"
+    hidden: true
+    description: Every count is one; alphabetical order decides. Catches unstable ordering.
+  - id: h-tie-at-boundary
+    input: "2|A A B B C"
+    expectedOutput: "A B"
+    hidden: true
+    description: The cut falls exactly on a tie between B and C.
+  - id: h-single-part
+    input: "1|A A A A"
+    expectedOutput: "A"
+    hidden: true
+
+solutionFamilies:
+  - id: sf-count-heap
+    name: Count then k-sized heap
+    timeComplexity: O(n + d log k)
+    spaceComplexity: O(d)
+    isOptimal: true
+    recognitionSignals:
+      - a dict of counts built in one pass
+      - imports heapq or maintains a bounded structure
+      - pushes and pops to keep the structure at size k
+    invariants:
+      - The heap holds the k best seen so far, with the weakest at the root.
+    failureModes:
+      - tie rule inverted because the heap orders tuples the wrong way
+      - heap grown to full size, giving no advantage over sorting
+
+  - id: sf-count-sort
+    name: Count then sort everything
+    timeComplexity: O(n + d log d)
+    spaceComplexity: O(d)
+    isOptimal: false
+    recognitionSignals:
+      - a dict of counts
+      - a sort over all distinct items, then a slice of the first k
+    invariants:
+      - Correct; orders far more than the question asked for.
+    failureModes:
+      - sort key doesn't encode the tie rule
+      - slices before sorting
+
+  - id: sf-repeated-max
+    name: Repeatedly take the maximum
+    timeComplexity: O(n + dk)
+    spaceComplexity: O(d)
+    isOptimal: false
+    recognitionSignals:
+      - a loop running k times, each scanning all counts
+    invariants:
+      - Fine when k is truly tiny; degrades as k grows.
+    failureModes:
+      - forgets to exclude already-selected parts
+      - tie handling inconsistent between iterations
+
+  - id: sf-nested-count
+    name: Count by rescanning
+    timeComplexity: O(n^2)
+    spaceComplexity: O(1)
+    isOptimal: false
+    recognitionSignals:
+      - two nested loops over the request list
+      - no counting dictionary
+    invariants:
+      - Each part's count is recomputed from scratch rather than accumulated.
+    failureModes:
+      - far too slow at a million requests
+      - counts each part once per occurrence, inflating results
+
+probes:
+  - id: complexity_claim
+    trigger: claimedTime.present && claimedTime != detectedFamily.timeComplexity
+    questionIntent: Test whether the candidate distinguishes n from d and k in their own bound.
+    authoredVariants:
+      - You said that bound — which n is that, the requests or the distinct parts?
+      - Where does k appear in your complexity?
+    maxUses: 2
+    priority: 100
+
+  - id: full_sort_cost
+    trigger: detectedFamily == sf-count-sort
+    questionIntent: >
+      Test whether the candidate notices they ordered thousands of items to answer a
+      question about ten.
+    authoredVariants:
+      - How many parts does your solution put in order, and how many does the answer need?
+      - If k is ten and there are five thousand parts, what are you spending?
+    maxUses: 1
+    priority: 95
+
+  - id: tie_rule
+    trigger: milestone(FIRST_COMPILES)
+    questionIntent: Test whether the tie rule was encoded or assumed away.
+    authoredVariants:
+      - What does your solution do when two parts have the same count?
+      - Is your ordering deterministic if I run it twice on the same input?
+    maxUses: 1
+    priority: 75
+
+  - id: invariant_proof
+    trigger: milestone(BASE_TESTS_PASS)
+    questionIntent: Test whether correctness of the selection can be argued.
+    authoredVariants:
+      - Convince me the part you discarded could never have belonged in the answer.
+      - What's true about your structure at the moment you return?
+    maxUses: 1
+    priority: 55
+
+  - id: repeated_failure_trace
+    trigger: milestone(REPEATED_SAME_FAILURE)
+    questionIntent: Redirect toward diagnosis rather than revealing the defect.
+    authoredVariants:
+      - Print your counts for the failing case and tell me what you expected.
+      - Which part is in the wrong position, and what's its count?
+    maxUses: 2
+    priority: 90
+
+hintLadder:
+  - level: 1
+    text: Start with what you need to know about each part before you can rank anything.
+    scoreImpact: 0.05
+  - level: 2
+    text: Once you have the counts, think about how much of that collection the answer actually depends on.
+    scoreImpact: 0.15
+  - level: 3
+    text: Consider keeping only the best k as you go, rather than ordering every distinct part and then discarding most of them.
+    scoreImpact: 0.3
+  - level: 4
+    text: One pass to build a count map. Then walk the distinct parts, pushing each onto a heap and popping whenever it exceeds size k, so the heap always holds the current best k.
+    scoreImpact: 0.5
+
+followUps:
+  - id: fu-streaming-counts
+    trigger: solvedOptimally && remainingMinutes >= 8
+    oralDelta: >
+      Now the requests arrive as a continuous stream and we can't keep a count for every
+      part — there are far too many. We'd accept an approximate answer. How would you
+      think about that?
+    rubricDelta:
+      adaptability: 0.1
+      approach: 0.05
+    expectedAdaptation: >
+      Recognizes exact counting needs space proportional to distinct items, and reaches
+      for bounded-memory approximation — count-min sketch, or a fixed-size heavy-hitters
+      structure. Should be explicit that the answer becomes approximate and say what
+      kind of error is possible.
+
+  - id: fu-time-window
+    trigger: solvedOptimally && remainingMinutes >= 5 && !usedFollowUp(fu-streaming-counts)
+    oralDelta: >
+      Different variation. We want the top k for the last thirty days only, and the
+      window slides forward each day. What changes?
+    rubricDelta:
+      adaptability: 0.05
+    expectedAdaptation: >
+      Notices counts must now be decrementable as old requests expire, so the count map
+      needs per-day buckets or a deque of daily counts. Should spot that a heap built
+      once no longer stays correct as counts fall.
+
+rubricId: rubric-coding-v1

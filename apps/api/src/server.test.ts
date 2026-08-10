@@ -37,10 +37,14 @@ describe("GET /v1/scenarios", () => {
   it("returns the catalogue", async () => {
     const res = await app().inject({ method: "GET", url: "/v1/scenarios" });
     expect(res.statusCode).toBe(200);
-    expect(res.json().scenarios[0]).toMatchObject({
-      ref: scenarioRef("conveyor-rescan@1"),
-      level: "MID",
-    });
+
+    // Looked up by ref, not by index — catalogue order follows directory read
+    // order, so an index assertion breaks every time a scenario is added.
+    const entry = res
+      .json()
+      .scenarios.find((s: { ref: string }) => s.ref === scenarioRef("conveyor-rescan@1"));
+    expect(entry).toMatchObject({ level: "MID" });
+    expect(entry.topics.length).toBeGreaterThan(0);
   });
 
   it("leaks nothing the candidate must not read", async () => {

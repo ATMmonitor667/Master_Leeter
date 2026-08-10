@@ -1,0 +1,294 @@
+# Scenario: Shift Handover
+#
+# ORIGINAL content. Framing, variable model, examples, constraints and follow-up
+# structure authored for this product from the underlying algorithmic concept
+# (merging two sorted sequences).
+#
+# Pattern: two pointers over sorted inputs. Chosen because the naive answer —
+# concatenate and sort — is correct but throws away the sortedness, which makes
+# it a good test of whether the candidate notices what they were given.
+
+id: shift-handover@1
+scenarioId: shift-handover
+version: 1
+status: ACTIVE
+
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  reviewNotes: >
+    Authored from the merge-two-sorted-sequences concept. Maintenance-log framing,
+    timestamp model, tie-breaking rule and the k-way follow-up are original to this
+    product. No third-party problem statement was consulted.
+  similarityCheck:
+    performedAt: "2026-08-10T00:00:00.000Z"
+    method: manual-review
+    result: CLEAR
+    notes: Standard algorithmic idea; expression is original.
+
+target:
+  level: MID
+  topics: [two-pointers, sorting, merging]
+  expectedMinutes: 35
+
+oralBrief:
+  openingScript: >
+    Here's the setup. We run a factory floor with two maintenance crews, a day shift
+    and a night shift, and each crew keeps its own log. Every time they service a
+    machine they write down a timestamp and what they did.
+
+    At the end of the week we want one combined log. Each crew's log is already in
+    chronological order — they wrote it as they went — but obviously the two logs
+    interleave with each other.
+
+    Write a function that takes the two logs and returns a single log with all the
+    entries in chronological order.
+
+    Ask me anything before you start.
+
+  repeatVariants:
+    - >
+      Sure. Two maintenance crews, each with their own log of timestamped entries.
+      Each log is already in chronological order on its own. Combine them into one
+      log that is in chronological order overall.
+    - >
+      Of course. You get two logs. Each is sorted by time already. Return one merged
+      log, still sorted by time.
+
+facts:
+  - key: already_sorted
+    value: Yes — each log is already in chronological order on its own. That's stated.
+    disclosure: ALWAYS
+    askedAs:
+      - are they sorted
+      - is each log in order
+      - are the inputs sorted already
+
+  - key: duplicate_timestamps
+    value: Yes, two entries can share a timestamp, including one from each crew.
+    disclosure: IF_ASKED
+    askedAs:
+      - can timestamps be equal
+      - can two entries have the same time
+      - are timestamps unique
+
+  - key: tie_order
+    value: If timestamps tie, put the day-shift entry first. It's an arbitrary rule, but it has to be consistent.
+    disclosure: IF_ASKED
+    askedAs:
+      - what order for ties
+      - which one comes first if equal
+      - how do I break ties
+
+  - key: empty_logs
+    value: Either log can be empty, and both can be empty. Return whatever's left, or nothing.
+    disclosure: IF_ASKED
+    askedAs:
+      - can a log be empty
+      - what if one is empty
+      - what about empty input
+
+  - key: sizes
+    value: A week is a few thousand entries per crew. Both fit in memory comfortably.
+    disclosure: IF_ASKED
+    askedAs:
+      - how big are the logs
+      - how many entries
+      - do they fit in memory
+
+  - key: mutation_allowed
+    value: Don't modify the inputs. Return a new log.
+    disclosure: IF_ASKED
+    askedAs:
+      - can I modify the inputs
+      - can I mutate the lists
+      - is the input mutable
+
+  # Held back: a candidate who concatenates and sorts gets the right answer while
+  # discarding the one property that makes the problem interesting. Better
+  # discovered under a probe than pre-empted.
+  - key: sorting_wastes_structure
+    value: >
+      Right — concatenating and sorting is correct, but it re-derives an ordering you
+      were already handed, so it costs more than it needs to.
+    disclosure: AFTER_PROBE
+    askedAs:
+      - can I just sort
+      - why not concatenate and sort
+      - is sorting fine
+
+examples:
+  - input: "day=[9:00 oil, 11:30 belt], night=[10:15 filter]"
+    output: "[9:00 oil, 10:15 filter, 11:30 belt]"
+  - input: "day=[], night=[2:00 lamp]"
+    output: "[2:00 lamp]"
+  - input: "day=[8:00 a], night=[8:00 b]"
+    output: "[8:00 a, 8:00 b]"
+    note: Tie goes to the day shift.
+
+visibleStarterTests:
+  - id: t-basic
+    input: "900,1130|1015"
+    expectedOutput: "900,1015,1130"
+    hidden: false
+    description: The example from the conversation.
+
+hiddenTests:
+  - id: h-both-empty
+    input: "|"
+    expectedOutput: ""
+    hidden: true
+  - id: h-one-empty
+    input: "|200,400"
+    expectedOutput: "200,400"
+    hidden: true
+  - id: h-tie
+    input: "800|800"
+    expectedOutput: "800,800"
+    hidden: true
+    description: Day shift first on a tie.
+  - id: h-disjoint
+    input: "100,200,300|700,800"
+    expectedOutput: "100,200,300,700,800"
+    hidden: true
+    description: One log entirely precedes the other; catches a missing tail drain.
+  - id: h-interleaved
+    input: "100,300,500|200,400,600"
+    expectedOutput: "100,200,300,400,500,600"
+    hidden: true
+  - id: h-lopsided
+    input: "100|200,300,400,500,600"
+    expectedOutput: "100,200,300,400,500,600"
+    hidden: true
+    description: Catches a loop that stops when the shorter list runs out.
+
+solutionFamilies:
+  - id: sf-two-pointer
+    name: Two-pointer merge
+    timeComplexity: O(n + m)
+    spaceComplexity: O(n + m)
+    isOptimal: true
+    recognitionSignals:
+      - two index variables advanced independently
+      - single while loop comparing heads
+      - explicit tail drain after the main loop
+    invariants:
+      - Everything already appended is in order and precedes both remaining heads.
+      - Each iteration advances exactly one pointer, so the loop terminates.
+    failureModes:
+      - forgets to drain the remaining tail when one log runs out
+      - advances both pointers on a tie, dropping an entry
+      - off-by-one on the loop bound
+
+  - id: sf-concat-sort
+    name: Concatenate then sort
+    timeComplexity: O((n + m) log(n + m))
+    spaceComplexity: O(n + m)
+    isOptimal: false
+    recognitionSignals:
+      - list concatenation followed by a sort call
+    invariants:
+      - Correct, but re-derives an ordering that was already given.
+    failureModes:
+      - an unstable sort breaks the tie rule
+      - discards the input structure entirely
+
+  - id: sf-heap
+    name: Heap-based merge
+    timeComplexity: O((n + m) log k)
+    spaceComplexity: O(k)
+    isOptimal: false
+    recognitionSignals:
+      - imports heapq or builds a priority queue
+    invariants:
+      - Generalizes to k logs; overkill for exactly two.
+    failureModes:
+      - unnecessary complexity for k = 2
+      - tie handling depends on tuple comparison order
+
+probes:
+  - id: why_not_sort
+    trigger: detectedFamily == sf-concat-sort
+    questionIntent: Test whether the candidate notices they were handed sortedness and discarded it.
+    authoredVariants:
+      - That works. What does sorting cost you that you didn't have to spend?
+      - You were told each log is already in order. Is your solution using that?
+    maxUses: 1
+    priority: 95
+
+  - id: complexity_claim
+    trigger: claimedTime.present && claimedTime != detectedFamily.timeComplexity
+    questionIntent: Test whether an asymptotic claim can be defended.
+    authoredVariants:
+      - Walk me through how you got to that bound.
+      - What dominates, as the logs get long?
+    maxUses: 2
+    priority: 100
+
+  - id: tail_handling
+    trigger: milestone(FIRST_COMPILES) && detectedFamily == sf-two-pointer
+    questionIntent: Surface the most common defect in this family without naming it.
+    authoredVariants:
+      - What happens when one log runs out before the other?
+      - Talk me through the last iteration of your loop.
+    maxUses: 1
+    priority: 85
+
+  - id: invariant_proof
+    trigger: milestone(BASE_TESTS_PASS)
+    questionIntent: Test whether correctness can be argued, not just observed.
+    authoredVariants:
+      - What's true about the output list every time round the loop?
+      - Convince me you never emit something out of order.
+    maxUses: 1
+    priority: 55
+
+  - id: repeated_failure_trace
+    trigger: milestone(REPEATED_SAME_FAILURE)
+    questionIntent: Redirect toward diagnosis rather than revealing the defect.
+    authoredVariants:
+      - Take the failing case and step through your indices out loud.
+      - Which entry is wrong, and what were both pointers pointing at?
+    maxUses: 2
+    priority: 90
+
+hintLadder:
+  - level: 1
+    text: You know something about each list that a general-purpose approach wouldn't.
+    scoreImpact: 0.05
+  - level: 2
+    text: If both lists are already in order, what's the smallest thing you could look at to decide which entry comes next?
+    scoreImpact: 0.15
+  - level: 3
+    text: Consider walking both lists at once, keeping a position in each, and repeatedly taking whichever head is earlier.
+    scoreImpact: 0.3
+  - level: 4
+    text: Two indices, both starting at zero. Compare the entries at each index, append the earlier one, advance that index. When one list is exhausted, append the rest of the other.
+    scoreImpact: 0.5
+
+followUps:
+  - id: fu-k-logs
+    trigger: solvedOptimally && remainingMinutes >= 8
+    oralDelta: >
+      Now suppose we've got twelve crews, not two, each with its own sorted log. Same
+      output. Does your approach still work, and what would you change?
+    rubricDelta:
+      adaptability: 0.1
+      approach: 0.05
+    expectedAdaptation: >
+      Recognizes that comparing k heads pairwise becomes O(nk) and that a heap of the
+      current head from each log gives O(n log k). Should be able to say why the
+      two-pointer structure doesn't generalize cleanly.
+
+  - id: fu-streaming
+    trigger: solvedOptimally && remainingMinutes >= 5 && !usedFollowUp(fu-k-logs)
+    oralDelta: >
+      One more variation. The logs arrive as streams too large to hold in memory, and
+      you can only read forward. What still works?
+    rubricDelta:
+      adaptability: 0.05
+    expectedAdaptation: >
+      Notices the two-pointer merge is already streaming-friendly — it only ever needs
+      the current head of each input — while concatenate-and-sort is not.
+
+rubricId: rubric-coding-v1
