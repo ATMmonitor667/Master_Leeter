@@ -9,9 +9,10 @@ Lanes: **A** Interview Brain · **B** Workspace & Runtime · **C** Voice & Evide
 
 Status key: `[ ]` open · `[~]` in progress · `[x]` done
 
-**Progress:** M0 and M1 complete. M2 partially complete — M2-1, M2-2, M2-7, M2-9 done;
-M2-3 (UI), M2-4 (runner), M2-5, M2-6, M2-8 (auth) remain. M2-4 is blocked on a Judge0
-instance and M2-8 on an auth provider decision.
+**Progress:** M0 and M1 complete. M2 mostly complete — M2-1, M2-2, M2-3, M2-7, M2-9 done,
+plus the client half of M2-5 (debounced deltas, revisions, note activity). Remaining:
+M2-4 (blocked on a Judge0 instance), M2-6 (needs M2-4), M2-8 (blocked on an auth provider),
+and the server-side Tree-sitter half of M2-5.
 
 ---
 
@@ -151,7 +152,7 @@ Mock and Learning as data: hint levels available, stall thresholds, probe cadenc
 `WS /v1/interview-sessions/{id}/events` — auth, Redis session lease, monotonic seq, duplicate-safe on reconnect, trace ID propagation.
 **Acceptance:** replaying a duplicate event after reconnect is a no-op.
 
-### `[ ]` M2-3 · Candidate workspace UI · L
+### `[x]` M2-3 · Candidate workspace UI · L
 **Deps:** M0-4.
 Monaco (Python), notepad with **no AI autocomplete**, timer, custom test input, stdout/stderr panel, interviewer status indicator (Listening / Waiting / Speaking).
 **Acceptance:** the full problem statement appears nowhere in the DOM, network payloads, or client bundle.

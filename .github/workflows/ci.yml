@@ -28,7 +28,14 @@ jobs:
       - name: Test
         run: pnpm test
 
-      # Once M1-6 lands, the candidate-bot simulator is the gate that matters.
-      # Silence quality regressions must fail the build, not get noticed later.
+      # The candidate-bot simulator is the gate that matters. Silence quality
+      # regressions fail the build rather than getting noticed in a mock.
       - name: Simulation suite
         run: pnpm sim
+
+      - name: Build
+        run: pnpm build
+
+      # Invariant 2, checked against the shipped artifact rather than intentions.
+      - name: Bundle leak check
+        run: pnpm check:bundle

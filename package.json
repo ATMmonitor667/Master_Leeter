@@ -14,9 +14,11 @@
     "dev:api": "pnpm --filter @master-leeter/api dev",
     "dev:web": "pnpm --filter @master-leeter/web dev",
     "infra:up": "docker compose up -d",
-    "infra:down": "docker compose down"
+    "infra:down": "docker compose down",
+    "check:bundle": "node scripts/check-bundle.mjs"
   },
   "devDependencies": {
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "yaml": "^2.6.1"
   }
 }
