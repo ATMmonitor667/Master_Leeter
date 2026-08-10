@@ -45,6 +45,8 @@ export interface SessionModuleOptions {
   eventLog?: InMemoryEventLog;
   /** Absent until a Judge0 instance exists. The interview works without it. */
   runner?: CodeRunner;
+  /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
+  evaluationQueue?: { enqueue(sessionId: string, rubricId: string): unknown };
 }
 
 export async function registerSessionModule(
@@ -173,8 +175,12 @@ export async function registerSessionModule(
         idempotencyKey: `session-ended:${session.id}`,
       });
 
-      // M6-2 enqueues evaluation here. It never runs inline — the live phase
-      // must complete regardless of evaluator health (ADR-004).
+      // Fire and forget. The live phase must complete regardless of evaluator
+      // health, so this is deliberately not awaited and its failure cannot
+      // affect the response (ADR-004).
+      const scenario = opts.library.get(session.scenarioVersionId);
+      opts.evaluationQueue?.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1");
+
       return reply.send({ sessionId: session.id, endedAt: session.endedAt });
     } catch (err) {
       if (err instanceof SessionNotFoundError) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
@@ -246,12 +252,7 @@ export async function registerSessionModule(
     return reply.code(202).send({ runId, revision: body.data.revision });
   });
 
-  // Exposed for the WebSocket adapter and tests.
-  app.decorate("sessionChannel", channel);
-}
-
-declare module "fastify" {
-  interface FastifyInstance {
-    sessionChannel: SessionChannel;
-  }
+  // The channel is used by the WebSocket adapter; kept on the module rather
+  // than decorated, since plugin-scope decorations are not visible at the root.
+  void channel;
 }

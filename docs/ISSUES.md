@@ -9,7 +9,9 @@ Lanes: **A** Interview Brain · **B** Workspace & Runtime · **C** Voice & Evide
 
 Status key: `[ ]` open · `[~]` in progress · `[x]` done
 
-**Progress:** M0, M1, and M2 complete except M2-8 (auth — blocked on a provider choice).
+**Progress:** M0, M1, M2 complete except M2-8 (auth). M6 evidence pipeline done except the
+report UI (M6-3) and calibration (M6-5). M5-1 half done — the code-derived half of
+CandidateState works; the transcript half waits on the intent classifier (M4-1).
 
 Two components are written but UNVERIFIED against real infrastructure, and are marked as
 such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (no Judge0
@@ -250,7 +252,7 @@ Classes: `THINK_ALOUD`, `EXPLICIT_QUESTION`, `CLARIFICATION_REQUEST`, `HINT_REQU
 
 ## M5 — Code-aware interviewer · Lane A
 
-### `[ ]` M5-1 · Candidate Observer · L
+### `[~]` M5-1 · Candidate Observer · L — code half done; transcript half waits on M4-1
 **Deps:** M4-1, M2-5. Maintain `CandidateState` from transcript + code events. Async between turns, **never on the critical path.**
 
 ### `[ ]` M5-2 · COMPLEXITY_CLAIM_MISMATCH · M
@@ -269,17 +271,17 @@ Classes: `THINK_ALOUD`, `EXPLICIT_QUESTION`, `CLARIFICATION_REQUEST`, `HINT_REQU
 
 ## M6 — Evidence-backed reports · Lane C
 
-### `[ ]` M6-1 · Rubric definition · S
+### `[x]` M6-1 · Rubric definition · S
 Versioned config, 7 dimensions, starting weights 15/25/25/10/10/10/5.
 
-### `[ ]` M6-2 · Evaluator pipeline · L
+### `[x]` M6-2 · Evaluator pipeline · L
 **Deps:** M2-7, M6-1. Queue consumer over the immutable event log. Dimension score + confidence + 2–4 evidence moments each.
 **Acceptance:** cannot block, touch, or read into the live session path.
 
 ### `[ ]` M6-3 · Report UI · M
 **Deps:** M6-2. Scores, evidence clips, probe intents, hint usage and strength, missed opportunities, code timeline, three targeted drills.
 
-### `[ ]` M6-4 · Report endpoint with job status · S
+### `[x]` M6-4 · Report endpoint with job status · S
 **Deps:** M6-2. In-progress / ready / failed-and-retryable. Regenerable from events after rubric changes.
 
 ### `[ ]` M6-5 · Calibration gold set · L

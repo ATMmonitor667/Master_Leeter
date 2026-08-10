@@ -127,6 +127,62 @@ describe("POST /v1/interview-sessions/:id/end", () => {
   });
 });
 
+describe("GET /v1/interview-sessions/:id/report", () => {
+  it("produces a report after the session ends", async () => {
+    const server = app();
+    const created = await server.inject({
+      method: "POST",
+      url: "/v1/interview-sessions",
+      headers: { "idempotency-key": "report-1" },
+      payload: { scenarioRef: scenarioRef("conveyor-rescan@1") },
+    });
+    const { sessionId } = created.json();
+
+    await server.inject({ method: "POST", url: `/v1/interview-sessions/${sessionId}/end` });
+    await server.evaluationQueue.settled(sessionId);
+
+    const res = await server.inject({ method: "GET", url: `/v1/interview-sessions/${sessionId}/report` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().report.dimensions).toHaveLength(7);
+  });
+
+  it("404s before a session has been evaluated", async () => {
+    const server = app();
+    const created = await server.inject({
+      method: "POST",
+      url: "/v1/interview-sessions",
+      headers: { "idempotency-key": "report-2" },
+      payload: { scenarioRef: scenarioRef("conveyor-rescan@1") },
+    });
+    const { sessionId } = created.json();
+
+    const res = await server.inject({ method: "GET", url: `/v1/interview-sessions/${sessionId}/report` });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("never leaks scenario content into a report", async () => {
+    // The report cites what the candidate did, not what the problem was. A
+    // report that quoted the oral brief would hand the statement to anyone who
+    // finished a session once.
+    const server = app();
+    const created = await server.inject({
+      method: "POST",
+      url: "/v1/interview-sessions",
+      headers: { "idempotency-key": "report-3" },
+      payload: { scenarioRef: scenarioRef("conveyor-rescan@1") },
+    });
+    const { sessionId } = created.json();
+
+    await server.inject({ method: "POST", url: `/v1/interview-sessions/${sessionId}/end` });
+    await server.evaluationQueue.settled(sessionId);
+
+    const body = (await server.inject({ method: "GET", url: `/v1/interview-sessions/${sessionId}/report` })).body;
+    for (const forbidden of ["conveyor", "scanner", "openingScript", "hiddenTests"]) {
+      expect(body).not.toContain(forbidden);
+    }
+  });
+});
+
 describe("routes still blocked on external decisions", () => {
   it("realtime token is explicit about why", async () => {
     const res = await app().inject({

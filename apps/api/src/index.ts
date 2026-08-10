@@ -1,12 +1,12 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
-import { registerReportModule } from "./modules/report/index.js";
-import { loadScenarioLibrary } from "./modules/scenario/loader.js";
-import { registerScenarioModule } from "./modules/scenario/index.js";
-import { registerSessionModule } from "./modules/session/index.js";
+import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { Judge0Runner, type CodeRunner } from "./modules/runner/index.js";
+import { registerScenarioModule } from "./modules/scenario/index.js";
+import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
+import { InMemoryEventLog, InMemorySessionStore, registerSessionModule } from "./modules/session/index.js";
 
 /**
  * Modular monolith (ADR-005).
@@ -15,6 +15,11 @@ import type { LoadedScenario } from "./modules/scenario/loader.js";
  * extracted later. The orchestrator is deliberately NOT an HTTP module — it is a
  * domain layer the session module calls into. Interview policy must never live
  * in a transport handler.
+ *
+ * The event log is constructed here and shared: the session module appends to
+ * it, the report module reads from it, and neither knows about the other. That
+ * one-directional relationship through immutable evidence is ADR-004 in
+ * practice.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -30,15 +35,27 @@ export interface ServerOptions {
 export function buildServer(opts: ServerOptions) {
   const app = Fastify({ logger: opts.logger ?? false });
 
+  const eventLog = new InMemoryEventLog();
+  const store = new InMemorySessionStore();
+  const evaluationQueue = new EvaluationQueue(eventLog);
+
+  // Decorated on the root instance, not inside the plugins: Fastify
+  // encapsulates decorations per plugin scope, so a decorate() call inside
+  // registerReportModule would be invisible out here.
+  app.decorate("evaluationQueue", evaluationQueue);
+
   app.get("/health", async () => ({ ok: true, scenarios: opts.library.size }));
 
   void app.register(registerSessionModule, {
     prefix: "/v1",
     library: opts.library,
+    store,
+    eventLog,
+    evaluationQueue,
     ...(opts.runner ? { runner: opts.runner } : {}),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library });
-  void app.register(registerReportModule, { prefix: "/v1" });
+  void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
 
   return app;
 }
@@ -49,7 +66,7 @@ export async function start(): Promise<void> {
   const library = await loadScenarioLibrary(CONTENT_ROOT);
 
   // Judge0 is optional at boot. Without it the interview runs, minus execution
-  // -- which is far better than refusing to start (M2-4 / M0-2).
+  // — which is far better than refusing to start (M2-4 / M0-2).
   const judge0Url = process.env["JUDGE0_URL"];
   const runner: CodeRunner | undefined = judge0Url
     ? new Judge0Runner({
