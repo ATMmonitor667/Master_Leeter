@@ -116,7 +116,7 @@ export async function start(): Promise<void> {
   await app.listen({ port, host: "0.0.0.0" });
 }
 
-const entry = process.argv[1] ?? "";
+const entry = (process.argv[1] ?? "").replace(/\\/g, "/");
 if (entry.endsWith("src/index.ts") || entry.endsWith("dist/index.js")) {
   start().catch((err: unknown) => {
     console.error(err);

@@ -48,7 +48,7 @@ async function main(): Promise<number> {
   return failures.length === 0 ? 0 : 1;
 }
 
-const entry = process.argv[1] ?? "";
+const entry = (process.argv[1] ?? "").replace(/\\/g, "/");
 if (entry.endsWith("eval/cli.ts") || entry.endsWith("eval/cli.js")) {
   main()
     .then((code) => process.exit(code))
