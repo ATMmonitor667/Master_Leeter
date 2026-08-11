@@ -27,3 +27,41 @@ pnpm infra:up      # Postgres + Redis
 pnpm dev:api       # port 4000
 pnpm dev:web       # port 3000
 ```
+
+## Configuration
+
+`apps/api/src/env.ts` loads, at boot, in descending precedence:
+
+1. real environment variables — always win, so CI and production are never overridden
+2. `apps/api/.env.local`, then `.env.local` at the repo root — gitignored, real credentials
+3. `apps/api/.env`, then `.env` at the repo root — shared defaults
+
+All files are optional. See [`.env.example`](.env.example) for every variable.
+
+## Code execution (Judge0)
+
+Judge0 runs candidate code out of process (invariant 6). It is **optional at boot** — without
+it the interview runs and only `POST /runs` fails, with a 503 that says why.
+
+Judge0 needs cgroups and `isolate`, so on Windows it must run **inside WSL2**, from a Linux
+filesystem path. A Windows path under `/mnt/c` fails in confusing ways.
+
+```bash
+# From WSL2. Adopts an existing release folder instead of re-downloading.
+JUDGE0_DIR=~/judge0-v1.13.1 bash scripts/judge0-setup.sh
+```
+
+The script starts the stack (db and redis first — the workers come up permanently broken if
+they race the database) and then runs six abuse cases against it: infinite loop, memory bomb,
+fork bomb, network egress, and filesystem read. **The network case is the one that must
+fail.** A sandbox nobody has attacked is a sandbox whose behaviour is unknown.
+
+Then point the API at it:
+
+```bash
+echo 'JUDGE0_URL=http://localhost:2358' >> apps/api/.env.local
+pnpm dev:api 2>&1 | grep -E 'environment loaded|runner|JUDGE0'
+```
+
+The boot log must show `runner: "judge0"`. If it shows `runner: "none"` the variable never
+reached the process, and execution is silently disabled.

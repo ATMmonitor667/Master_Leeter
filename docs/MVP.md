@@ -1,5 +1,38 @@
 # MVP Scope — the cut line
 
+> ## Rescoped for personal use — 2026-08-11
+>
+> This document was written for a 2–3 engineer team shipping a product. The project is now
+> **a personal tool for one user**, which invalidates a specific class of work: anything whose
+> only justification was *other people*.
+>
+> **Cut:** auth (M2-8), the human review round (M4-5), the calibration gold set (M6-5),
+> OpenTelemetry observability (M7-2), the eval dashboard (M7-5), the accessibility pass
+> (M7-6), and legal review. ~26 of the ~88 remaining engineering days.
+>
+> **Explicitly not cut:** the Response Gate, oral-only delivery, the intent classifier, turn
+> completion, the automated eval harnesses (M4-4, M4-4b), and the code-aware interviewer.
+> These are what make it an interview rather than a chatbot, and they matter *more* when the
+> only user is the one whose time is being wasted by a bad interruption.
+>
+> **What replaces the human quality loop.** M4-5 depended on ≥ 20 sessions rated by multiple
+> experienced engineers. With one user that becomes a lightweight self-review: after each of
+> your own sessions, log every interviewer utterance you found unwanted, and tune thresholds
+> against that list. Weaker evidence than inter-rater agreement, and honest about being so —
+> but a log of ten annoying interruptions from real sessions still beats intuition.
+>
+> **What this changes about the invariants: nothing.** Silence control, no-problem-text,
+> canonical clarifications, sandbox isolation, and the append-only log are all load-bearing
+> for a single user too. Invariant 10 (no raw audio) and the provenance rules stay — they cost
+> nothing and they're what makes the thing reversible if it ever becomes a product.
+>
+> **To reverse this:** the cut items are marked `[-]` in `ISSUES.md` with the condition that
+> brings each one back. Nothing in the architecture forecloses them; auth and observability
+> are additive, and the grader loops need a corpus that doesn't exist yet either way.
+
+---
+
+
 **Target:** a candidate completes one 35–45 minute oral-only coding interview, in one
 language, and receives an evidence-backed report. Team of 2–3 engineers.
 

@@ -33,6 +33,12 @@ jobs:
       - name: Simulation suite
         run: pnpm sim
 
+      # M4-4. `pnpm sim` asserts individual behaviours; this asserts the
+      # aggregate and prints the metric table, so a regression arrives as a
+      # number with the offending step and the gate's own reason attached.
+      - name: Interruption eval
+        run: pnpm eval
+
       - name: Build
         run: pnpm build
 
