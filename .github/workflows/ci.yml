@@ -22,6 +22,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Before typecheck: a line-sorted file produces a wall of type errors that
+      # bury the actual cause. Ask the cheap, unambiguous question first.
+      - name: Corruption check
+        run: pnpm check:sorted
+
       - name: Typecheck
         run: pnpm typecheck
 

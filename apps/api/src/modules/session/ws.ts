@@ -111,7 +111,7 @@ export async function registerEventsSocket(
    *
    * The API is useful without a socket — sessions, runs, reports and the whole
    * HTTP surface still work — so a missing plugin degrades to a warning rather
-   * than refusing to start. Same reasoning as Judge0 being optional: a missing
+   * than refusing to start. Same reasoning as the judge being optional: a missing
    * dependency should cost a capability, not the service.
    */
   let plugin: { default: unknown } | null = null;

@@ -26,6 +26,13 @@
 > for a single user too. Invariant 10 (no raw audio) and the provenance rules stay — they cost
 > nothing and they're what makes the thing reversible if it ever becomes a product.
 >
+> **Further, on `simplified` only: no sandbox.** Candidate code is not executed; a model
+> predicts the result (`ModelJudgeRunner`). Invariant 6 becomes trivially true — nothing runs
+> anywhere. The cost is that run results are predictions, so `BASE_TESTS_PASS` and
+> `REPEATED_SAME_FAILURE` derive from an opinion, and **evaluator scores are not measurements
+> on that branch.** M4-4 is unaffected: it scores the gate, which never touches run results.
+> Deliberately a branch-level divergence, not a scope cut — `main` keeps Judge0.
+>
 > **To reverse this:** the cut items are marked `[-]` in `ISSUES.md` with the condition that
 > brings each one back. Nothing in the architecture forecloses them; auth and observability
 > are additive, and the grader loops need a corpus that doesn't exist yet either way.

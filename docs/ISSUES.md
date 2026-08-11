@@ -66,8 +66,14 @@ Prove the realtime voice API can emit VAD speech events with automatic response 
 **Acceptance:** a runnable script demonstrating silence-by-default, plus recorded latency
 numbers. **If this fails, stop and redesign** — every downstream milestone assumes it.
 
-### `[ ]` M0-2 · Judge0 sandbox spike · S · Lane B
+### `[-]` M0-2 · Judge0 sandbox spike · S · Lane B — **cut on `simplified`**
 **Blocks:** M2-4. **Deps:** none.
+
+**Cut on this branch only.** Candidate code is never executed — `ModelJudgeRunner` reads it
+and predicts the result — so there is no sandbox to attack. Invariant 6 is trivially
+satisfied. `main` keeps Judge0 and this issue stays open there.
+
+**Revived by:** wanting run results you can trust. See the honesty note under M2-4.
 
 - [ ] Stand up Judge0 (self-hosted or managed) and run a Python submission end to end
 - [ ] Verify outbound network is disabled from candidate code
@@ -196,8 +202,27 @@ logs a warning rather than failing to start.
 Monaco (Python), notepad with **no AI autocomplete**, timer, custom test input, stdout/stderr panel, interviewer status indicator (Listening / Waiting / Speaking).
 **Acceptance:** the full problem statement appears nowhere in the DOM, network payloads, or client bundle.
 
-### `[x]` M2-4 · Runner service · M
-**Deps:** M0-2, M2-2.
+### `[x]` M2-4 · Runner service · M — **model-judged on `simplified`**
+**Deps:** M2-2.
+
+`ModelJudgeRunner` satisfies the same `CodeRunner` interface Judge0 did, so the queue, event
+log, milestone detection, observer, and report pipeline are unchanged. Swapping back is one
+line in `apps/api/src/index.ts`.
+
+**What this costs, so it is on the record:**
+- A judged run is a prediction. The model is confidently wrong about off-by-one errors,
+  floating point formatting, aliasing, and dict/set iteration order — the exact bugs an
+  interview exists to surface.
+- `BASE_TESTS_PASS` and `REPEATED_SAME_FAILURE` therefore derive from an opinion. A probe
+  grounded in "your third identical failure" may be grounded in a hallucinated one.
+- **Evaluator scores are not measurements on this branch.** Combined with M6-5 being cut,
+  they are uncalibrated *and* downstream of a guess.
+- M4-4 is unaffected — it scores gate decisions, which never touch run results.
+
+Mitigations, all deliberate: `cpuTimeMs`/`memoryKb` report 0 rather than plausible fiction;
+a malformed or sub-0.5-confidence verdict becomes `INTERNAL_ERROR` rather than a salvaged
+`PASSED`; every result carries a visible notice in stderr; the server warns at every boot.
+
 Queue-backed: enqueue → Judge0 → normalized result event appended → pushed to client → observer notified.
 **Acceptance:** a runaway execution never blocks the session service.
 

@@ -1,9 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
-import { loadEnv } from "./env.js";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
-import { Judge0Runner, type CodeRunner } from "./modules/runner/index.js";
+import { loadEnv } from "./env.js";
+import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule } from "./modules/privacy/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
@@ -30,7 +30,7 @@ export const CONTENT_ROOT = join(here, "../../../content/scenarios");
 export interface ServerOptions {
   library: Map<string, LoadedScenario>;
   logger?: boolean;
-  /** Absent until a Judge0 instance exists. Runs then return 503, and say so. */
+  /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
 }
 
@@ -70,23 +70,21 @@ export function buildServer(opts: ServerOptions) {
 
 export async function start(): Promise<void> {
   // Before anything reads process.env. Called here rather than at import time
-  // so that importing this module from a test does not pull in a developer's
-  // personal .env.local.
+  // so importing this module from a test does not pull in a personal .env.local.
   const env = loadEnv();
 
   // Scenarios load at boot and fail loudly. A content bug should stop a deploy,
   // not surface mid-interview as an interviewer that cannot answer questions.
   const library = await loadScenarioLibrary(CONTENT_ROOT);
 
-  // Judge0 is optional at boot. Without it the interview runs, minus execution
-  // — which is far better than refusing to start (M2-4 / M0-2).
-  const judge0Url = process.env["JUDGE0_URL"];
-  const runner: CodeRunner | undefined = judge0Url
-    ? new Judge0Runner({
-        baseUrl: judge0Url,
-        ...(process.env["JUDGE0_AUTH_TOKEN"] ? { authToken: process.env["JUDGE0_AUTH_TOKEN"] } : {}),
-      })
-    : undefined;
+  // The judge is optional at boot. Without it the interview runs, minus
+  // execution — far better than refusing to start (M2-4).
+  const judgeModel = process.env["JUDGE_MODEL"];
+  const judgeKey = process.env["REALTIME_API_KEY"];
+  const runner: CodeRunner | undefined =
+    judgeModel && judgeKey
+      ? new ModelJudgeRunner({ model: judgeModel, apiKey: judgeKey })
+      : undefined;
 
   const app = buildServer({ library, logger: true, ...(runner ? { runner } : {}) });
   const port = Number(process.env["API_PORT"] ?? 4000);
@@ -95,16 +93,24 @@ export async function start(): Promise<void> {
   app.log.info({ files: env.loaded, vars: env.applied }, "environment loaded");
 
   app.log.info(
-    { scenarios: [...library.keys()], runner: runner ? "judge0" : "none" },
+    { scenarios: [...library.keys()], runner: runner ? "model-judge" : "none" },
     "scenario library loaded",
   );
 
-  // Loud, because the failure it describes is silent otherwise: the interview
-  // runs fine right up until the candidate presses Run and gets a 503.
+  // Loud, because the failure is otherwise silent: the interview runs fine right
+  // up until the candidate presses Run and gets a 503.
   if (!runner) {
     app.log.warn(
-      "JUDGE0_URL is not set — code execution is DISABLED and run requests will return 503. " +
-        "Set it in apps/api/.env.local (see scripts/judge0-setup.sh).",
+      "JUDGE_MODEL or REALTIME_API_KEY is not set — code checking is DISABLED and run " +
+        "requests will return 503. Set both in apps/api/.env.local.",
+    );
+  } else {
+    // Said at every boot on purpose. A judged run is a prediction, and a branch
+    // that quietly behaves like it executes code is one you will eventually
+    // trust by accident.
+    app.log.warn(
+      "Code is AI-JUDGED, not executed. Run results are predictions and may be wrong. " +
+        "Do not read evaluator scores as measurements on this branch.",
     );
   }
   await app.listen({ port, host: "0.0.0.0" });
@@ -117,8 +123,3 @@ if (entry.endsWith("src/index.ts") || entry.endsWith("dist/index.js")) {
     process.exit(1);
   });
 }
-
-// Extension is required — this package is ESM with NodeNext resolution, so a
-// bare './eval' does not resolve. See the note in YOUR-TASKS.md about whether
-// the server entrypoint should re-export the eval harness at all.
-export * from "./eval/index.js";

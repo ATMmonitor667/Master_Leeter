@@ -17,7 +17,8 @@
     "dev:web": "pnpm --filter @master-leeter/web dev",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
-    "check:bundle": "node scripts/check-bundle.mjs"
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "check:sorted": "node scripts/check-sorted-corruption.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

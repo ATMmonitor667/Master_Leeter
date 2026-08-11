@@ -312,7 +312,7 @@ describe("POST /v1/interview-sessions/:id/runs", () => {
   });
 
   it("tells the candidate plainly when no runner is configured", async () => {
-    // Without Judge0 the interview still runs. Refusing to start, or returning
+    // Without a judge the interview still runs. Refusing to start, or returning
     // an opaque 500, would turn missing infrastructure into a ruined session.
     const server = app();
     const id = await session(server);

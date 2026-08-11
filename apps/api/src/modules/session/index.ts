@@ -59,7 +59,7 @@ export interface SessionModuleOptions {
   library: Map<string, LoadedScenario>;
   store?: InMemorySessionStore;
   eventLog?: InMemoryEventLog;
-  /** Absent until a Judge0 instance exists. The interview works without it. */
+  /** Absent until a judge model is configured. The interview works without it. */
   runner?: CodeRunner;
   /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
   evaluationQueue?: { enqueue(sessionId: string, rubricId: string): unknown };
@@ -372,7 +372,7 @@ export async function registerSessionModule(
     if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
     if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
 
-    // No runner configured yet (no Judge0 instance). The interview continues —
+    // No runner configured yet (no judge model). The interview continues —
     // a candidate can still reason and write code, they just cannot execute it.
     if (!queue) {
       return reply.code(503).send({
