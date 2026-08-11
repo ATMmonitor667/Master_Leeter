@@ -5,9 +5,14 @@ out/
 coverage/
 *.tsbuildinfo
 
+# Secrets — never commit. Only .env.example (placeholders) is tracked.
 .env
 .env.local
 .env.*.local
+apps/api/.env
+apps/api/.env.local
+**/.env.local
+!.env.example
 
 .DS_Store
 *.log

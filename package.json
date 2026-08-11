@@ -18,7 +18,8 @@
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "check:bundle": "node scripts/check-bundle.mjs",
-    "check:sorted": "node scripts/check-sorted-corruption.mjs"
+    "check:sorted": "node scripts/check-sorted-corruption.mjs",
+    "check:env": "node scripts/check-env-not-tracked.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.2",
