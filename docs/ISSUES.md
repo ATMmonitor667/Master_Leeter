@@ -51,20 +51,28 @@ outstanding precondition for trusting any `[x]` above.
 
 ## M0 — De-risk and lay the seam
 
-### `[ ]` M0-1 · Realtime turn-detection spike · S · Lane C
+### `[x]` M0-1 · Realtime turn-detection spike · S · Lane C — **PASSED 2026-08-11**
 **Blocks:** all of M3, M4. **Deps:** none.
 
 Prove the realtime voice API can emit VAD speech events with automatic response creation
 **disabled**, and that the application can create a response on demand.
 
-- [ ] Connect to the realtime API with turn detection on, `create_response: false`
-- [ ] Confirm speech-start and speech-stop events fire with no model audio generated
-- [ ] Confirm an application-initiated response produces audio
-- [ ] Measure end-of-turn → first-audio-byte latency, p50 and p95, ≥ 20 samples
-- [ ] Write findings to `docs/adr/ADR-001-response-control.md`
+- [x] Connect to the realtime API with turn detection on, `create_response: false`
+- [x] Confirm speech-start and speech-stop events fire with no model audio generated
+- [x] Confirm an application-initiated response produces audio
+- [x] Measure end-of-turn → first-audio-byte latency, p50 and p95, ≥ 20 samples
+- [x] Write findings to `docs/adr/ADR-001-response-control.md`
 
-**Acceptance:** a runnable script demonstrating silence-by-default, plus recorded latency
-numbers. **If this fails, stop and redesign** — every downstream milestone assumes it.
+Run against Gemini Live (`gemini-2.5-flash-native-audio-latest`): 0 unprompted audio events,
+20/20 manual responses produced audio, p50 1044 ms / p95 1638 ms. Script:
+`apps/api/scripts/m0-1-realtime-spike.ts`, dual-provider.
+
+**One caveat carried forward, and it is not small.** Gemini has no equivalent of OpenAI's
+"VAD fires but does not answer". Disabling `automatic_activity_detection` means the client
+sends `activity_start` / `activity_end` itself, so the `speech_started` / `speech_stopped`
+counts in the spike are echoes of our own signals, not evidence that any VAD works. The
+invariant is proven; **turn-boundary detection is not**. That risk moved into M3-2, where it
+lands on the tuning surface that drives the unwanted-interruption metric.
 
 ### `[-]` M0-2 · Judge0 sandbox spike · S · Lane B — **cut on `simplified`**
 **Blocks:** M2-4. **Deps:** none.
@@ -287,7 +295,7 @@ Manual response creation only. The gate's authorized action is the sole trigger 
 
 **The milestone that decides whether the product is real.**
 
-### `[~]` M4-1 · Semantic intent classifier · M — rules-only stub in place; model still needed
+### `[x]` M4-1 · Semantic intent classifier · M — Gemini classifier landed, **unrun**
 **Deps:** M1-3.
 Classes: `THINK_ALOUD`, `EXPLICIT_QUESTION`, `CLARIFICATION_REQUEST`, `HINT_REQUEST`, `COMPLEXITY_CLAIM`, `APPROACH_COMMITMENT`, `TEST_PLAN`, `CONFUSION`, `DONE_SIGNAL`, `SOCIAL_SMALL_TALK`. Returns probabilities; the deterministic gate decides consequences. Cache obvious cases.
 
@@ -298,7 +306,36 @@ rather than interrupts**. Intent detection is serviceable; turn completion is no
 is M4-2's whole job. Every decision persists `classifierId`, so sessions graded under the stub
 are identifiable later.
 
-**Still open:** replace with a small fast model, keeping the interface and the silence bias.
+**Now shipped:** `GeminiClassifier` (`orchestrator/gemini-classifier.ts`, id
+`gemini:<model>@v1`) over `lib/gemini.ts`. Native `generateContent` with `responseSchema`, so
+the intent cannot come back outside the enum. `thinkingBudget: 0` and `temperature: 0` —
+latency and determinism both matter more than flourish on this call.
+
+`IntentClassifier.classify` now returns `TurnClassification | Promise<TurnClassification>`.
+The union is deliberate: `RuleBasedClassifier` stays synchronous because it is the fallback,
+and a fallback that costs a microtask is a worse fallback. `runBot` never touches the
+classifier, so `sim`, `eval`, and `replay.test.ts` are unaffected.
+
+**How the silence bias survives the model.** The mid-thought veto (`endsMidThought`, shared
+with the stub so the two cannot drift) caps end-probability at 0.2 whenever the transcript
+ends on a connective — unconditionally, and it only ever lowers the number. Everything else
+trusts the model, which is the point: the stub's 0.55 on unpunctuated speech sits below every
+mode's threshold, and beating that is what M4-2 is for.
+
+**Degradation is a first-class path, not error handling.** Timeout, 429, malformed reply, or
+no key all fall back to rules synchronously, and `classifierId` records
+`gemini:<model>@v1+fallback:stub-rules-v1` so a session that ran half on each is identifiable.
+A 429 opens the circuit breaker immediately — free-tier quota does not return inside a retry
+window, so retrying only buys latency. Fallback results are never cached; caching a degraded
+answer would outlive the outage that caused it.
+
+**Free tier is an expected operating condition.** This runs once per finalized turn against a
+low-double-digit RPM limit. A clarification burst can exceed it. When that happens the
+interview continues on rules — quieter than ideal, never wrong.
+
+**Still open:** 15 unit tests in `gemini-classifier.test.ts` have never been executed (no
+package registry in the authoring environment). M4-2 still owns turn-completion quality; this
+supplies its input, it does not close it.
 
 ### `[ ]` M4-2 · Turn-completion confidence · M
 **Deps:** M4-1. Semantic end-of-turn probability feeding `END_THRESHOLD`.

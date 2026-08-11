@@ -19,12 +19,20 @@ export {
   type Utterance,
 } from "./runtime.js";
 export {
+  MID_THOUGHT_CEILING,
   RuleBasedClassifier,
+  endsMidThought,
   ruleBasedClassifier,
   type ClassifierInput,
   type IntentClassifier,
   type TurnClassification,
 } from "./classifier.js";
+export {
+  GeminiClassifier,
+  buildClassifierPrompt,
+  classifierFromEnv,
+  type GeminiClassifierOptions,
+} from "./gemini-classifier.js";
 export {
   ForbiddenTransitionError,
   INITIAL_STATE,

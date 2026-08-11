@@ -246,7 +246,12 @@ export class InterviewRuntime {
     const transcript = stringOf(event.payload["transcript"]) ?? "";
     const finalized = event.payload["finalized"] !== false;
 
-    const classification = this.classifier.classify({ transcript, finalized });
+    // The only await between a turn arriving and the gate ruling on it. A model
+    // classifier suspends here for a few hundred milliseconds, so anything read
+    // into `ctx` below is read AFTER that gap, not before it — which is what we
+    // want: the gate should judge the world as it is when it decides, not as it
+    // was when the candidate stopped talking.
+    const classification = await this.classifier.classify({ transcript, finalized });
 
     const turn: Turn = {
       turnId: `turn-${event.seq}`,
