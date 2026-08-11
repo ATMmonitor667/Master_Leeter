@@ -9,6 +9,7 @@ import {
   buggyImplementer,
   instantSolver,
   longThinker,
+  pausedExplainer,
   promptInjector,
   rapidClarifier,
   wrongComplexityClaim,
@@ -34,6 +35,34 @@ describe("trajectory 1 — long-thinking candidate", () => {
     const last = run.results.at(-1);
     expect(last?.decision.action).toBe("STAY_SILENT");
     expect(last?.decision.reason).toMatch(/not finalized/);
+  });
+});
+
+describe("trajectory 1b — paused explainer (M4-2)", () => {
+  it("stays silent through complete-sounding sentences that were only pauses", () => {
+    const run = runBot(pausedExplainer, scenario);
+    const held = run.results.slice(0, 3);
+
+    for (const r of held) {
+      expect(r.decision.action, `${r.step.label}: ${r.decision.reason}`).toBe("STAY_SILENT");
+    }
+  });
+
+  it("holds for turn completion, not because it had nothing to say", () => {
+    // Without this the trajectory would pass against an estimator that does
+    // nothing — a probe is eligible at every one of those steps.
+    const run = runBot(pausedExplainer, scenario);
+
+    for (const r of run.results.slice(0, 3)) {
+      expect(r.decision.reason, describeRun(run)).toMatch(/below threshold/);
+    }
+  });
+
+  it("speaks once the candidate has genuinely stopped", () => {
+    const run = runBot(pausedExplainer, scenario);
+    const last = run.results.at(-1);
+
+    expect(last?.decision.action, describeRun(run)).toBe("ASK_PROBE");
   });
 });
 

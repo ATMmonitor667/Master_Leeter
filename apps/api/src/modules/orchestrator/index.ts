@@ -43,6 +43,13 @@ export {
   type TransitionResult,
 } from "./state-machine.js";
 export { POLICIES, canHintNow, policyFor } from "./policy.js";
+export {
+  HELD_FLOOR_CEILING,
+  estimateTurnCompletion,
+  silenceCeiling,
+  type TurnCompletion,
+  type TurnCompletionInput,
+} from "./turn-completion.js";
 
 /**
  * Last line of defense before any action reaches the voice agent.

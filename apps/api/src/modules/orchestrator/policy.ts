@@ -26,6 +26,10 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     minSecondsBetweenProbes: 30,
     acknowledgeSmallTalk: true,
     endOfTurnThreshold: 0.75,
+    // Shortest patience of the three. A learner practising into a void gives up;
+    // still well above the length of an ordinary breath.
+    minTurnEndSilenceMs: 1_200,
+    settledTurnEndSilenceMs: 2_400,
     maxCodeStalenessSeconds: 20,
     expectedMinutes: 45,
   },
@@ -42,6 +46,12 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     minSecondsBetweenProbes: 45,
     acknowledgeSmallTalk: false,
     endOfTurnThreshold: 0.8,
+    // The number the acceptance criterion names. At exactly 1.5s the ceiling is
+    // still 0.35, far below this mode's 0.8 threshold, so a mid-explanation
+    // pause of that length cannot read as a turn end no matter how finished the
+    // words look. In practice a non-question turn needs ~2.4s of quiet here.
+    minTurnEndSilenceMs: 1_500,
+    settledTurnEndSilenceMs: 2_800,
     maxCodeStalenessSeconds: 20,
     expectedMinutes: 40,
   },
@@ -60,6 +70,11 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     minSecondsBetweenProbes: 90,
     acknowledgeSmallTalk: false,
     endOfTurnThreshold: 0.88,
+    // Long enough that the candidate hears the silence. This is the mode's whole
+    // character expressed in milliseconds — it waits until you are certain you
+    // have finished, then waits a little longer.
+    minTurnEndSilenceMs: 2_200,
+    settledTurnEndSilenceMs: 4_000,
     maxCodeStalenessSeconds: 15,
     expectedMinutes: 40,
   },

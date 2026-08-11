@@ -146,6 +146,105 @@ describe("every finalized turn produces a recorded decision", () => {
   });
 });
 
+describe("turn completion reads the clock as well as the words (M4-2)", () => {
+  /**
+   * Silence is measured between two logged timestamps, so these tests advance
+   * the frozen clock between events exactly the way real time would, and assert
+   * on what the log says afterwards. A test that let the wall clock supply the
+   * interval would be measuring how fast vitest ran.
+   */
+  async function speakAfterPause(pauseMs: number, transcript: string) {
+    const runtime = build();
+    await advanceTo(runtime, "IMPLEMENTATION");
+
+    await feed(runtime, "SPEECH_STARTED", {}, "s1");
+    await feed(runtime, "SPEECH_STOPPED", {}, "s2");
+    clock += pauseMs;
+    const result = await feed(runtime, "SPEECH_FINAL", { transcript }, "t1");
+
+    const recorded = (await payloadsOf("ACTION_DECIDED")).at(-1);
+    return { ...result, recorded };
+  }
+
+  it("holds the floor when only 1.5s of silence has elapsed", async () => {
+    const { decision, recorded } = await speakAfterPause(
+      1_500,
+      "I'll use a set to track what I've already seen.",
+    );
+
+    expect(decision?.action).toBe("STAY_SILENT");
+    expect(decision?.reason).toMatch(/below threshold/);
+    expect(recorded).toMatchObject({ silenceMs: 1_500 });
+  });
+
+  it("records the text probability separately from the fused one", async () => {
+    // The two halves have to stay distinguishable in the log, or M4-5b cannot
+    // tell "the model was sure" from "the clock disagreed".
+    const { recorded } = await speakAfterPause(
+      1_500,
+      "I'll use a set to track what I've already seen.",
+    );
+
+    expect(recorded?.["textEndProbability"]).toBe(0.85);
+    expect(recorded?.["semanticEndProbability"]).toBe(0.35);
+    expect(recorded?.["turnEndReason"]).toMatch(/held/);
+  });
+
+  it("lifts the ceiling once the silence has settled", async () => {
+    const { recorded } = await speakAfterPause(
+      3_500,
+      "I'll use a set to track what I've already seen.",
+    );
+
+    expect(recorded).toMatchObject({ semanticEndProbability: 0.85, silenceMs: 3_500 });
+    expect(recorded?.["turnEndReason"]).toMatch(/within what/);
+  });
+
+  it("measures from the most recent speech-stop, not the first", async () => {
+    const runtime = build();
+    await advanceTo(runtime, "IMPLEMENTATION");
+
+    await feed(runtime, "SPEECH_STOPPED", {}, "s1");
+    clock += 9_000;
+    // The candidate started talking again. The old quiet period is spent, and
+    // counting from it would credit a pause that has already been interrupted.
+    await feed(runtime, "SPEECH_STARTED", {}, "s2");
+    clock += 400;
+    await feed(runtime, "SPEECH_FINAL", { transcript: "and it stays linear." }, "t1");
+
+    const recorded = (await payloadsOf("ACTION_DECIDED")).at(-1);
+    expect(recorded?.["silenceMs"]).toBeUndefined();
+  });
+
+  it("answers a direct question without waiting out the timer", async () => {
+    const runtime = build();
+    await advanceTo(runtime, "CLARIFICATION");
+
+    await feed(runtime, "SPEECH_STOPPED", {}, "s1");
+    clock += 200;
+    const { decision } = await feed(
+      runtime,
+      "SPEECH_FINAL",
+      { transcript: "is the list sorted?" },
+      "t1",
+    );
+
+    expect(decision?.action).toBe("ANSWER_CLARIFICATION");
+  });
+
+  it("omits silence entirely when no speech-stop preceded the turn", async () => {
+    // The state of the world until M3-2 ships VAD. Behaviour must be exactly
+    // what it was before M4-2, not silence-by-default.
+    const runtime = build();
+    await advanceTo(runtime, "CLARIFICATION");
+    await feed(runtime, "SPEECH_FINAL", { transcript: "is the list sorted?" }, "t1");
+
+    const recorded = (await payloadsOf("ACTION_DECIDED")).at(-1);
+    expect(recorded?.["silenceMs"]).toBeUndefined();
+    expect(recorded?.["turnEndReason"]).toMatch(/floor yielded|transcript alone/);
+  });
+});
+
 describe("clarification answers come from the scenario", () => {
   it("answers with a canonical fact and cites its key", async () => {
     const runtime = build();

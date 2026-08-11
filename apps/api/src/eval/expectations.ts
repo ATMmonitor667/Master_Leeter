@@ -50,6 +50,26 @@ const longThinker: BotExpectations = {
 };
 
 /**
+ * Trajectory 1b — turn completion, isolated (M4-2).
+ *
+ * A probe is eligible from the first step onward, so each MUST_STAY_SILENT here
+ * is attributable to turn completion alone rather than to the interviewer having
+ * nothing to say. sim.test.ts asserts silence on the three short pauses and
+ * speech on the settled one; these annotations are those assertions.
+ *
+ * The last line is what stops this trajectory rewarding a mute interviewer, and
+ * it is the reason the bot is worth having as well as `long-thinker`: identical
+ * wording and identical text confidence, separated only by how long the
+ * candidate stayed quiet, must produce opposite decisions.
+ */
+const pausedExplainer: BotExpectations = {
+  "complete sentence, 1.5s pause": "MUST_STAY_SILENT",
+  "another complete sentence, 1.9s pause": "MUST_STAY_SILENT",
+  "still going, 2.2s pause": "MUST_STAY_SILENT",
+  "genuinely finished — 3.5s of silence": "MUST_SPEAK",
+};
+
+/**
  * Trajectory 2 — the counterweight.
  *
  * Silence-by-default degrading into unresponsiveness is a different failure, not
@@ -120,6 +140,7 @@ const instantSolver: BotExpectations = {
 
 export const EXPECTATIONS: Readonly<Record<string, BotExpectations>> = {
   "long-thinker": longThinker,
+  "paused-explainer": pausedExplainer,
   "rapid-clarifier": rapidClarifier,
   "prompt-injector": promptInjector,
   "wrong-complexity-claim": wrongComplexityClaim,

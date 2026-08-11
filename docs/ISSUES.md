@@ -11,8 +11,12 @@ Status key: `[ ]` open · `[~]` in progress · `[x]` done · `[-]` **cut** (pers
 2026-08-11 — see the banner in [`MVP.md`](MVP.md); each carries the condition that revives it)
 
 **Progress:** M0, M1, M2 complete except M2-8 (auth). M6 complete except calibration (M6-5),
-which needs human graders. M5-1 half done — the code-derived half of CandidateState works;
-the transcript half waits on a real intent classifier (M4-1).
+which needs human graders. M4-1 and M4-2 are in — the interviewer now judges turn ends on the
+words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
+transcript half is unblocked now that the classifier exists.
+
+**M3 (voice) is untouched, and it is now the whole critical path.** Seven open issues, and
+M4-2's timing half cannot be exercised end to end until M3-2 emits speech-stop.
 
 The loop is closed end to end without voice: pick a scenario, write and run code, end the
 session, read an evidence-backed report. Five scenarios in the library, covering hashing,
@@ -43,9 +47,10 @@ matter this week.
 The remaining work is now almost entirely the product's actual thesis: voice (M3), silence
 quality (M4), and the code-aware interviewer (M5). That is the correct shape for what's left.
 
-**Nothing is currently compiled.** The integration pass and `apps/api/src/env.ts` were both
-written without a package registry available. `pnpm install && pnpm typecheck` is the
-outstanding precondition for trusting any `[x]` above.
+**Compiled and green as of 2026-08-11.** `pnpm typecheck` passes across all three packages;
+`pnpm test` is 481 passing (427 api / 30 web / 24 contracts); `pnpm sim` 32; `pnpm eval` meets
+every threshold. The earlier "nothing is currently compiled" caveat is discharged — every
+`[x]` above has now actually been executed at least once.
 
 ---
 
@@ -333,13 +338,77 @@ answer would outlive the outage that caused it.
 low-double-digit RPM limit. A clarification burst can exceed it. When that happens the
 interview continues on rules — quieter than ideal, never wrong.
 
-**Still open:** 15 unit tests in `gemini-classifier.test.ts` have never been executed (no
-package registry in the authoring environment). M4-2 still owns turn-completion quality; this
-supplies its input, it does not close it.
+**Executed 2026-08-11:** 18 tests in `gemini-classifier.test.ts`, all passing. Turn-completion
+quality belonged to M4-2, which is now closed on top of this — the classifier supplies the
+textual half of that number.
 
-### `[ ]` M4-2 · Turn-completion confidence · M
+**One gap remains, and it is a wiring gap rather than a code gap.** `classifierFromEnv()` has
+no caller outside the barrel export: `buildServer` never constructs it and
+`SessionModuleOptions` has no `classifier` field, so `InterviewRuntime` falls back to
+`ruleBasedClassifier` in the live path and `CLASSIFIER_MODEL` in `.env.example` is read by
+nothing. Every real session therefore runs on the stub, which is exactly the class of error
+the correction note at the top of this file describes. Threading it through is small and is
+the next thing to do.
+
+### `[x]` M4-2 · Turn-completion confidence · M — **timing half unexercised until M3-2**
 **Deps:** M4-1. Semantic end-of-turn probability feeding `END_THRESHOLD`.
-**Acceptance:** a 1.5s pause mid-explanation does not read as turn end.
+**Acceptance:** a 1.5s pause mid-explanation does not read as turn end. ✅
+
+`orchestrator/turn-completion.ts` — `estimateTurnCompletion` fuses what the words say (M4-1)
+with how long the candidate has been quiet. **The gate is unchanged**: it still thresholds one
+number against `endOfTurnThreshold`. What changed is that the number is now worth
+thresholding.
+
+**Why timing had to enter at all.** "I'll use a hash map" is a complete sentence and also the
+first half of "I'll use a hash map... but that doesn't handle duplicates". At the moment of the
+pause they are the same string, so no classifier reading the transcript can separate them. The
+only evidence available before the candidate resumes is the length of the silence.
+
+Two new policy fields per mode: `minTurnEndSilenceMs` (below it, nothing counts as a turn end)
+and `settledTurnEndSilenceMs` (above it, the transcript decides alone), ramping linearly
+between. MOCK is 1500/2800 — at exactly 1.5s the ceiling is `HELD_FLOOR_CEILING` (0.35),
+which sits below every mode's threshold, so a pause that short cannot read as a turn end no
+matter how finished the words look. In practice a non-question turn needs ~2.4s of quiet.
+STRICT waits 2200/4000; patience is now part of a mode's character rather than a comment.
+
+**The property that made this safe to drop into a live gate:** every step is a `min`, so the
+result is never greater than the text probability it started from. Fusing can turn speech into
+silence but never silence into speech, so it cannot invent an interruption in a trajectory that
+was previously clean. Asserted over a sweep of every intent × probability × silence, not
+argued.
+
+**Questions bypass the silence gate entirely.** `EXPLICIT_QUESTION`,
+`CLARIFICATION_REQUEST` and `HINT_REQUEST` skip the timer, because making someone wait 2.4s
+after "is the list sorted?" is not patience — it reads as not having heard them, and
+missed-response is a tracked metric too. The mid-thought veto still sits above the exemption,
+so a question that trails off unfinished is still held.
+
+**No per-intent suppression of think-aloud**, deliberately. To bite it would have to sit below
+`endOfTurnThreshold`, and there it stops being a prior and becomes a ban on the commonest
+intent — and since the gate is only ever invoked on a finalized turn, that would make probes
+and stall hints close to unreachable. Timing is the honest discriminator; intent is not.
+
+`SPEECH_STOPPED` is no longer inert: it records *when*, still not permission to speak.
+`silenceMs` is computed between two logged `occurredAt` timestamps, never a wall clock, so
+replay determinism holds (`replay.test.ts` still green). Absent speech-stop means *unknown*,
+never zero — read as zero it would hold the floor forever and mute the interviewer.
+
+`ACTION_DECIDED` now carries `textEndProbability`, `semanticEndProbability`, `silenceMs` and
+`turnEndReason`. M4-5b's method is reading these back off real sessions and asking which half
+got it wrong, which needs all four.
+
+**New trajectory `paused-explainer`** (1b): four complete, confident sentences separated only
+by how long the candidate stayed quiet. A probe is eligible from the first step, so each
+silence is attributable to turn completion rather than to the interviewer having nothing to
+say — and the settled step MUST speak, so the trajectory cannot be satisfied by an interviewer
+that never talks. Suite is now 29 steps across 7 bots, 96.6% annotated, 0 unwanted / 0 missed.
+
+**The honest limit.** Nothing emits `SPEECH_STOPPED` until WebRTC lands (M3-2), so the live
+path still runs the text-only branch today — identical to pre-M4-2 behaviour. The mechanism,
+the policy and the tests are real; the timing half is not yet exercised end to end. ADR-001's
+caveat compounds it: Gemini's turn boundaries are currently our own `activity_end` signals
+echoed back, so the *quality* of `silenceMs` in production is M3-2's problem before it is this
+module's. The thresholds are starting points, not findings — M4-5b tunes them.
 
 ### `[ ]` M4-3 · Activity-aware policy · M
 **Deps:** M2-5, M1-3. Code activity in last N seconds, stall duration, `stuckScore` feeding gate inputs.

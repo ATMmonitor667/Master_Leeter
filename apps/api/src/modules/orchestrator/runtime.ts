@@ -22,6 +22,7 @@ import { getHint, selectProbeWording } from "../scenario/probes.js";
 import { type IntentClassifier, ruleBasedClassifier } from "./classifier.js";
 import { decideAction } from "./gate.js";
 import { INITIAL_STATE, applyEvent } from "./state-machine.js";
+import { estimateTurnCompletion } from "./turn-completion.js";
 
 /**
  * Interview Runtime — the live per-session orchestrator.
@@ -114,6 +115,17 @@ export class InterviewRuntime {
   private interviewerCurrentlySpeaking = false;
   private candidateSpeechStarted = false;
 
+  /**
+   * When VAD last reported the candidate stopping, or null if they are speaking
+   * or never started.
+   *
+   * Taken from the event's `occurredAt` rather than a wall clock on purpose:
+   * turn-completion now depends on this interval, and replay must reproduce the
+   * same gate decisions from the log alone (`replay.test.ts`). A wall-clock read
+   * would make every decision a function of how fast the replay ran.
+   */
+  private lastSpeechStoppedAtMs: number | null = null;
+
   /** Coalescing observation loop. At most one pass in flight, ever. */
   private observationDirty = false;
   private observationRunning: Promise<void> | null = null;
@@ -188,12 +200,19 @@ export class InterviewRuntime {
 
       case "SPEECH_STARTED":
         this.candidateSpeechStarted = true;
+        // New speech invalidates the previous quiet period. Silence is measured
+        // from the most recent stop, not the first one in the session.
+        this.lastSpeechStoppedAtMs = null;
         return none;
 
       case "SPEECH_STOPPED":
-        // Intentionally inert. This is the whole thesis: VAD noticing that the
-        // candidate stopped talking is an observation, not permission to speak
-        // (ADR-001). Only a finalized turn reaches the gate.
+        // Still not permission to speak — that is the whole thesis, and nothing
+        // here changes it (ADR-001). What it now does is note WHEN, because how
+        // long the candidate has been quiet is the only evidence that separates
+        // a finished thought from a breath (M4-2). The observation is recorded;
+        // the decision still belongs to the gate, and only a finalized turn
+        // reaches it.
+        this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.now();
         return none;
 
       case "BARGE_IN":
@@ -253,11 +272,30 @@ export class InterviewRuntime {
     // was when the candidate stopped talking.
     const classification = await this.classifier.classify({ transcript, finalized });
 
+    // How long the candidate has been quiet, measured between two logged
+    // timestamps. Undefined when no speech-stop preceded this turn — a text-only
+    // client, or voice that has not reported one — and the estimator reads that
+    // as unknown rather than zero.
+    const silenceMs = this.silenceBefore(event);
+
+    // M4-2. The classifier judged the words; this weighs them against the clock.
+    // The gate is unchanged and still thresholds one number — what changed is
+    // that the number is now worth thresholding.
+    const completion = estimateTurnCompletion({
+      transcript,
+      intent: classification.intent,
+      textEndProbability: classification.semanticEndProbability,
+      ...(silenceMs !== undefined ? { silenceMs } : {}),
+      policy: this.deps.policy,
+    });
+
     const turn: Turn = {
       turnId: `turn-${event.seq}`,
       finalized,
       transcript,
-      semanticEndProbability: classification.semanticEndProbability,
+      semanticEndProbability: completion.endProbability,
+      textEndProbability: completion.textEndProbability,
+      ...(silenceMs !== undefined ? { silenceMsBeforeEnd: silenceMs } : {}),
       intent: classification.intent,
       intentProbabilities: classification.intentProbabilities,
       endedAt: event.occurredAt,
@@ -281,7 +319,13 @@ export class InterviewRuntime {
       reason: decision.reason,
       decidedByRule: decision.decidedByRule,
       intent: classification.intent,
-      semanticEndProbability: classification.semanticEndProbability,
+      // The fused number the gate actually thresholded, then the parts it was
+      // made of. M4-5b's whole method is reading these back off real sessions
+      // and asking which half got it wrong, which needs all three.
+      semanticEndProbability: completion.endProbability,
+      textEndProbability: completion.textEndProbability,
+      turnEndReason: completion.reason,
+      ...(completion.silenceMs !== undefined ? { silenceMs: completion.silenceMs } : {}),
       classifierId: classification.classifierId,
       ...(decision.probeId ? { probeId: decision.probeId } : {}),
       ...(decision.hintLevel ? { hintLevel: decision.hintLevel } : {}),
@@ -308,6 +352,21 @@ export class InterviewRuntime {
     if (utterance) this.interviewerCurrentlySpeaking = true;
 
     return { decision, utterance };
+  }
+
+  /**
+   * Quiet time between the last speech-stop and this finalized transcript.
+   *
+   * Both timestamps come off logged events, so this is a pure function of the
+   * log. Returns undefined when there is no stop to measure from: unknown
+   * timing, which the estimator treats as "no timing evidence" rather than as
+   * zero silence.
+   */
+  private silenceBefore(event: SessionEvent): number | undefined {
+    if (this.lastSpeechStoppedAtMs === null) return undefined;
+    const finalAtMs = Date.parse(event.occurredAt);
+    if (!Number.isFinite(finalAtMs)) return undefined;
+    return Math.max(0, finalAtMs - this.lastSpeechStoppedAtMs);
   }
 
   /**
