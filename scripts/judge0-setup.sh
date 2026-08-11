@@ -181,7 +181,14 @@ done
 echo
 
 bold "Next"
-echo "  Add to apps/api/.env.local:"
-echo "    JUDGE0_URL=$URL"
+echo "  1. Add to apps/api/.env.local (loaded at boot by apps/api/src/env.ts):"
 echo
-echo "  Stop it later with:  cd $DIR && docker compose down"
+echo "       JUDGE0_URL=$URL"
+echo
+echo "  2. Restart the API and confirm it attached. The boot log must say"
+echo "     runner:\"judge0\" — if it says runner:\"none\", the variable did not"
+echo "     reach the process and execution is disabled:"
+echo
+echo "       pnpm dev:api 2>&1 | grep -E 'environment loaded|runner'"
+echo
+echo "  Stop Judge0 later with:  cd $DIR && docker compose down"

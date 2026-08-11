@@ -7,7 +7,8 @@ in [`MVP.md`](MVP.md).
 Sizes: **S** ≤ 2 days · **M** 3–5 days · **L** 1.5–2 weeks
 Lanes: **A** Interview Brain · **B** Workspace & Runtime · **C** Voice & Evidence
 
-Status key: `[ ]` open · `[~]` in progress · `[x]` done
+Status key: `[ ]` open · `[~]` in progress · `[x]` done · `[-]` **cut** (personal-use rescope,
+2026-08-11 — see the banner in [`MVP.md`](MVP.md); each carries the condition that revives it)
 
 **Progress:** M0, M1, M2 complete except M2-8 (auth). M6 complete except calibration (M6-5),
 which needs human graders. M5-1 half done — the code-derived half of CandidateState works;
@@ -34,9 +35,17 @@ such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (
 instance). Both satisfy the same interfaces as their tested in-memory/fake counterparts.
 Verifying them is M0-2 and a Postgres CI service, not new code.
 
-**Everything buildable without an external credential is now done.** Every remaining issue
-needs a Judge0 instance (M0-2), an auth provider (M2-8), a realtime API key (M0-1 and all of
-M3/M4), human graders (M4-5, M6-5), or observability infrastructure (M7-2).
+**After the personal-use rescope, what remains is roughly 62 engineering days**, down from 88.
+Every one of those issues needs either a verified Judge0 instance (M0-2) or the realtime spike
+(M0-1) to have happened first — which is why those two, both sized S, are the only things that
+matter this week.
+
+The remaining work is now almost entirely the product's actual thesis: voice (M3), silence
+quality (M4), and the code-aware interviewer (M5). That is the correct shape for what's left.
+
+**Nothing is currently compiled.** The integration pass and `apps/api/src/env.ts` were both
+written without a package registry available. `pnpm install && pnpm typecheck` is the
+outstanding precondition for trusting any `[x]` above.
 
 ---
 
@@ -206,9 +215,13 @@ Derive `FIRST_COMPILES`, `BASE_TESTS_PASS`, `REPEATED_SAME_FAILURE`, `LARGE_REWR
 Append-only Postgres table, strictly increasing seq per session, evidence hashes, replay reader.
 **Acceptance:** no code path updates or deletes a persisted event.
 
-### `[ ]` M2-8 · Auth · S
+### `[-]` M2-8 · Auth · S — **cut**
 **Deps:** M0-4.
 Hosted provider (email/OAuth), short-lived session tokens, separate author/admin role.
+
+**Cut:** single user on localhost. The `x-user-id` header stays as-is.
+**Revived by:** a second user, or any deployment reachable from the internet. Additive —
+nothing is built on its absence.
 
 ### `[x]` M2-9 · Replay determinism test · S
 **Deps:** M2-7, M1-3.
@@ -269,16 +282,70 @@ are identifiable later.
 ### `[ ]` M4-3 · Activity-aware policy · M
 **Deps:** M2-5, M1-3. Code activity in last N seconds, stall duration, `stuckScore` feeding gate inputs.
 
-### `[ ]` M4-4 · Interruption eval harness · M
+### `[x]` M4-4 · Interruption eval harness · M — **uncompiled, see note**
 **Deps:** M1-6, M4-1. Automated unwanted-interruption and missed-response rates over the bot suite, reported per commit.
+
+`src/eval/` — `metrics.ts` (pure, zero imports), `expectations.ts` (ground truth),
+`harness.ts` (glue + stale-annotation guard), `report.ts`, `cli.ts`. `pnpm eval` prints the
+table and exits non-zero on regression; wired into CI after `pnpm sim`.
+
+**Annotations are derived from what `sim.test.ts` already asserts**, not from my opinion of
+good interviewing. That gives the suite a property worth keeping: *it cannot go red unless
+`sim.test.ts` also goes red*. A failure therefore means the gate regressed, never that the
+annotation was arguable. Anything genuinely arguable is marked `EITHER` — currently one step
+("hidden test extraction", where a bounded refusal and silence are both defensible and the
+choice belongs to M3-6).
+
+Current suite: 25 steps, 96% annotated, 14 silence opportunities, 10 speech opportunities.
+
+**Three deliberate limits, so the numbers aren't over-read:**
+- The bots are **adversarially sampled**. `extrapolatedPerThirtyMinutes` is reported for
+  continuity with the metric table, labelled an upper bound, and **gated on nothing** — one
+  mistake in the long-thinker slice annualises to ~50/30min. CI gates on the absolute count
+  of material unwanted interruptions (0) instead.
+- `materialUnwanted` excludes `ACKNOWLEDGE_BRIEFLY`, which is what the word "material" in
+  `CLAUDE.md` is doing. Both counts are reported.
+- Every rate is zero-guarded. A `NaN` passes every comparison a threshold check makes, which
+  would turn the gate into decoration.
+
+**Not verified by CI yet.** The metric math was verified standalone (24 assertions under
+`node --experimental-strip-types`, all passing) and every annotation key was confirmed to
+resolve to a real step label, but `pnpm typecheck` and `vitest` have never run — no package
+registry was available. Treat as "written and unit-verified", not "green".
+
+**Also partly delivers the reduced M7-5:** `pnpm eval --csv metrics.csv` appends one row per
+run, which is the trend line the cut dashboard was for.
 
 ### `[ ]` M4-4b · Leakage + factuality eval sets · M
 **Deps:** M1-4, M1-5. Every clarification answer matches a canonical fact; no probe or hint exceeds the mode's permitted disclosure. **Fails the build on regression.**
 
-### `[ ]` M4-5 · Human review round · M
-**Deps:** M4-4, M3-*. ≥ 20 real sessions rated by experienced engineers. Tune thresholds against results, not intuition.
+### `[-]` M4-5 · Human review round · M — **cut, replaced by M4-5b**
+**Deps:** M4-4, M3-*. ≥ 20 real sessions rated by experienced engineers.
 
-**Milestone exit:** unwanted interruption rate under threshold, human-reviewed. If not, **this milestone repeats.** Do not proceed to breadth.
+**Cut:** needs 3–5 experienced interviewers and multiple rounds. Not available to a solo
+personal project.
+**Revived by:** anyone else using this, or a decision to productise. It is the strongest
+quality signal in the design and its loss is the real cost of the rescope.
+
+### `[ ]` M4-5b · Self-review loop · S — **replacement**
+**Deps:** M4-4, M3-*.
+
+After each of your own sessions, log every interviewer utterance you found unwanted, with the
+`seq` it fired at and the gate inputs at that moment. Tune thresholds against the accumulated
+list.
+
+- [ ] A one-command way to dump "every interviewer utterance in session X with its gate inputs"
+- [ ] A flat file you append judgements to, replayable against the gate after a threshold change
+- [ ] Re-run the M4-4 harness after each tuning pass to catch regressions
+
+**Acceptance:** ten logged annoying interruptions from real sessions, and a threshold change
+that demonstrably fixes some without breaking the bot suite. Weaker evidence than inter-rater
+agreement, and it should be described that way in any writeup — but it beats intuition, which
+is the actual alternative.
+
+**Milestone exit:** unwanted interruption rate under threshold on the bot suite, plus your own
+sessions no longer producing interruptions you'd call material. If not, **this milestone
+repeats.**
 
 ---
 
@@ -316,8 +383,18 @@ Versioned config, 7 dimensions, starting weights 15/25/25/10/10/10/5.
 ### `[x]` M6-4 · Report endpoint with job status · S
 **Deps:** M6-2. In-progress / ready / failed-and-retryable. Regenerable from events after rubric changes.
 
-### `[ ]` M6-5 · Calibration gold set · L
-**Deps:** M6-2. Synthetic + consenting human sessions graded by multiple experienced interviewers. Measure weighted per-dimension agreement and rerun stability.
+### `[-]` M6-5 · Calibration gold set · L — **cut**
+**Deps:** M6-2. Synthetic + consenting human sessions graded by multiple experienced interviewers.
+
+**Cut:** inter-grader agreement is undefined with one grader. The largest single saving in the
+rescope (~8 days).
+**Revived by:** multiple users, or before trusting a report score as anything other than a
+prompt for your own reflection. **Consequence to hold onto:** report scores are now
+uncalibrated. Treat the evidence moments as the useful output and the numbers as decoration.
+
+**Still worth doing (S, not L):** rerun stability — evaluate the same session twice and check
+the scores don't swing. That needs no human graders and catches a badly nondeterministic
+evaluator prompt.
 
 ---
 
@@ -326,8 +403,16 @@ Versioned config, 7 dimensions, starting weights 15/25/25/10/10/10/5.
 ### `[x]` M7-1 · Reconnect and failure paths · M
 Voice disconnect pauses timer after grace; browser refresh restores editor revision + timer + state via session lease and last-acked seq; runner-unavailable keeps the interview alive; delayed transcript prefers silence over guessing.
 
-### `[ ]` M7-2 · Observability · M
+### `[-]` M7-2 · Observability · M — **cut, reduced to structured logging**
 OpenTelemetry traces joining audio turns → gate decisions → model calls → code runs → report generation.
+
+**Cut:** OTel collector infrastructure for one user on one machine. `traceId` is already
+threaded through every event by the contracts, so the *data* exists — what's cut is the
+exporter and backend.
+**Reduced to:** log the gate decision (action, classifierId, inputs, traceId) at info level.
+That is enough to answer "why did it speak there?" from a terminal, which is the only question
+observability was for.
+**Revived by:** deployment anywhere you can't read stdout.
 
 ### `[x]` M7-3 · Privacy controls · M
 No raw audio by default; session and account deletion propagating to transcripts, derived reports, and analytics; consent surface.
@@ -335,11 +420,21 @@ No raw audio by default; session and account deletion propagating to transcripts
 ### `[x]` M7-4 · Scenarios #2–5 · L
 Authored, reviewed, provenance recorded.
 
-### `[ ]` M7-5 · Eval dashboard · M
+### `[-]` M7-5 · Eval dashboard · M — **cut, reduced to CLI output**
 The metric table from `CLAUDE.md`, tracked over time.
 
-### `[ ]` M7-6 · Accessibility pass · M
-Captions toggle, keyboard operation, volume, repeat-request behavior — without changing core scoring.
+**Cut:** a web dashboard for an audience of one.
+**Reduced to:** M4-4 and M4-4b print the metric table to stdout and fail the build on
+regression. Append each run's numbers to a CSV if you want the trend line.
+**Revived by:** more than one person needing to see the numbers.
+
+### `[-]` M7-6 · Accessibility pass · M — **cut, keep the captions toggle**
+Captions toggle, keyboard operation, volume, repeat-request behavior.
+
+**Cut:** a full pass serves users with needs you can enumerate for yourself.
+**Keep:** the captions toggle and repeat-request, because they're already required by M3-4 —
+"can you say that again?" is normal interview behaviour, not an accommodation.
+**Revived by:** any other user, immediately and non-negotiably.
 
 ---
 

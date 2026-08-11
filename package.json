@@ -11,6 +11,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "sim": "pnpm --filter @master-leeter/api exec vitest run src/sim",
+    "eval": "pnpm --filter @master-leeter/api exec tsx src/eval/cli.ts",
+    "eval:test": "pnpm --filter @master-leeter/api exec vitest run src/eval",
     "dev:api": "pnpm --filter @master-leeter/api dev",
     "dev:web": "pnpm --filter @master-leeter/web dev",
     "infra:up": "docker compose up -d",

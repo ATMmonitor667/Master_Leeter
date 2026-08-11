@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
+import { loadEnv } from "./env.js";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { Judge0Runner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule } from "./modules/privacy/index.js";
@@ -68,6 +69,11 @@ export function buildServer(opts: ServerOptions) {
 }
 
 export async function start(): Promise<void> {
+  // Before anything reads process.env. Called here rather than at import time
+  // so that importing this module from a test does not pull in a developer's
+  // personal .env.local.
+  const env = loadEnv();
+
   // Scenarios load at boot and fail loudly. A content bug should stop a deploy,
   // not surface mid-interview as an interviewer that cannot answer questions.
   const library = await loadScenarioLibrary(CONTENT_ROOT);
@@ -85,10 +91,22 @@ export async function start(): Promise<void> {
   const app = buildServer({ library, logger: true, ...(runner ? { runner } : {}) });
   const port = Number(process.env["API_PORT"] ?? 4000);
 
+  // Names only, never values.
+  app.log.info({ files: env.loaded, vars: env.applied }, "environment loaded");
+
   app.log.info(
     { scenarios: [...library.keys()], runner: runner ? "judge0" : "none" },
     "scenario library loaded",
   );
+
+  // Loud, because the failure it describes is silent otherwise: the interview
+  // runs fine right up until the candidate presses Run and gets a 503.
+  if (!runner) {
+    app.log.warn(
+      "JUDGE0_URL is not set — code execution is DISABLED and run requests will return 503. " +
+        "Set it in apps/api/.env.local (see scripts/judge0-setup.sh).",
+    );
+  }
   await app.listen({ port, host: "0.0.0.0" });
 }
 
@@ -99,3 +117,8 @@ if (entry.endsWith("src/index.ts") || entry.endsWith("dist/index.js")) {
     process.exit(1);
   });
 }
+
+// Extension is required — this package is ESM with NodeNext resolution, so a
+// bare './eval' does not resolve. See the note in YOUR-TASKS.md about whether
+// the server entrypoint should re-export the eval harness at all.
+export * from "./eval/index.js";
