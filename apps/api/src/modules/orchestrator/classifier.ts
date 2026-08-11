@@ -45,6 +45,17 @@ export interface ClassifierInput {
 
 export interface IntentClassifier {
   /**
+   * Stable identity, recorded on every ACTION_DECIDED event.
+   *
+   * Both implementations already carried this; the interface simply failed to
+   * declare it, which meant a caller holding an `IntentClassifier` could not
+   * ask which one it had. That matters at exactly two moments: the boot log,
+   * and reading back a session to find out whether it ran on the model or
+   * degraded to the stub halfway through.
+   */
+  readonly id: string;
+
+  /**
    * Sync or async, and callers must `await` regardless.
    *
    * The union is load-bearing rather than lazy typing. A model-backed

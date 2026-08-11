@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { loadEnv } from "./env.js";
+import { classifierFromEnv, type IntentClassifier } from "./modules/orchestrator/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule } from "./modules/privacy/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
@@ -32,6 +33,12 @@ export interface ServerOptions {
   logger?: boolean;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
+  /**
+   * Absent in tests, where the rule stub is the point. `start()` always supplies
+   * one — `classifierFromEnv` returns the stub rather than throwing when
+   * unconfigured, so this is never a reason not to boot.
+   */
+  classifier?: IntentClassifier;
 }
 
 export function buildServer(opts: ServerOptions) {
@@ -55,6 +62,7 @@ export function buildServer(opts: ServerOptions) {
     eventLog,
     evaluationQueue,
     ...(opts.runner ? { runner: opts.runner } : {}),
+    ...(opts.classifier ? { classifier: opts.classifier } : {}),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
@@ -86,16 +94,43 @@ export async function start(): Promise<void> {
       ? new ModelJudgeRunner({ model: judgeModel, apiKey: judgeKey })
       : undefined;
 
-  const app = buildServer({ library, logger: true, ...(runner ? { runner } : {}) });
+  // Built once and shared by every session (see SessionModuleOptions.classifier).
+  // Returns the rule stub when unconfigured rather than throwing — booting
+  // without a model key is a supported state.
+  const classifier = classifierFromEnv();
+
+  const app = buildServer({
+    library,
+    logger: true,
+    ...(runner ? { runner } : {}),
+    classifier,
+  });
   const port = Number(process.env["API_PORT"] ?? 4000);
 
   // Names only, never values.
   app.log.info({ files: env.loaded, vars: env.applied }, "environment loaded");
 
   app.log.info(
-    { scenarios: [...library.keys()], runner: runner ? "model-judge" : "none" },
+    {
+      scenarios: [...library.keys()],
+      runner: runner ? "model-judge" : "none",
+      classifier: classifier.id,
+    },
     "scenario library loaded",
   );
+
+  // Loud for the same reason the runner warning is: the stub degrades quietly.
+  // An interviewer on rules answers clarifications and stays silent correctly,
+  // but never notices a complexity claim or a hint request phrased any way the
+  // keyword list did not anticipate. It looks like a working interview that is
+  // merely reticent, which is the hardest failure to spot.
+  if (classifier.id.startsWith("stub-")) {
+    app.log.warn(
+      "CLASSIFIER_MODEL or an API key is not set — intent classification is running on the " +
+        "RULE STUB. The interviewer will miss intents the keyword list does not cover. " +
+        "Set CLASSIFIER_MODEL in apps/api/.env.local.",
+    );
+  }
 
   // Loud, because the failure is otherwise silent: the interview runs fine right
   // up until the candidate presses Run and gets a 503.

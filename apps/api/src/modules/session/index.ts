@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { InterviewModeSchema, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { InterviewRuntime } from "../orchestrator/index.js";
+import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.js";
 import { DEFAULT_LIMITS, RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
@@ -63,6 +63,17 @@ export interface SessionModuleOptions {
   runner?: CodeRunner;
   /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
   evaluationQueue?: { enqueue(sessionId: string, rubricId: string): unknown };
+  /**
+   * Shared across every session in the process, deliberately.
+   *
+   * The cache warms across sessions, and — more importantly — one circuit
+   * breaker protects the whole process. A quota exhaustion is an account-level
+   * fact, not a session-level one, so per-session breakers would each have to
+   * discover it independently, at the cost of three timed-out turns apiece.
+   *
+   * Omitted in tests, where `InterviewRuntime` falls back to the rule stub.
+   */
+  classifier?: IntentClassifier;
 }
 
 export async function registerSessionModule(
@@ -115,6 +126,11 @@ export async function registerSessionModule(
       traceId: session.traceId,
       events: eventLog,
       remainingSeconds: () => remainingSeconds(session, Date.now()),
+      // Without this the runtime silently falls back to the rule stub, and
+      // every session runs on `stub-rules-v1` while CLASSIFIER_MODEL is read by
+      // nothing. The failure is invisible in the logs and only shows up as an
+      // interviewer that never notices a complexity claim.
+      ...(opts.classifier ? { classifier: opts.classifier } : {}),
     });
 
     runtimes.set(session.id, runtime);
