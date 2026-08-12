@@ -15,13 +15,17 @@ which needs human graders. M4-1 and M4-2 are in — the interviewer now judges t
 words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
 transcript half is unblocked now that the classifier exists.
 
-**M3 (voice) is the whole critical path.** M3-1 is verified against the live API, and M3-2 is
-code complete: the browser can be issued a credential, that credential is what enforces silence
-control, and the client now emits `SPEECH_STARTED` / `SPEECH_STOPPED` — the input M4-2's timing
-half has been waiting for. Five open issues remain.
+**M3 (voice) is code complete.** M3-1 is verified against the live API; M3-2 through M3-7 are
+written, wired and green in CI. The path exists end to end: credential → constrained socket →
+VAD → turn completion → gate → authorization → tool surface → speech.
 
-**Nothing has been spoken into a microphone yet.** That single session is now the whole
-measurement, and every remaining estimate in this file is inference until it happens.
+**Nothing has been spoken into a microphone yet, and that has not changed.** Every claim above
+is a claim about code, not about an interview. The single session remains the whole
+measurement, and every estimate in this file is inference until it happens.
+
+What that session is expected to exercise for the first time: brief delivery on connect,
+probes arriving after think-aloud turns (the re-evaluation fix), the persona's brevity, and
+barge-in cutting real audio.
 
 M3-1 is done on a stronger standard than the rest of this file: it has been run against the
 live API, and the run **failed first time** on a request shape 29 green unit tests could not
@@ -371,15 +375,15 @@ in the event log with plausible `silenceMs` between them.
 - [ ] Run one session with a real microphone and record what happened here.
 - [ ] Confirm barge-in actually cuts model audio (needs M3-5 before there is audio to cut).
 
-### `[ ]` M3-3 · Voice agent tool surface · M
+### `[x]` M3-3 · Voice agent tool surface · M
 **Deps:** M1-2, M1-4.
 Exactly five tools: `get_interview_context`, `get_clarification_fact`, `get_probe_wording`, `get_follow_up`, `record_delivery`.
 **Acceptance:** the backend validates current state and action permission before executing any tool; no arbitrary data access exists.
 
-### `[ ]` M3-4 · Oral brief delivery · M
+### `[x]` M3-4 · Oral brief delivery · M
 **Deps:** M3-3, M1-1. Authored opening script, repeat via reviewed variants, bounded paraphrase preserving canonical facts.
 
-### `[ ]` M3-5 · Wire orchestrator → response creation · M
+### `[x]` M3-5 · Wire orchestrator → response creation · M
 **Deps:** M0-1, M1-3, M3-2.
 Manual response creation only. The gate's authorized action is the sole trigger for speech.
 **Acceptance:** no configuration exists in which the model can speak without gate authorization.
@@ -410,7 +414,7 @@ interviewer.
 that it reaches the model through the credential, never reaches the browser, and addresses
 each habit the first real session flagged. Whether it *sounds* right needs M3-5 and a human.
 
-### `[ ]` M3-7 · Prompt-injection containment test · S
+### `[x]` M3-7 · Prompt-injection containment test · S
 **Deps:** M3-5. Run the M1-6 injection fixtures against the live voice path.
 
 ---
