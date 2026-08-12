@@ -176,10 +176,15 @@ describe("the app channel never carries the words", () => {
     const messages = await speak(port, id, "can the list be empty");
     const actions = messages.filter((m) => m["kind"] === "ACTION");
 
-    // The stub classifier may or may not authorize on this turn; what must hold
-    // is that any ACTION carries an action and an id, and nothing else.
+    // An ACTION carries the action kind and an utterance id, and nothing else.
+    // The earlier version of this compared the key list against a slice of a
+    // fixed list by length, which passes for any shape of the right size — a
+    // test that cannot fail is worse than no test, because it is trusted.
+    expect(actions.length, "no ACTION was pushed for an authorized turn").toBeGreaterThan(0);
+
     for (const action of actions) {
-      expect(Object.keys(action).sort()).toEqual(["action", "kind", "utteranceId"].slice(0, Object.keys(action).length).sort());
+      const keys = Object.keys(action).sort();
+      expect(keys).toEqual(["action", "kind", "utteranceId"]);
       expect(JSON.stringify(action)).not.toMatch(/duplicate|sorted|scanner|package/i);
     }
   });
@@ -199,5 +204,80 @@ describe("the app channel never carries the words", () => {
     ]) {
       expect(wire).not.toContain(secret);
     }
+  });
+});
+
+describe("the authorization survives long enough to be used", () => {
+  /**
+   * The bug this test was written to expose.
+   *
+   * `deliver` pushed ACTION to the client and then immediately called
+   * markSpeechFinished, which clears the authorization. By the time the browser
+   * asked the model to speak and the model called a tool, the window had already
+   * shut — so the interviewer could never fetch its own words and every voice
+   * turn died as NOT_AUTHORIZED.
+   *
+   * Opening the interview is the easiest case to observe: a brand new session's
+   * first event authorizes DELIVER_BRIEF unconditionally.
+   */
+  it("is still open when the voice agent calls a tool", async () => {
+    const { port } = await start();
+    const id = await newSession(port);
+
+    await speak(port, id, "hello");
+
+    const body = (await (await callTool(port, id, "get_interview_context")).json()) as {
+      ok: boolean;
+      data: Record<string, unknown>;
+    };
+
+    expect(body.ok).toBe(true);
+    expect(
+      body.data["authorizedAction"],
+      "the authorization was closed before the voice agent could use it",
+    ).not.toBe("STAY_SILENT");
+  });
+});
+
+describe("the interview actually opens", () => {
+  /**
+   * SESSION_STARTED was appended at creation and never dispatched, so the whole
+   * brief-delivery path was unreachable. The problem only got delivered if the
+   * candidate spoke first — backwards, since they are waiting to hear it.
+   */
+  it("delivers the brief when the voice session reports ready", async () => {
+    const { port } = await start();
+    const id = await newSession(port);
+
+    const res = await fetch(
+      `http://127.0.0.1:${port}/v1/interview-sessions/${id}/voice-ready`,
+      { method: "POST" },
+    );
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const events = await fetch(`http://127.0.0.1:${port}/v1/privacy/sessions/${id}/export`)
+      .then((r) => r.json() as Promise<{ events: Array<{ type: string }> }>)
+      .then((b) => b.events.map((e) => e.type));
+
+    expect(events, "the interview never opened").toContain("BRIEF_DELIVERED");
+  });
+
+  it("does not deliver it twice when the client retries", async () => {
+    const { port } = await start();
+    const id = await newSession(port);
+
+    for (let i = 0; i < 3; i++) {
+      await fetch(`http://127.0.0.1:${port}/v1/interview-sessions/${id}/voice-ready`, {
+        method: "POST",
+      });
+    }
+    await new Promise((r) => setTimeout(r, 100));
+
+    const events = await fetch(`http://127.0.0.1:${port}/v1/privacy/sessions/${id}/export`)
+      .then((r) => r.json() as Promise<{ events: Array<{ type: string }> }>)
+      .then((b) => b.events.filter((e) => e.type === "BRIEF_DELIVERED"));
+
+    expect(events).toHaveLength(1);
   });
 });

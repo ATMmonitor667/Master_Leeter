@@ -99,6 +99,8 @@ export interface RealtimeVoiceOptions {
   onBargeIn?: () => void;
   onReady?: () => void;
   onError?: (err: Error) => void;
+  /** The interviewer finished speaking. Closes the server's authorization. */
+  onSpeechComplete?: () => void;
   /**
    * Relays a tool call to the server and returns its result.
    *
@@ -359,6 +361,7 @@ export class RealtimeVoice {
     const content = serverContent(msg);
     if (content?.["turnComplete"] === true || content?.["turn_complete"] === true) {
       this.interviewerSpeaking = false;
+      this.opts.onSpeechComplete?.();
     }
   }
 }

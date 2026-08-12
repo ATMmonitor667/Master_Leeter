@@ -263,10 +263,22 @@ export async function registerSessionModule(
         } as ServerMessage);
         void utterance;
 
-        // No audio pipeline yet, so the utterance is "finished" the instant it
-        // is produced. M3-5 replaces this with the realtime response-done
-        // event, at which point barge-in has a real window to interrupt.
-        runtime?.markSpeechFinished();
+        /**
+         * Close the window only when nobody can tell us it closed.
+         *
+         * The authorization is what the voice tool surface checks, so clearing
+         * it here unconditionally — which is what this did — meant the browser
+         * received ACTION, asked the model to speak, the model called
+         * get_probe_wording, and got NOT_AUTHORIZED. Every voice turn died
+         * silently, and the log showed a perfectly good decision behind it.
+         *
+         * With a socket attached the client reports completion (see
+         * /voice-utterance-complete) once the model's audio ends, which is also
+         * when barge-in stops applying. With no socket there is nothing to
+         * report it, and leaving the flag set would make gate rule 1 read every
+         * later turn as a barge-in and mute the interviewer for good.
+         */
+        if (!sessionPushers.has(sessionId)) runtime?.markSpeechFinished();
       }
   }
 
@@ -562,6 +574,53 @@ export async function registerSessionModule(
    * ways, which ADR-001 did not choose. What must never happen is the wording
    * arriving unsolicited on the app channel, and it does not.
    */
+  /**
+   * The voice session is connected and can be spoken through (M3-4).
+   *
+   * This is what opens the interview. SESSION_STARTED is appended at creation
+   * but was never dispatched to the orchestrator, so `openInterview` — the whole
+   * brief-delivery path — was unreachable: the problem only got delivered if the
+   * candidate happened to speak first, which is backwards, since they are
+   * waiting to hear it.
+   *
+   * It is deliberately driven by the CLIENT being ready rather than by session
+   * creation. A brief delivered before anything could play it is a brief nobody
+   * hears, and the authorization would be spent on silence.
+   *
+   * Replays through the same path: the opening is triggered by ingesting the
+   * logged SESSION_STARTED, so a replay reaches it without this route existing.
+   */
+  app.post("/interview-sessions/:id/voice-ready", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+
+    const started = (await eventLog.read(id)).find((e) => e.type === "SESSION_STARTED");
+    if (!started) return reply.code(409).send({ error: "NO_SESSION_STARTED" });
+
+    // Idempotent by construction: the gate only authorizes the brief while
+    // briefDeliveryCount is 0, so a retried call decides STAY_SILENT.
+    await dispatch(started);
+    return reply.send({ ok: true });
+  });
+
+  /**
+   * The interviewer's audio finished (M3-5).
+   *
+   * Reported by the browser when the model's turn completes. Two things end
+   * here: the authorization the tool surface checks, and the window in which a
+   * candidate speaking counts as barge-in.
+   */
+  app.post("/interview-sessions/:id/voice-utterance-complete", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const runtime = runtimes.get(id);
+    if (!runtime) return reply.code(409).send({ error: "NO_LIVE_SESSION" });
+
+    runtime.markSpeechFinished();
+    return reply.send({ ok: true });
+  });
+
   app.post("/interview-sessions/:id/voice-tool", async (req, reply) => {
     const { id } = req.params as { id: string };
     const session = await store.get(id);

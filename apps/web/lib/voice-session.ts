@@ -194,6 +194,15 @@ export class VoiceSession {
           this.playback?.enqueue(pcm);
           this.setStatus("SPEAKING");
         },
+        onSpeechComplete: () => {
+          this.setStatus("LISTENING");
+          // Tells the server the authorization window is closed. Fire and
+          // forget: a lost report costs a stale window, not a broken session.
+          void fetch(
+            `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
+            { method: "POST", keepalive: true },
+          ).catch(() => {});
+        },
         onBargeIn: () => {
           // Immediate and total. Chunks arrive faster than real time, so a
           // barge-in that only stopped future audio would keep talking over the
@@ -201,7 +210,16 @@ export class VoiceSession {
           this.playback?.stop();
           this.setStatus("LISTENING");
         },
-        onReady: () => this.setStatus("LISTENING"),
+        onReady: () => {
+          this.setStatus("LISTENING");
+          // Opens the interview. Until the model can be spoken through there is
+          // nothing to deliver the brief to, so this is the moment — not session
+          // creation, which would spend the authorization on silence.
+          void fetch(
+            `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-ready`,
+            { method: "POST" },
+          ).catch(() => {});
+        },
         onError: (err) => this.fail(err),
       });
 
