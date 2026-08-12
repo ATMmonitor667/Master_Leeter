@@ -168,6 +168,17 @@ export class InterviewRuntime {
   }
 
   /**
+   * Source at `revision`, or null when the server has not seen that revision.
+   *
+   * RUN_REQUESTED carries only revision + stdin over the socket; the code itself
+   * must already be in the log via CODE_DELTA.
+   */
+  codeAtRevision(revision: number): string | null {
+    if (revision !== this.latestCodeRevision) return null;
+    return this.latestCode;
+  }
+
+  /**
    * Apply one persisted event.
    *
    * Takes the event AFTER it has been appended, not the client's request, so

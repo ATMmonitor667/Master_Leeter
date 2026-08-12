@@ -32,6 +32,8 @@ export interface EventsSocketDeps {
   channel: SessionChannel;
   /** Called with each committed event so the orchestrator can apply it. */
   dispatch: (event: SessionEvent) => Promise<void>;
+  /** Registers this socket to receive async server pushes (run results, etc.). */
+  attach?: (sessionId: string, push: (msg: ServerMessage) => void) => () => void;
   log?: { warn(o: unknown, msg: string): void; error(o: unknown, msg: string): void };
 }
 
@@ -46,6 +48,8 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
   const write = (messages: ServerMessage[]): void => {
     for (const message of messages) socket.send(JSON.stringify(message));
   };
+
+  const detach = deps.attach?.(sessionId, (msg) => write([msg]));
 
   socket.on("message", (raw) => {
     void (async () => {
@@ -76,6 +80,7 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
   });
 
   socket.on("close", () => {
+    detach?.();
     // Clear the sequence watermark so a reconnecting client resuming from its
     // own last-acked seq is not mistaken for one with a gap.
     deps.channel.forget(sessionId);

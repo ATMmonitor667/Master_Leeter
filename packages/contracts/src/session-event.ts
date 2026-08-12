@@ -130,6 +130,58 @@ export const SessionEventSchema = z.object({
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 
 /**
+ * Event types a CLIENT is allowed to emit.
+ *
+ * A strict subset of `EVENT_TYPES`, and the narrowing is load-bearing.
+ *
+ * `EVENT_TYPES` is one flat namespace that mixes two different things: records
+ * of what the candidate did, and records of what the system concluded. The
+ * envelope below used to accept the whole enum, which meant a browser could
+ * append `RUN_COMPLETED`, `MILESTONE`, or `HINT_GIVEN` straight into the
+ * append-only log. `actor` is server-assigned so the authorship was never
+ * forgeable — but nothing downstream reads `actor`. The evaluator switches on
+ * `type` alone, and `InterviewRuntime.ingest` folds a `RUN_COMPLETED` into the
+ * observer wherever it came from, firing `BASE_TESTS_PASS`, clearing
+ * `stuckScore`, and flipping `solvedOptimally`.
+ *
+ * With one user on localhost that is not an attacker story. It is an integrity
+ * one: invariant 8 makes this log the evidence substrate for scoring and
+ * replay, and a client bug that injected a spurious milestone would be
+ * permanent, by design. Thresholds tuned against it (M4-5b) would be tuned
+ * against noise.
+ *
+ * So the client may state what it *did* — typed, ran, spoke, interrupted — and
+ * nothing about what any of it *meant*. Conclusions are the server's to draw.
+ *
+ * Adding a type here is a real decision: it must have exactly one server-side
+ * consumer, and `client-events.test.ts` fails until that is declared.
+ */
+export const CLIENT_EVENT_TYPES = [
+  "CODE_DELTA",
+  "NOTE_DELTA",
+  "RUN_REQUESTED",
+  "SPEECH_STARTED",
+  "SPEECH_STOPPED",
+  "SPEECH_FINAL",
+  "BARGE_IN",
+] as const;
+
+export const ClientEventTypeSchema = z.enum(CLIENT_EVENT_TYPES);
+export type ClientEventType = z.infer<typeof ClientEventTypeSchema>;
+
+/**
+ * Types only the server may author.
+ *
+ * Derived rather than listed, so a new entry in `EVENT_TYPES` is server-only by
+ * default. The safe direction: forgetting to classify a new type withholds a
+ * capability from the client instead of silently granting one.
+ */
+export const SERVER_ONLY_EVENT_TYPES = EVENT_TYPES.filter(
+  (t): t is Exclude<EventType, ClientEventType> =>
+    !(CLIENT_EVENT_TYPES as readonly string[]).includes(t),
+);
+
+/**
  * Client → server envelope.
  *
  * Reconnects WILL replay events. `idempotencyKey` is how the server drops
@@ -139,7 +191,8 @@ export const ClientEventSchema = z.object({
   sessionId: z.string().uuid(),
   clientSeq: z.number().int().nonnegative(),
   idempotencyKey: z.string().min(1),
-  type: EventTypeSchema,
+  /** Narrowed on purpose — see CLIENT_EVENT_TYPES. */
+  type: ClientEventTypeSchema,
   occurredAt: z.string().datetime(),
   payload: z.record(z.unknown()),
 });

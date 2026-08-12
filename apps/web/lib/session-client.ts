@@ -1,4 +1,4 @@
-import type { ClientEvent, EventType, ServerMessage } from "@master-leeter/contracts";
+import type { ClientEvent, ClientEventType, ServerMessage } from "@master-leeter/contracts";
 
 /**
  * Browser session client (M2-3 / M2-5 client half).
@@ -180,7 +180,16 @@ export class SessionClient {
     }, this.debounceMs);
   }
 
-  private enqueue(type: EventType, payload: Record<string, unknown>): void {
+  /**
+   * `ClientEventType`, not `EventType`.
+   *
+   * The narrow type is the point: the client is now structurally incapable of
+   * emitting a conclusion — `RUN_COMPLETED`, `MILESTONE`, `HINT_GIVEN` — into
+   * the evidence log. The server rejects them anyway, but a compile error here
+   * means nobody writes the code that gets rejected at runtime in the first
+   * place.
+   */
+  private enqueue(type: ClientEventType, payload: Record<string, unknown>): void {
     const event: ClientEvent = {
       sessionId: this.opts.sessionId,
       clientSeq: this.clientSeq++,

@@ -1,15 +1,15 @@
-import { randomUUID } from "node:crypto";
-import { InterviewModeSchema, type SessionEvent } from "@master-leeter/contracts";
+import { InterviewModeSchema, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.js";
 import { MintLimiter, RealtimeTokenError, type RealtimeTokenMinter } from "../realtime/index.js";
-import { DEFAULT_LIMITS, RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
+import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
 import { InMemoryEventLog } from "./event-log.js";
 import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
 import { reconstruct } from "./resume.js";
+import { enqueueRun, handleRunRequestedEvent, type RunContext } from "./runs.js";
 import { InMemorySessionStore, SessionNotFoundError, remainingSeconds } from "./session-store.js";
 import { registerEventsSocket } from "./ws.js";
 
@@ -99,7 +99,33 @@ export async function registerSessionModule(
    * session or scenario version it belonged to. An unattributable run is
    * unusable evidence.
    */
-  const runContext = new Map<string, { sessionId: string; scenarioVersionId: string; traceId: string }>();
+  const runContext = new Map<string, RunContext>();
+
+  /** Connected app sockets, for async pushes such as RUN_RESULT. */
+  const sessionPushers = new Map<string, Set<(msg: ServerMessage) => void>>();
+
+  function pushToSession(sessionId: string, msg: ServerMessage): void {
+    for (const push of sessionPushers.get(sessionId) ?? []) {
+      try {
+        push(msg);
+      } catch {
+        // A dead socket must not break run completion for everyone else.
+      }
+    }
+  }
+
+  function attachSessionSocket(sessionId: string, push: (msg: ServerMessage) => void): () => void {
+    let set = sessionPushers.get(sessionId);
+    if (!set) {
+      set = new Set();
+      sessionPushers.set(sessionId, set);
+    }
+    set.add(push);
+    return () => {
+      set!.delete(push);
+      if (set!.size === 0) sessionPushers.delete(sessionId);
+    };
+  }
 
   /** Per-session connection leases. Per-process for now; Redis when multi-node. */
   const leases = new Map<string, LeaseState>();
@@ -148,6 +174,18 @@ export async function registerSessionModule(
     return runtime;
   }
 
+  let queue: RunQueue | null = null;
+
+  const runDeps = {
+    get queue() {
+      return queue;
+    },
+    store,
+    runtimeFor,
+    runContext,
+    pushToSession,
+  };
+
   /**
    * Hands a committed event to the orchestrator.
    *
@@ -157,6 +195,10 @@ export async function registerSessionModule(
    * event log is an unrecoverable one.
    */
   async function dispatch(event: SessionEvent): Promise<void> {
+    if (event.type === "RUN_REQUESTED") {
+      await handleRunRequestedEvent(event, runDeps);
+    }
+
     const runtime = await runtimeFor(event.sessionId);
     if (!runtime) return;
 
@@ -183,7 +225,7 @@ export async function registerSessionModule(
     }
   }
 
-  const queue = opts.runner
+  queue = opts.runner
     ? new RunQueue({
         runner: opts.runner,
         onResult: async (result) => {
@@ -205,11 +247,18 @@ export async function registerSessionModule(
           // run is what clears the stuck score, and a third identical failure
           // is what makes a debugging probe defensible.
           if (!appended.duplicate) await dispatch(appended.event);
+
+          pushToSession(ctx.sessionId, { kind: "RUN_RESULT", result });
         },
         onUnavailable: (request, error) => {
           // Logged, not thrown. A runner outage must not end the interview.
           runContext.delete(request.runId);
           app.log.warn({ runId: request.runId, err: error.message }, "runner unavailable");
+          pushToSession(request.sessionId, {
+            kind: "ERROR",
+            code: "RUNNER_UNAVAILABLE",
+            message: "Execution is temporarily unavailable. Keep going.",
+          });
         },
       })
     : null;
@@ -460,8 +509,6 @@ export async function registerSessionModule(
     if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
     if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
 
-    // No runner configured yet (no judge model). The interview continues —
-    // a candidate can still reason and write code, they just cannot execute it.
     if (!queue) {
       return reply.code(503).send({
         error: "RUNNER_UNAVAILABLE",
@@ -474,25 +521,13 @@ export async function registerSessionModule(
       return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
     }
 
-    const runId = randomUUID();
-    runContext.set(runId, {
-      sessionId: session.id,
-      scenarioVersionId: session.scenarioVersionId,
-      traceId: session.traceId,
-    });
+    const enqueued = enqueueRun(
+      session,
+      { source: body.data.source, revision: body.data.revision, input: body.data.input },
+      runDeps,
+    );
 
-    const accepted = queue.enqueue({
-      runId,
-      sessionId: session.id,
-      language: session.language,
-      source: body.data.source,
-      codeRevision: body.data.revision,
-      stdin: body.data.input,
-      limits: DEFAULT_LIMITS,
-    });
-
-    if (!accepted) {
-      runContext.delete(runId);
+    if (!enqueued) {
       return reply.code(429).send({ error: "RUNNER_BUSY", message: "Too many runs queued." });
     }
 
@@ -501,19 +536,23 @@ export async function registerSessionModule(
       type: "RUN_REQUESTED",
       actor: "CANDIDATE",
       scenarioVersionId: session.scenarioVersionId,
-      payload: { runId, revision: body.data.revision, inputHash: hashInput(body.data.input) },
+      payload: {
+        runId: enqueued.runId,
+        revision: body.data.revision,
+        inputHash: hashInput(body.data.input),
+      },
       traceId: session.traceId,
-      idempotencyKey: `run-requested:${runId}`,
+      idempotencyKey: `run-requested:${enqueued.runId}`,
     });
 
     // 202: the work is queued, not done. Execution is asynchronous from this
     // thread by design — a runaway submission must never pin the session
     // service, which also holds the editor channel and the timer.
-    return reply.code(202).send({ runId, revision: body.data.revision });
+    return reply.code(202).send({ runId: enqueued.runId, revision: body.data.revision });
   });
 
   // WS /v1/interview-sessions/:id/events — M2-2's transport, finally attached.
   // The channel owns the protocol and the runtime owns the interview; this only
   // moves bytes between them.
-  await registerEventsSocket(app, { channel, dispatch });
+  await registerEventsSocket(app, { channel, dispatch, attach: attachSessionSocket });
 }

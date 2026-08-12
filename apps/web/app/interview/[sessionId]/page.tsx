@@ -60,6 +60,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         break;
       case "ERROR":
         if (msg.code === "RUNNER_UNAVAILABLE") setRunnerAvailable(false);
+        setRunning(false);
         break;
       default:
         break;
