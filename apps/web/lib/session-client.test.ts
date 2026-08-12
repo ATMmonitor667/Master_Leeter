@@ -288,6 +288,17 @@ describe("surviving a dropped connection", () => {
 
     expect(h.transport.events[1]?.idempotencyKey).toBe(originalKey);
   });
+
+  it("sends finalized speech transcripts", () => {
+    const h = build();
+    h.client.speechFinal("is the list sorted?");
+    expect(h.transport.events[0]).toMatchObject({
+      type: "SPEECH_FINAL",
+      payload: { transcript: "is the list sorted?", finalized: true },
+    });
+    h.client.speechFinal("   ");
+    expect(h.transport.events).toHaveLength(1);
+  });
 });
 
 describe("robustness", () => {

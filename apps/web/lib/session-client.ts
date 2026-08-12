@@ -203,6 +203,13 @@ export class SessionClient {
     this.enqueue(type, {}, atMs);
   }
 
+  /** Finalized candidate transcript — the gate's only speech input (M4-2). */
+  speechFinal(transcript: string, occurredAtMs?: number): void {
+    const text = transcript.trim();
+    if (!text) return;
+    this.enqueue("SPEECH_FINAL", { transcript: text, finalized: true }, occurredAtMs);
+  }
+
   private enqueue(
     type: ClientEventType,
     payload: Record<string, unknown>,

@@ -46,6 +46,9 @@ const VOICE = process.env["REALTIME_VOICE"] ?? "Puck";
 /** Seconds to sit on an open socket listening for audio nobody asked for. */
 const LISTEN_MS = 4_000;
 
+/** Sample rate for the probe audio. Matches what the Live API accepts. */
+const PROBE_RATE = 16_000;
+
 if (!API_KEY) {
   console.error("REALTIME_API_KEY is missing. Set it in apps/api/.env.local.");
   process.exit(1);
@@ -62,6 +65,21 @@ interface CheckResult {
   mintMs: number;
   openMs: number;
   notes: string[];
+}
+
+function pcm16Base64(samples: Int16Array): string {
+  return Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength).toString("base64");
+}
+
+/** Amplitude-modulated sine — speech-shaped energy without needing a microphone. */
+function speechLikeChunk(ms: number, hz = 220): string {
+  const n = Math.floor((PROBE_RATE * ms) / 1000);
+  const out = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    const envelope = 0.5 + 0.5 * Math.sin((2 * Math.PI * 3 * i) / PROBE_RATE);
+    out[i] = Math.round(12000 * envelope * Math.sin((2 * Math.PI * hz * i) / PROBE_RATE));
+  }
+  return pcm16Base64(out);
 }
 
 async function readWsData(data: unknown): Promise<string> {
@@ -187,8 +205,28 @@ async function openSession(
       };
     }
 
-    // Say nothing. Send nothing. A correctly constrained session stays silent
-    // through this, because the gate is the only thing that may authorize speech.
+    /**
+     * Speak to it, then stop, and check it stays quiet.
+     *
+     * The first version of this check sat on a SILENT socket, which proves
+     * nothing: a session with automatic activity detection still enabled is also
+     * silent when nobody talks. The case that matters is audio arriving with no
+     * activity signals and no turnComplete — if the constraint is not being
+     * enforced, the model answers here, and that is invariant 1 failing in
+     * production rather than in theory.
+     */
+    for (let i = 0; i < 15; i++) {
+      ws.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: { data: speechLikeChunk(200), mimeType: `audio/pcm;rate=${PROBE_RATE}` },
+          },
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    // Then stop talking. Auto-response, if it were enabled, fires on the pause.
     await new Promise((r) => setTimeout(r, listenMs));
 
     return { opened: true, unpromptedAudio, detail: "", readyMs };
@@ -250,7 +288,7 @@ async function run(): Promise<CheckResult> {
       : "   FAIL: THE PROVIDER KEY IS IN THE CREDENTIAL — do not ship this",
   );
 
-  console.log(`\n2. Opening a constrained session (listening ${LISTEN_MS}ms for unprompted audio)`);
+  console.log("\n2. Opening a constrained session, speaking to it, then listening for a reply");
   const first = await openSession(credential.wsUrl, LISTEN_MS);
   result.sessionOpened = first.opened;
   result.unpromptedAudioEvents = first.unpromptedAudio;
@@ -266,7 +304,7 @@ async function run(): Promise<CheckResult> {
     console.log(`   PASS: session opened in ${first.readyMs}ms (to setupComplete)`);
     console.log(
       first.unpromptedAudio === 0
-        ? "   PASS: no unprompted model audio — silence is enforced by the credential"
+        ? "   PASS: spoke to it and it stayed silent — the credential enforces ADR-001"
         : `   FAIL: ${first.unpromptedAudio} unprompted audio event(s) — ADR-001 IS NOT ENFORCED`,
     );
   }

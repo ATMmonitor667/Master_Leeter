@@ -5,6 +5,7 @@ import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "../../../components/CodeEditor";
 import { InterviewerStatus, type InterviewerState } from "../../../components/InterviewerStatus";
 import { Notepad } from "../../../components/Notepad";
+import { SpeechCaption } from "../../../components/SpeechCaption";
 import { TestPanel } from "../../../components/TestPanel";
 import { Timer } from "../../../components/Timer";
 import { VoiceControls } from "../../../components/VoiceControls";
@@ -212,6 +213,10 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     clientRef.current?.requestRun(testInput);
   }, [testInput]);
 
+  const onSpeechFinal = useCallback((transcript: string) => {
+    clientRef.current?.speechFinal(transcript);
+  }, []);
+
   const onEnd = useCallback(async () => {
     // Flush before ending so the final revision is in the log the evaluator
     // will read. An unflushed last edit is evidence that never existed.
@@ -298,12 +303,15 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         <aside
           style={{
             display: "grid",
-            gridTemplateRows: "minmax(0, 1fr) minmax(0, 1.2fr)",
+            gridTemplateRows: "minmax(0, 0.9fr) minmax(0, 0.55fr) minmax(0, 1.1fr)",
             minHeight: 0,
           }}
         >
           <div style={{ borderBottom: "1px solid var(--border)", minHeight: 0 }}>
             <Notepad value={notes} onChange={onNotesChange} />
+          </div>
+          <div style={{ borderBottom: "1px solid var(--border)", minHeight: 0 }}>
+            <SpeechCaption onFinal={onSpeechFinal} />
           </div>
           <TestPanel
             input={testInput}
