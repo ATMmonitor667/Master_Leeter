@@ -1,4 +1,5 @@
 import type { RunResult, RunStatus } from "@master-leeter/contracts";
+import { GeminiClient, type GeminiSchema } from "../../lib/gemini.js";
 import {
   type CodeRunner,
   type RunRequest,
@@ -72,6 +73,15 @@ export interface ModelJudgeOptions {
   baseUrl?: string;
   complete?: CompleteFn;
   requestTimeoutMs?: number;
+  /**
+   * Injected so the DEFAULT path is testable.
+   *
+   * Without this the only testable path was an injected `complete`, so every
+   * test passed while the real one posted to the wrong provider entirely. That
+   * is the same shape as the `liveConnectConstraints` bug: green tests over a
+   * request the provider would reject.
+   */
+  fetchImpl?: typeof fetch;
   /**
    * Below this, the judge refuses rather than guesses.
    *
@@ -192,6 +202,30 @@ export function parseJudgeVerdict(raw: string): JudgeVerdict | null {
   };
 }
 
+/**
+ * Same fields `parseJudgeVerdict` validates.
+ *
+ * With `responseSchema` the model cannot answer outside this shape, which makes
+ * a malformed reply nearly impossible rather than merely unlikely. The parser
+ * stays anyway: it is the defence for an injected `complete`, and a schema is a
+ * promise from the provider rather than a guarantee from us.
+ */
+const VERDICT_SCHEMA: GeminiSchema = {
+  type: "object",
+  properties: {
+    stdout: { type: "string", description: "Literal characters printed, including newlines." },
+    stderr: { type: "string", description: "Error output, empty when the program succeeds." },
+    status: {
+      type: "string",
+      enum: ["PASSED", "FAILED", "RUNTIME_ERROR", "COMPILE_ERROR", "TIMEOUT", "MEMORY_EXCEEDED"],
+    },
+    exitCode: { type: "integer", nullable: true },
+    confidence: { type: "number", description: "Honest probability this prediction is exact." },
+  },
+  required: ["stdout", "stderr", "status", "confidence"],
+  propertyOrdering: ["stdout", "stderr", "status", "exitCode", "confidence"],
+};
+
 export class ModelJudgeRunner implements CodeRunner {
   private readonly minConfidence: number;
 
@@ -209,7 +243,7 @@ export class ModelJudgeRunner implements CodeRunner {
       throw new RunnerUnavailableError(`unsupported language "${req.language}"`);
     }
 
-    const complete = this.opts.complete ?? this.openAiComplete.bind(this);
+    const complete = this.opts.complete ?? this.geminiComplete.bind(this);
 
     let raw: string;
     try {
@@ -276,37 +310,45 @@ export class ModelJudgeRunner implements CodeRunner {
     };
   }
 
-  private async openAiComplete(prompt: string, system: string): Promise<string> {
-    if (!this.opts.apiKey) throw new RunnerUnavailableError("no API key configured");
-
-    const res = await fetch(`${this.opts.baseUrl ?? "https://api.openai.com/v1"}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.opts.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.opts.model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: prompt },
-        ],
-        // Determinism matters more than variety: the same code judged twice
-        // should produce the same verdict, or replay stops meaning anything.
-        temperature: 0,
-        response_format: { type: "json_object" },
-      }),
-      signal: AbortSignal.timeout(this.opts.requestTimeoutMs ?? 30_000),
+  /**
+   * Judge via Gemini, through the same client every other model role uses.
+   *
+   * This posted to `api.openai.com/v1/chat/completions` with `REALTIME_API_KEY`
+   * while `.env.example` set `JUDGE_MODEL=gemini-3.5-flash` — a Gemini key
+   * against OpenAI's endpoint, which 401s into `RunnerUnavailableError` and gets
+   * logged and swallowed. Every test passed because they all injected
+   * `complete`, so the default path had never once been exercised.
+   *
+   * One provider, one key, one quota to budget against (`lib/gemini.ts`), and
+   * timeouts, 429s and blocked prompts already typed there.
+   */
+  private async geminiComplete(prompt: string, system: string): Promise<string> {
+    const client = new GeminiClient({
+      apiKey: this.opts.apiKey,
+      model: this.opts.model,
+      baseUrl: this.opts.baseUrl,
+      // Generous: this is off the conversational critical path. The candidate is
+      // watching a spinner, not waiting mid-sentence.
+      requestTimeoutMs: this.opts.requestTimeoutMs ?? 30_000,
+      fetchImpl: this.opts.fetchImpl,
     });
 
-    if (!res.ok) throw new RunnerUnavailableError(`judge model responded ${res.status}`);
+    try {
+      const verdict = await client.generateJson<JudgeVerdict>({
+        system,
+        prompt,
+        schema: VERDICT_SCHEMA,
+        temperature: 0,
+      });
 
-    const body = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = body.choices?.[0]?.message?.content;
-    if (typeof content !== "string") throw new RunnerUnavailableError("judge returned no content");
-
-    return content;
+      // Re-serialised so there is exactly one validation path. `parseJudgeVerdict`
+      // is the only thing that decides what a verdict means, whether it came from
+      // the schema or from an injected `complete`, and two parsers would be two
+      // definitions of a passing run.
+      return JSON.stringify(verdict);
+    } catch (err) {
+      throw new RunnerUnavailableError((err as Error).message);
+    }
   }
+
 }

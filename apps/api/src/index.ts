@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { loadEnv } from "./env.js";
+import { geminiApiKeyFromEnv } from "./lib/gemini.js";
 import { classifierFromEnv, type IntentClassifier } from "./modules/orchestrator/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule } from "./modules/privacy/index.js";
@@ -103,7 +104,9 @@ export async function start(): Promise<void> {
   // The judge is optional at boot. Without it the interview runs, minus
   // execution — far better than refusing to start (M2-4).
   const judgeModel = process.env["JUDGE_MODEL"];
-  const judgeKey = process.env["REALTIME_API_KEY"];
+  // Same resolution as every other model role: GEMINI_API_KEY, falling back to
+  // REALTIME_API_KEY, since one AI Studio key serves Live and the text models.
+  const judgeKey = geminiApiKeyFromEnv();
   const runner: CodeRunner | undefined =
     judgeModel && judgeKey
       ? new ModelJudgeRunner({ model: judgeModel, apiKey: judgeKey })
