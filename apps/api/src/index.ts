@@ -1,11 +1,13 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
+import cors from "@fastify/cors";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { loadEnv } from "./env.js";
 import { classifierFromEnv, type IntentClassifier } from "./modules/orchestrator/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule } from "./modules/privacy/index.js";
+import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
@@ -39,10 +41,22 @@ export interface ServerOptions {
    * unconfigured, so this is never a reason not to boot.
    */
   classifier?: IntentClassifier;
+  /**
+   * Absent when voice is unconfigured. The token route then answers 503 and the
+   * rest of the interview is unaffected.
+   */
+  realtimeTokenMinter?: RealtimeTokenMinter;
 }
 
 export function buildServer(opts: ServerOptions) {
   const app = Fastify({ logger: opts.logger ?? false });
+
+  const webOrigin = process.env["WEB_ORIGIN"] ?? "http://localhost:3000";
+  void app.register(cors, {
+    origin: [webOrigin, "http://localhost:3000", "http://localhost:3001"],
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["content-type", "idempotency-key"],
+  });
 
   const eventLog = new InMemoryEventLog();
   const store = new InMemorySessionStore();
@@ -63,6 +77,7 @@ export function buildServer(opts: ServerOptions) {
     evaluationQueue,
     ...(opts.runner ? { runner: opts.runner } : {}),
     ...(opts.classifier ? { classifier: opts.classifier } : {}),
+    ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
@@ -99,11 +114,16 @@ export async function start(): Promise<void> {
   // without a model key is a supported state.
   const classifier = classifierFromEnv();
 
+  // Null when voice is unconfigured. Built once and shared: the token route is
+  // the only caller, and the credential it mints is per-request regardless.
+  const realtimeTokenMinter = minterFromEnv();
+
   const app = buildServer({
     library,
     logger: true,
     ...(runner ? { runner } : {}),
     classifier,
+    ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
   });
   const port = Number(process.env["API_PORT"] ?? 4000);
 
@@ -115,9 +135,20 @@ export async function start(): Promise<void> {
       scenarios: [...library.keys()],
       runner: runner ? "model-judge" : "none",
       classifier: classifier.id,
+      realtime: realtimeTokenMinter ? realtimeTokenMinter.id : "none",
     },
     "scenario library loaded",
   );
+
+  // Quieter than the other two warnings on purpose: without voice the product
+  // is incomplete rather than misleading. Nothing silently degrades — the token
+  // route says 503 and the client has to handle it.
+  if (!realtimeTokenMinter) {
+    app.log.warn(
+      "REALTIME_MODEL or REALTIME_API_KEY is not set — voice is DISABLED and " +
+        "POST /realtime-token will return 503. Set both in apps/api/.env.local.",
+    );
+  }
 
   // Loud for the same reason the runner warning is: the stub degrades quietly.
   // An interviewer on rules answers clarifications and stays silent correctly,

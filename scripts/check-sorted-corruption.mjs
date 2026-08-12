@@ -25,9 +25,19 @@ import { readFileSync } from "node:fs";
 const MIN_LINES = 8;
 const EXTENSIONS = /\.(ts|tsx|js|mjs|json|md|yml|yaml|sh)$/;
 
-const files = execSync("git ls-files", { encoding: "utf8" })
-  .split("\n")
-  .filter((f) => f && EXTENSIONS.test(f));
+/**
+ * Tracked AND new-but-not-ignored.
+ *
+ * `git ls-files` alone misses the case this check most needs to catch. Both
+ * observed corruptions happened while a file was being created next to the
+ * victim, and a file created in the same change is untracked — so the scan was
+ * blind at exactly the moment the damage occurs. `--others --exclude-standard`
+ * adds new files without dragging in node_modules or anything else gitignored.
+ */
+const files = [
+  ...execSync("git ls-files", { encoding: "utf8" }).split("\n"),
+  ...execSync("git ls-files --others --exclude-standard", { encoding: "utf8" }).split("\n"),
+].filter((f) => f && EXTENSIONS.test(f));
 
 const corrupted = [];
 

@@ -106,10 +106,43 @@ No red output. Runtime wiring, `env.ts`, and M4-4 eval harness compile and test 
 
 ---
 
+## Amendment — M3-1 moves the invariant into the credential (2026-08-11)
+
+The decision above says the orchestrator is the only component permitted to trigger speech.
+Until M3-1 that was enforced by a line of client setup code
+(`realtime_input_config.automatic_activity_detection.disabled: true`), which meant the
+invariant was one refactor away from silently disappearing — and its absence would only
+surface as an interviewer talking over people.
+
+Ephemeral tokens accept `liveConnectConstraints`: a model and connect config the resulting
+session is locked to, regardless of what the client's own `setup` message asks for. M3-1 pins
+`automaticActivityDetection.disabled: true` into every minted credential
+(`modules/realtime/token.ts`, `liveConnectConstraints()`).
+
+**Consequence:** a client that forgets the flag, or a tampered client that deliberately omits
+it, still cannot obtain a connection that answers on its own. Invariant 1 is now a property of
+the credential rather than of the caller. This is strictly stronger than the ADR originally
+required, and it is the reason the constraint block is not optional.
+
+### Two facts M3-2 needs and will not find in the M0-1 spike
+
+1. **Ephemeral tokens connect to `BidiGenerateContentConstrained`**, not the
+   `BidiGenerateContent` endpoint the spike used with a raw key. The unconstrained endpoint
+   rejects a token with an auth error that reads like a bad token, so the obvious next move —
+   mint another one — never helps. Build the URL with `realtimeWsUrl()`.
+2. **Tokens are single-use** (`uses: 1`) and carry two independent deadlines: `expireTime`
+   bounds how long a session may live, `newSessionExpireTime` (60s) bounds the window to open
+   one at all. A reconnect mints a fresh credential; it must not reuse the old one.
+
+Verify both against the live API with `pnpm --filter @master-leeter/api verify:token` before
+starting M3-2, so that a failure there is known to belong to M3-2.
+
+---
+
 ## Consequences
 
 - **M3-1 / M3-5:** Wire Gemini Live WebSocket; mint ephemeral tokens server-side; never expose
-  `REALTIME_API_KEY` to the browser.
+  `REALTIME_API_KEY` to the browser. *(M3-1 done — see the amendment above.)*
 - **M3-2:** Build client-side VAD (or equivalent activity-boundary layer) for Gemini — cannot
   rely on OpenAI-style server VAD + `create_response: false`.
 - **M4-2 / M4-5:** Latency budget: p50 ≈ 1.0 s, p95 ≈ 1.6 s end-of-turn → first audio byte on

@@ -272,18 +272,6 @@ describe("privacy routes", () => {
   });
 });
 
-describe("routes still blocked on external decisions", () => {
-  it("realtime token is explicit about why", async () => {
-    const res = await app().inject({
-      method: "POST",
-      url: "/v1/interview-sessions/x/realtime-token",
-    });
-    expect(res.statusCode).toBe(501);
-    expect(res.json().issue).toBe("M3-1");
-  });
-
-});
-
 describe("POST /v1/interview-sessions/:id/runs", () => {
   async function session(server: ReturnType<typeof app>) {
     const created = await server.inject({

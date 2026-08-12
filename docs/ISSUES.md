@@ -15,8 +15,13 @@ which needs human graders. M4-1 and M4-2 are in — the interviewer now judges t
 words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
 transcript half is unblocked now that the classifier exists.
 
-**M3 (voice) is untouched, and it is now the whole critical path.** Seven open issues, and
+**M3 (voice) is the whole critical path.** M3-1 has landed — the browser can now be issued a
+credential, and that credential is what enforces silence control. Six open issues remain, and
 M4-2's timing half cannot be exercised end to end until M3-2 emits speech-stop.
+
+M3-1 is marked done on the same standard the rest of this file uses, which is worth stating
+plainly: it compiles, it is unit-green, and it has **never spoken to Google**. `verify:token`
+exists so that stops being true in one command.
 
 The loop is closed end to end without voice: pick a scenario, write and run code, end the
 session, read an evidence-backed report. Five scenarios in the library, covering hashing,
@@ -48,7 +53,7 @@ The remaining work is now almost entirely the product's actual thesis: voice (M3
 quality (M4), and the code-aware interviewer (M5). That is the correct shape for what's left.
 
 **Compiled and green as of 2026-08-11.** `pnpm typecheck` passes across all three packages;
-`pnpm test` is 481 passing (427 api / 30 web / 24 contracts); `pnpm sim` 32; `pnpm eval` meets
+`pnpm test` is 512 passing (458 api / 30 web / 24 contracts); `pnpm sim` 32; `pnpm eval` meets
 every threshold. The earlier "nothing is currently compiled" caveat is discharged — every
 `[x]` above has now actually been executed at least once.
 
@@ -269,8 +274,42 @@ Feed a recorded event stream + pinned scenario version back through the orchestr
 
 ## M3 — Voice and oral delivery · Lane C
 
-### `[ ]` M3-1 · Ephemeral realtime credentials · S
+### `[x]` M3-1 · Ephemeral realtime credentials · S — **written and unit-green; unrun against the live API**
 **Deps:** M2-1. Server-minted, short-lived. **The provider key never reaches the browser.**
+
+`modules/realtime/token.ts` — `GeminiTokenMinter` over Google's `auth_tokens` endpoint, wired
+to `POST /v1/interview-sessions/:id/realtime-token` (which was a `501` until now). 29 tests.
+
+**The part worth more than key hygiene.** A minted token carries `liveConnectConstraints` — a
+model and connect config the session is locked to, whatever the client's own `setup` asks for.
+`automaticActivityDetection.disabled: true` is pinned into every credential, so **ADR-001 is
+now enforced by the thing the browser is issued rather than by client setup code.** A client
+that forgets the flag, or a tampered one that omits it deliberately, cannot obtain a
+connection that answers on its own. See the ADR-001 amendment.
+
+Also: single-use (`uses: 1`), 10-minute expiry with a separate 60-second window to *open* the
+session, per-session mint cap of 12 so a client retry loop cannot drain the free-tier quota,
+503 when voice is unconfigured, and no provider error text echoed to the browser.
+
+**Two findings M3-2 needs**, both absent from the M0-1 spike because it used a raw key:
+tokens connect to `BidiGenerateContentConstrained` (the unconstrained endpoint rejects them
+with what looks like a bad-token error), and they are single-use, so a reconnect must mint.
+
+**Deliberately not idempotent**, breaking the `CLAUDE.md` convention. A mint is not a mutation
+of interview state, and replaying a key after a drop would return a single-use token that has
+already been spent — the one thing a reconnecting client must not get. The per-session cap
+covers the abuse case instead. Nothing is appended to the event log either: a credential is
+not evidence about a candidate, and widening the frozen M0-3 `EVENT_TYPES` seam to record one
+is a bad trade. Mints are logged at info level.
+
+**Unrun against the live API, and that is the honest limit.** Every test here passes without
+the provider existing, so a renamed endpoint or a rejected constraint field would leave them
+all green. `pnpm --filter @master-leeter/api verify:token` closes that without a microphone:
+it mints a real credential, opens a real constrained session, confirms the session stays
+silent unprompted, and confirms a second connection with the same token is refused.
+
+- [ ] **Run `verify:token` once and record the numbers here.** Until then this issue is
+      written, not measured — and a constraint the API rejects is the likeliest first failure.
 
 ### `[ ]` M3-2 · WebRTC voice connection · M
 **Deps:** M3-1, M2-3. Mute, barge-in (stop output audio and listen immediately), device selection.

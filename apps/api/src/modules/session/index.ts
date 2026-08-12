@@ -3,6 +3,7 @@ import { InterviewModeSchema, type SessionEvent } from "@master-leeter/contracts
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.js";
+import { MintLimiter, RealtimeTokenError, type RealtimeTokenMinter } from "../realtime/index.js";
 import { DEFAULT_LIMITS, RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
@@ -74,6 +75,13 @@ export interface SessionModuleOptions {
    * Omitted in tests, where `InterviewRuntime` falls back to the rule stub.
    */
   classifier?: IntentClassifier;
+  /**
+   * Absent until voice is configured, and absent in most tests.
+   *
+   * Its absence is a 503 on the token route and nothing else — the interview
+   * runs without voice exactly as it runs without a runner.
+   */
+  realtimeTokenMinter?: RealtimeTokenMinter;
 }
 
 export async function registerSessionModule(
@@ -95,6 +103,9 @@ export async function registerSessionModule(
 
   /** Per-session connection leases. Per-process for now; Redis when multi-node. */
   const leases = new Map<string, LeaseState>();
+
+  /** Caps realtime credential minting per session. Cleared when the session ends. */
+  const mintLimiter = new MintLimiter();
 
   /**
    * Live orchestrators, one per active session.
@@ -295,6 +306,7 @@ export async function registerSessionModule(
         runtimes.delete(session.id);
       }
       channel.forget(session.id);
+      mintLimiter.forget(session.id);
 
       // Fire and forget. The live phase must complete regardless of evaluator
       // health, so this is deliberately not awaited and its failure cannot
@@ -376,10 +388,70 @@ export async function registerSessionModule(
     return reply.send({ ok: true, pendingCredit: pendingCredit(lease, Date.now()) });
   });
 
-  app.post("/interview-sessions/:id/realtime-token", async (_req, reply) => {
-    // M3-1: mint a SHORT-LIVED ephemeral credential. The provider API key must
-    // never reach the browser. Blocked on the realtime provider decision.
-    return reply.code(501).send({ error: "NOT_IMPLEMENTED", issue: "M3-1" });
+  /**
+   * Mint a short-lived realtime credential (M3-1).
+   *
+   * The response is on its way to a browser, so the rules are strict: the
+   * provider key never appears in it, no provider error text is echoed back, and
+   * no scenario content rides along. The token itself is safe to send — it is
+   * single-use, expires in minutes, and is locked to a connect config that
+   * cannot auto-respond.
+   */
+  app.post("/interview-sessions/:id/realtime-token", async (req, reply) => {
+    const { id } = req.params as { id: string };
+
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+
+    if (!opts.realtimeTokenMinter) {
+      // Same posture as the runner: a missing capability is a 503 that explains
+      // itself, not a boot failure and not a silent stub.
+      return reply.code(503).send({
+        error: "REALTIME_UNAVAILABLE",
+        message: "Voice is not configured. Set REALTIME_MODEL and REALTIME_API_KEY.",
+      });
+    }
+
+    if (!mintLimiter.take(id)) {
+      // Almost always a client retry loop rather than an attacker, and the
+      // symptom of not catching it — voice dying for every session once the
+      // quota is gone — looks nothing like the cause.
+      app.log.warn({ sessionId: id, mints: mintLimiter.used(id) }, "realtime token cap reached");
+      return reply.code(429).send({
+        error: "TOKEN_CAP_REACHED",
+        message: "Too many realtime credentials issued for this session.",
+      });
+    }
+
+    try {
+      const credential = await opts.realtimeTokenMinter.mint();
+
+      app.log.info(
+        {
+          sessionId: id,
+          traceId: session.traceId,
+          model: credential.model,
+          expiresAt: credential.expiresAt,
+          mints: mintLimiter.used(id),
+        },
+        "minted realtime credential",
+      );
+
+      return reply.code(201).send(credential);
+    } catch (err) {
+      const kind = err instanceof RealtimeTokenError ? err.kind : "PROVIDER_ERROR";
+
+      // Full detail to the log — a rejected constraint is explained precisely in
+      // the provider's body and that is the first thing anyone debugging this
+      // will want. The client gets a code and nothing else.
+      app.log.error({ sessionId: id, kind, err }, "realtime token mint failed");
+
+      return reply.code(kind === "RATE_LIMITED" ? 429 : 502).send({
+        error: kind === "RATE_LIMITED" ? "TOKEN_CAP_REACHED" : "REALTIME_MINT_FAILED",
+        message: "Could not obtain a voice credential. Retry shortly.",
+      });
+    }
   });
 
   app.post("/interview-sessions/:id/runs", async (req, reply) => {
