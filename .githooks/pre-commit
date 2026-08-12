@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+# Corruption and secret guard.
+#
+# Both checks already run in CI. They run here too because CI is the wrong place
+# to catch either one: a corrupted file that reaches a commit is history, and one
+# already did — see the header of check-sorted-corruption.mjs. A secret that
+# reaches a commit has to be treated as leaked even after it is removed.
+#
+# Deliberately only these two. A pre-commit hook that runs the test suite gets
+# bypassed with --no-verify within a week, and a guard people route around is
+# worse than no guard because it is trusted. These take about 200ms together.
+#
+# Enable with:  pnpm hooks:install   (sets core.hooksPath to .githooks)
+
+set -e
+
+node scripts/check-sorted-corruption.mjs
+node scripts/check-env-not-tracked.mjs
