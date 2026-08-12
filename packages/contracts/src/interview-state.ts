@@ -169,6 +169,23 @@ export const InterviewPolicySchema = z.object({
    * alone. Between this and the minimum, the ceiling ramps.
    */
   settledTurnEndSilenceMs: z.number().int().min(0),
+  /**
+   * Code quiet required before the interviewer may START something (M4-3).
+   *
+   * Answers to questions ignore this — someone who asks a question while typing
+   * still asked. It governs the unsolicited actions: a probe landing between two
+   * keystrokes is an interruption even when the turn genuinely ended, and
+   * "they finished a sentence" is not the same as "they are free".
+   */
+  interruptQuietSeconds: z.number().int().min(0),
+  /**
+   * Code quiet after which a candidate who WAS working counts as stalled.
+   *
+   * Only meaningful once something has been written. Silence before any code
+   * exists is thinking — the approach-exploration stage is made of it — and
+   * treating that as a stall turns the hint rule into an impatience rule.
+   */
+  stallSeconds: z.number().int().min(1),
   /** Maximum age, in seconds, of a code revision an interviewer response may reference. */
   maxCodeStalenessSeconds: z.number().int().min(1),
   expectedMinutes: z.number().int().min(1),

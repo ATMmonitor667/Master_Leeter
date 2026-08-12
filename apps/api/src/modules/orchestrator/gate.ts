@@ -13,7 +13,7 @@ import {
   selectFollowUp,
 } from "../scenario/probes.js";
 import type { ProbeSelectionContext } from "../scenario/probes.js";
-import { canHintNow } from "./policy.js";
+import { canHintNow, canInterruptNow, stallPressure } from "./policy.js";
 
 /**
  * The Response Gate (M1-3).
@@ -211,6 +211,13 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
   const probeCtx = triggerCtx(ctx, deps);
   const probe = highestPriorityEligibleProbe(deps.scenario, probeCtx);
   if (probe) {
+    // M4-3. Eligible, paced, and grounded is still not enough if the candidate
+    // is mid-keystroke. Finishing a sentence is not the same as being free.
+    if (!canInterruptNow(ctx.policy, ctx.secondsSinceCodeActivity)) {
+      return SILENT(
+        `probe "${probe.id}" eligible but code activity ${ctx.secondsSinceCodeActivity.toFixed(1)}s ago (needs ${ctx.policy.interruptQuietSeconds}s quiet)`,
+      );
+    }
     if (!canProbeNow(probeCtx)) {
       return SILENT(
         `probe "${probe.id}" eligible but only ${ctx.secondsSinceInterviewerLastSpoke}s since last utterance (min ${ctx.policy.minSecondsBetweenProbes})`,
@@ -228,7 +235,24 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
   // ── 10. The candidate is stuck ─────────────────────────────────────────────
   // Unsolicited help is the biggest intervention the interviewer makes, so it
   // sits last and requires a measurably stuck candidate, not merely a quiet one.
-  if (canHintNow(ctx.policy, ctx.candidateState.stuckScore, ctx.candidateState.hintsUsed.length)) {
+  //
+  // M4-3 adds the second half of "measurably": a quiet editor now contributes,
+  // but only for a candidate who was WORKING and stopped. `stallPressure`
+  // returns 0 before any code exists, so thinking before typing — which is what
+  // APPROACH_EXPLORATION is made of — never earns an unsolicited hint.
+  const stuck = Math.max(
+    ctx.candidateState.stuckScore,
+    stallPressure(
+      ctx.policy,
+      ctx.secondsSinceCodeActivity,
+      ctx.candidateState.implementationProgress,
+    ),
+  );
+
+  if (
+    canInterruptNow(ctx.policy, ctx.secondsSinceCodeActivity) &&
+    canHintNow(ctx.policy, stuck, ctx.candidateState.hintsUsed.length)
+  ) {
     const level = nextAllowedHintLevel({
       policy: ctx.policy,
       hintsUsed: ctx.candidateState.hintsUsed,
@@ -236,7 +260,7 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
     if (level !== null && level <= 2) {
       return {
         action: level === 1 ? "GIVE_HINT_L1" : "GIVE_HINT_L2",
-        reason: `stuck score ${ctx.candidateState.stuckScore.toFixed(2)} over threshold ${ctx.policy.stallThreshold}`,
+        reason: `stuck score ${stuck.toFixed(2)} over threshold ${ctx.policy.stallThreshold}`,
         decidedByRule: true,
         hintLevel: level,
         groundedInRevision: ctx.candidateState.derivedFromRevision,

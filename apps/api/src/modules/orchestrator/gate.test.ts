@@ -345,3 +345,123 @@ describe("the oral brief (M3-4)", () => {
     expect(decision.action).not.toBe("DELIVER_BRIEF");
   });
 });
+
+describe("activity-aware policy (M4-3)", () => {
+  const working = {
+    ...emptyCandidateState(NOW),
+    derivedFromRevision: 12,
+    claimedTime: "O(1)",
+    detectedSolutionFamilyId: "sf-set-single-pass",
+    implementationProgress: 0.8,
+  };
+
+  /**
+   * Finishing a sentence is not the same as being free.
+   *
+   * A probe that lands between two keystrokes is an interruption even when the
+   * turn genuinely ended, and it is the kind a candidate remembers.
+   */
+  it("holds an otherwise justified probe while the candidate is typing", () => {
+    const d = decideAction(
+      ctx({
+        candidateState: working,
+        secondsSinceCodeActivity: 1,
+        turn: turn("this is all constant time", "COMPLEXITY_CLAIM"),
+      }),
+      deps(),
+    );
+
+    expect(d.action).toBe("STAY_SILENT");
+    expect(d.reason).toMatch(/code activity/);
+  });
+
+  it("asks it once the hands have stopped", () => {
+    const d = decideAction(
+      ctx({
+        candidateState: working,
+        secondsSinceCodeActivity: 30,
+        turn: turn("this is all constant time", "COMPLEXITY_CLAIM"),
+      }),
+      deps(),
+    );
+
+    expect(d.action).toBe("ASK_PROBE");
+  });
+
+  /**
+   * The suppression is for UNSOLICITED speech only. Someone who asks a question
+   * mid-edit still asked one, and making them wait for an idle editor would read
+   * as not having heard them — missed-response is tracked too.
+   */
+  it("still answers a question asked mid-keystroke", () => {
+    const d = decideAction(
+      ctx({
+        state: "CLARIFICATION",
+        secondsSinceCodeActivity: 0.2,
+        turn: turn("is the list sorted", "CLARIFICATION_REQUEST"),
+      }),
+      deps(),
+    );
+
+    expect(d.action).toBe("ANSWER_CLARIFICATION");
+  });
+
+  it("still gives a requested hint mid-keystroke", () => {
+    const d = decideAction(
+      ctx({
+        state: "TEST_AND_DEBUG",
+        secondsSinceCodeActivity: 0.2,
+        turn: turn("can I get a hint", "HINT_REQUEST"),
+      }),
+      deps(),
+    );
+
+    expect(d.action).toBe("GIVE_HINT_L1");
+  });
+
+  it("offers help unprompted once a working candidate has gone quiet long enough", () => {
+    const d = decideAction(
+      ctx({
+        state: "TEST_AND_DEBUG",
+        candidateState: { ...working, claimedTime: null, detectedSolutionFamilyId: null },
+        // Well past MOCK's 90s stall point, so the ramp has run.
+        secondsSinceCodeActivity: 200,
+        turn: turn("hmm", "THINK_ALOUD"),
+      }),
+      deps(),
+    );
+
+    expect(d.action).toBe("GIVE_HINT_L1");
+    expect(d.reason).toMatch(/stuck score/);
+  });
+
+  /**
+   * The condition that stops this becoming an impatience rule.
+   *
+   * A quiet editor during approach exploration is the stage working as intended
+   * — the candidate is thinking, and usually talking while they do it. Without
+   * the progress requirement the long-thinker trajectory earns a hint for the
+   * crime of thinking before typing.
+   */
+  it("does not read thinking-before-typing as a stall", () => {
+    const d = decideAction(
+      ctx({
+        state: "APPROACH_EXPLORATION",
+        candidateState: { ...emptyCandidateState(NOW), implementationProgress: 0 },
+        secondsSinceCodeActivity: 600,
+        turn: turn("so I could compare everything against everything", "THINK_ALOUD"),
+      }),
+      deps(),
+    );
+
+    expect(d.action).toBe("STAY_SILENT");
+  });
+
+  it("waits longer in Strict than in Learning before either", () => {
+    // Patience is part of a mode's character, expressed as numbers.
+    expect(POLICIES.STRICT.interruptQuietSeconds).toBeGreaterThan(
+      POLICIES.LEARNING.interruptQuietSeconds,
+    );
+    expect(POLICIES.STRICT.stallSeconds).toBeGreaterThan(POLICIES.LEARNING.stallSeconds);
+  });
+});

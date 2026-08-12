@@ -30,6 +30,10 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     // still well above the length of an ordinary breath.
     minTurnEndSilenceMs: 1_200,
     settledTurnEndSilenceMs: 2_400,
+    // Quickest to step in of the three, and still long enough that it never
+    // lands mid-keystroke.
+    interruptQuietSeconds: 3,
+    stallSeconds: 60,
     maxCodeStalenessSeconds: 20,
     expectedMinutes: 45,
   },
@@ -52,6 +56,8 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     // words look. In practice a non-question turn needs ~2.4s of quiet here.
     minTurnEndSilenceMs: 1_500,
     settledTurnEndSilenceMs: 2_800,
+    interruptQuietSeconds: 4,
+    stallSeconds: 90,
     maxCodeStalenessSeconds: 20,
     expectedMinutes: 40,
   },
@@ -75,6 +81,10 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     // have finished, then waits a little longer.
     minTurnEndSilenceMs: 2_200,
     settledTurnEndSilenceMs: 4_000,
+    // Strict lets you sit in it. Longer before it interrupts, and far longer
+    // before it decides you are stuck rather than working.
+    interruptQuietSeconds: 6,
+    stallSeconds: 150,
     maxCodeStalenessSeconds: 15,
     expectedMinutes: 40,
   },
@@ -95,4 +105,51 @@ export function canHintNow(policy: InterviewPolicy, stuckScore: number, hintsUse
   if (policy.maxHintLevel === 0) return false;
   if (hintsUsed >= policy.hintBudget) return false;
   return stuckScore > policy.stallThreshold;
+}
+
+/**
+ * How much a quiet editor should count toward being stuck (M4-3).
+ *
+ * Ramps from `stallSeconds` to twice it, so the interviewer's patience degrades
+ * gradually rather than flipping at one second. A hard step would make two
+ * near-identical silences produce opposite behaviour, which reads as the thing
+ * not paying attention.
+ *
+ * ── The condition that keeps this from becoming an impatience rule ─────────
+ *
+ * It returns 0 until the candidate has actually written something. A quiet
+ * editor during APPROACH_EXPLORATION is not a stall — it is the stage working as
+ * intended, and the candidate is usually talking through it. Without this the
+ * long-thinker trajectory earns an unsolicited hint for the crime of thinking
+ * before typing, which is precisely the failure the product exists to avoid.
+ *
+ * So: "was working and stopped" counts. "Has not started" does not.
+ */
+export function stallPressure(
+  policy: InterviewPolicy,
+  secondsSinceCodeActivity: number,
+  implementationProgress: number,
+): number {
+  if (implementationProgress <= 0) return 0;
+  if (secondsSinceCodeActivity <= policy.stallSeconds) return 0;
+
+  const span = policy.stallSeconds;
+  const over = secondsSinceCodeActivity - policy.stallSeconds;
+  return Math.min(1, over / span);
+}
+
+/**
+ * Whether the interviewer may START something right now (M4-3).
+ *
+ * Distinct from every other guard here: it is about what the candidate's HANDS
+ * are doing, not their voice. A probe that lands between two keystrokes is an
+ * interruption even when the turn genuinely ended, because finishing a sentence
+ * is not the same as being free.
+ *
+ * Applies only to unsolicited actions. Someone who asks a question mid-edit
+ * still asked one, and making them wait for an idle editor would read as not
+ * having heard them.
+ */
+export function canInterruptNow(policy: InterviewPolicy, secondsSinceCodeActivity: number): boolean {
+  return secondsSinceCodeActivity >= policy.interruptQuietSeconds;
 }

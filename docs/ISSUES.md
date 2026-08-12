@@ -533,8 +533,31 @@ caveat compounds it: Gemini's turn boundaries are currently our own `activity_en
 echoed back, so the *quality* of `silenceMs` in production is M3-2's problem before it is this
 module's. The thresholds are starting points, not findings — M4-5b tunes them.
 
-### `[ ]` M4-3 · Activity-aware policy · M
+### `[x]` M4-3 · Activity-aware policy · M
 **Deps:** M2-5, M1-3. Code activity in last N seconds, stall duration, `stuckScore` feeding gate inputs.
+
+Two policy fields, both per-mode data rather than code: `interruptQuietSeconds` (MOCK 4) and
+`stallSeconds` (MOCK 90).
+
+**Suppression.** An unsolicited action now also requires the candidate's *hands* to be still.
+A probe landing between two keystrokes is an interruption even when the turn genuinely ended
+— finishing a sentence is not the same as being free. Answers to questions and requested
+hints are exempt: someone who asks mid-edit still asked, and making them wait for an idle
+editor reads as not having heard them.
+
+**Stall pressure.** A quiet editor now contributes to being stuck, on a ramp from
+`stallSeconds` to twice it — gradual, because a hard step makes two near-identical silences
+produce opposite behaviour, which reads as the thing not paying attention.
+
+**The condition that keeps it from becoming an impatience rule:** pressure is 0 until the
+candidate has written something. A quiet editor during APPROACH_EXPLORATION is the stage
+working as intended — they are thinking, usually out loud. Without that requirement the
+long-thinker trajectory earns an unsolicited hint for thinking before typing, which is the
+exact failure the product exists to avoid. "Was working and stopped" counts; "has not
+started" does not.
+
+Before this, unsolicited hints were close to unreachable: `stuckScore` only moved on repeated
+identical failures, so MOCK's 0.7 threshold needed three of them.
 
 ### `[x]` M4-4 · Interruption eval harness · M — **uncompiled, see note**
 **Deps:** M1-6, M4-1. Automated unwanted-interruption and missed-response rates over the bot suite, reported per commit.
