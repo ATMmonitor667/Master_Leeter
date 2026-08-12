@@ -410,3 +410,55 @@ describe("degradation", () => {
     expect(h.errors[0]?.message).toContain("1011");
   });
 });
+
+describe("tool calls are relayed, never answered here", () => {
+  /**
+   * The five tools read pinned scenario content and check the gate's
+   * authorization. Neither may live in a browser the candidate controls, so the
+   * client forwards the call and returns whatever the server says.
+   */
+  it("forwards a tool call and returns the server's answer", async () => {
+    const relayed: VoiceToolCall[] = [];
+    const h = build({
+      callTool: async (call) => {
+        relayed.push(call);
+        return { ok: true, data: { wording: "why that complexity?" } };
+      },
+    });
+
+    h.receive({ toolCall: { functionCalls: [{ id: "c1", name: "get_probe_wording", args: {} }] } });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(relayed).toEqual([{ id: "c1", name: "get_probe_wording", args: {} }]);
+
+    const response = h.sent.find((m) => m["toolResponse"]) as
+      | { toolResponse: { functionResponses: Array<{ id: string; response: unknown }> } }
+      | undefined;
+    expect(response?.toolResponse.functionResponses[0]?.id).toBe("c1");
+  });
+
+  it("answers with a refusal when the relay fails, rather than stalling the turn", async () => {
+    const h = build({
+      callTool: async () => {
+        throw new Error("network");
+      },
+    });
+
+    h.receive({ toolCall: { functionCalls: [{ id: "c1", name: "get_probe_wording", args: {} }] } });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // A model left waiting on a function response stalls, and a stalled turn is
+    // indistinguishable from the interviewer choosing to say nothing.
+    expect(JSON.stringify(h.sent.find((m) => m["toolResponse"]))).toContain("RELAY_FAILED");
+  });
+
+  it("never answers a tool call locally when no relay is wired", async () => {
+    const h = build();
+    h.receive({ toolCall: { functionCalls: [{ id: "c1", name: "get_probe_wording", args: {} }] } });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Refusing beats inventing. A client-side answer would bypass every check
+    // the tool surface exists to perform.
+    expect(JSON.stringify(h.sent.find((m) => m["toolResponse"]))).toContain("NO_RELAY");
+  });
+});
