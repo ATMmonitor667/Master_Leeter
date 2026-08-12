@@ -11,20 +11,29 @@ import { Vad, type VadEvent } from "./vad";
  *
  * ── The property this class exists to guarantee ────────────────────────────
  *
- * **There is no method here that can make the model speak.**
+ * **Exactly one method can make the model speak, and it takes an authorization.**
  *
  * On Gemini Live, audio is produced when the client sends `clientContent` with
- * `turnComplete: true`. This class never sends that message, under any input,
- * on any code path. Streaming candidate audio and sending activity boundaries
- * cannot produce speech, because M3-1 pinned
- * `automaticActivityDetection.disabled` into the credential itself — so activity
- * signals are observations, not requests.
+ * `turnComplete: true`. That message is sent from `requestSpeech` and nowhere
+ * else. Streaming candidate audio and sending activity boundaries cannot produce
+ * a reply at all, because M3-1 pinned `automaticActivityDetection.disabled` into
+ * the credential — activity signals are observations, not requests.
  *
- * Response creation belongs to M3-5, driven by the Response Gate, and it will
- * arrive as a separate authorized call rather than a method on the object the
- * microphone feeds. That separation is invariant 1 expressed in class design:
- * the component holding the audio pipe is structurally incapable of triggering a
- * reply. `realtime-voice.test.ts` asserts it over every public method.
+ * Until M3-5 this class had no such method and this comment said so. It now has
+ * one, which is a genuine narrowing of the guarantee and worth stating rather
+ * than leaving a claim that has quietly become false. What replaces it is
+ * smaller but still structural, and it holds in two places at once:
+ *
+ *   - `requestSpeech` takes a `SpeechAuthorization` carrying a server-minted
+ *     `utteranceId`. The client cannot manufacture one.
+ *   - It sends no wording. The instruction names the authorized action and tells
+ *     the model to fetch its own words from the tool surface, which re-checks
+ *     that same authorization SERVER-side.
+ *
+ * So a tampered client calling `requestSpeech` unprompted gets a model that asks
+ * for a probe and is refused. It can waste a round trip; it cannot invent an
+ * interview turn. `realtime-voice.test.ts` asserts every other method remains
+ * incapable of producing `turnComplete`.
  *
  * ── What it reports upward ─────────────────────────────────────────────────
  *
@@ -56,6 +65,25 @@ export interface VoiceCredential {
 
 export type SpeechBoundary = { type: "SPEECH_STARTED" | "SPEECH_STOPPED"; atMs: number };
 
+/**
+ * An authorization from the server, and the ONLY thing that can produce speech.
+ *
+ * Deliberately not constructible from anything the client knows on its own: it
+ * carries an `utteranceId` the server minted when the gate authorized, so
+ * "speak now" is always something that was granted rather than decided here.
+ */
+export interface SpeechAuthorization {
+  action: string;
+  utteranceId: string;
+}
+
+/** A tool call from the model, on its way to the server relay. */
+export interface VoiceToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
 export interface RealtimeVoiceOptions {
   credential: VoiceCredential;
   connect: (handlers: RealtimeTransportHandlers) => RealtimeTransport;
@@ -71,6 +99,14 @@ export interface RealtimeVoiceOptions {
   onBargeIn?: () => void;
   onReady?: () => void;
   onError?: (err: Error) => void;
+  /**
+   * Relays a tool call to the server and returns its result.
+   *
+   * The client never answers a tool call itself. The five tools read pinned
+   * scenario content and check the gate's authorization, and neither of those
+   * may live in a browser the candidate controls.
+   */
+  callTool?: (call: VoiceToolCall) => Promise<Record<string, unknown>>;
 }
 
 export class RealtimeVoice {
@@ -168,6 +204,37 @@ export class RealtimeVoice {
     });
   }
 
+  /**
+   * Ask the model to speak — the single path to audio, and the whole of M3-5.
+   *
+   * Everything else in this class streams audio and reports boundaries, none of
+   * which can produce a reply, because the credential disables automatic
+   * activity detection. `clientContent` with `turnComplete` is the only message
+   * Gemini answers, it is sent here and nowhere else, and it is sent only when
+   * the server has said the gate authorized it.
+   *
+   * Note what is NOT passed in: the words. The instruction names the authorized
+   * action and tells the model to fetch its own wording from the tool surface,
+   * which re-checks the same authorization server-side. So a tampered client
+   * that called this unprompted would get a model that asks for a probe and is
+   * refused — it cannot invent an interview turn, only waste a round trip.
+   */
+  requestSpeech(authorization: SpeechAuthorization): void {
+    if (!this.ready || !this.transport?.connected) return;
+
+    this.send({
+      clientContent: {
+        turns: [
+          {
+            role: "user",
+            parts: [{ text: instructionFor(authorization) }],
+          },
+        ],
+        turnComplete: true,
+      },
+    });
+  }
+
   // ── Internals ──────────────────────────────────────────────────────────────
 
   private sendSetup(): void {
@@ -214,6 +281,42 @@ export class RealtimeVoice {
     this.opts.onSpeechBoundary?.(boundary);
   }
 
+  /**
+   * Forward a tool call to the server and return its answer to the model.
+   *
+   * Failures answer with a refusal rather than silence: a model left waiting on
+   * a function response stalls the turn, and a stalled turn is indistinguishable
+   * from the interviewer having decided to say nothing.
+   */
+  private async relayToolCall(toolCall: Record<string, unknown>): Promise<void> {
+    const calls = (toolCall["functionCalls"] ?? toolCall["function_calls"]) as
+      | Array<Record<string, unknown>>
+      | undefined;
+    if (!calls) return;
+
+    const responses: Array<Record<string, unknown>> = [];
+
+    for (const call of calls) {
+      const id = String(call["id"] ?? "");
+      const name = String(call["name"] ?? "");
+      const args = (call["args"] ?? {}) as Record<string, unknown>;
+
+      let response: Record<string, unknown>;
+      try {
+        response = (await this.opts.callTool?.({ id, name, args })) ?? {
+          ok: false,
+          refusal: "NO_RELAY",
+        };
+      } catch {
+        response = { ok: false, refusal: "RELAY_FAILED" };
+      }
+
+      responses.push({ id, name, response });
+    }
+
+    this.send({ toolResponse: { functionResponses: responses } });
+  }
+
   private send(message: Record<string, unknown>): void {
     this.transport?.send(JSON.stringify(message));
   }
@@ -241,6 +344,12 @@ export class RealtimeVoice {
       return;
     }
 
+    const toolCall = msg["toolCall"] ?? msg["tool_call"];
+    if (toolCall) {
+      void this.relayToolCall(toolCall as Record<string, unknown>);
+      return;
+    }
+
     const audio = extractModelAudio(msg);
     if (audio.length > 0) {
       this.interviewerSpeaking = true;
@@ -252,6 +361,31 @@ export class RealtimeVoice {
       this.interviewerSpeaking = false;
     }
   }
+}
+
+/**
+ * What the model is told when it is authorized to speak.
+ *
+ * Names the action and points at the tool. It deliberately does not contain the
+ * wording, a summary of the wording, or anything from the scenario — the whole
+ * reason the relay exists is that authored content stays server-side until the
+ * model fetches it under a check.
+ */
+export function instructionFor(authorization: SpeechAuthorization): string {
+  const map: Record<string, string> = {
+    ANSWER_CLARIFICATION:
+      "Answer the candidate's question using get_clarification_fact. Say only what it returns.",
+    ASK_PROBE: "Ask the authorized probe. Call get_probe_wording and say what it returns.",
+    GIVE_HINT_L1: "Give the authorized hint. Say only the wording you are given.",
+    GIVE_HINT_L2: "Give the authorized hint. Say only the wording you are given.",
+    PRESENT_FOLLOW_UP: "Present the follow-up. Call get_follow_up and say what it returns.",
+    ACKNOWLEDGE_BRIEFLY: "Acknowledge in three words or fewer. Add nothing.",
+    DELIVER_BRIEF: "Deliver the opening brief from get_interview_context, as written.",
+    END_INTERVIEW: "Close the interview in one sentence. No assessment.",
+  };
+
+  const instruction = map[authorization.action] ?? "Say nothing.";
+  return `[${authorization.utteranceId}] ${instruction}`;
 }
 
 function serverContent(msg: Record<string, unknown>): Record<string, unknown> | undefined {

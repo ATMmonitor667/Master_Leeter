@@ -6,6 +6,7 @@ import {
   type RealtimeTransportHandlers,
   type SpeechBoundary,
   type VoiceCredential,
+  type VoiceToolCall,
 } from "./realtime-voice";
 import { Vad } from "./vad";
 
@@ -36,7 +37,12 @@ interface Harness {
   clock: () => number;
 }
 
-function build(options: { vad?: Vad } = {}): Harness {
+function build(
+  options: {
+    vad?: Vad;
+    callTool?: (call: VoiceToolCall) => Promise<Record<string, unknown>>;
+  } = {},
+): Harness {
   const sent: Array<Record<string, unknown>> = [];
   const boundaries: SpeechBoundary[] = [];
   const audio: Int16Array[] = [];
@@ -55,6 +61,7 @@ function build(options: { vad?: Vad } = {}): Harness {
     credential: CREDENTIAL,
     captureRate: 48_000,
     ...(options.vad ? { vad: options.vad } : {}),
+    ...(options.callTool ? { callTool: options.callTool } : {}),
     now: () => t,
     connect: (h) => {
       handlers = h;
@@ -115,16 +122,16 @@ function sentKinds(sent: Array<Record<string, unknown>>): string[] {
   return sent.flatMap((m) => Object.keys(m));
 }
 
-describe("nothing on this object can make the model speak", () => {
+describe("only an authorization can make the model speak", () => {
   /**
-   * The reason the class exists in this shape.
+   * The narrowed guarantee after M3-5.
    *
-   * Audio is produced when a client sends clientContent with turnComplete.
-   * M3-5 owns that, under gate authorization. The component holding the
-   * microphone must be structurally incapable of it — invariant 1 as class
-   * design rather than as a convention someone has to remember.
+   * Audio is produced by clientContent with turnComplete. Exactly one method
+   * sends it and it takes a server-minted authorization; everything the
+   * microphone drives must remain incapable — invariant 1 as class design
+   * rather than a convention someone has to remember.
    */
-  it("never sends clientContent or turnComplete, whatever it is driven with", () => {
+  it("never sends clientContent from any input-driven path", () => {
     const h = build();
 
     h.speak(400);
@@ -149,6 +156,58 @@ describe("nothing on this object can make the model speak", () => {
     h.quiet(800);
 
     expect(new Set(sentKinds(h.sent))).toEqual(new Set(["setup", "realtimeInput"]));
+  });
+
+  it("speaks when, and only when, handed an authorization", () => {
+    const h = build();
+    h.speak(400);
+    h.quiet(800);
+    expect(JSON.stringify(h.sent)).not.toContain("turnComplete");
+
+    h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "utt-turn-7" });
+
+    const content = h.sent.find((m) => m["clientContent"]) as
+      | { clientContent: { turnComplete: boolean; turns: Array<{ parts: Array<{ text: string }> }> } }
+      | undefined;
+
+    expect(content?.clientContent.turnComplete).toBe(true);
+    // The id is the server's, echoed back. The client cannot mint one.
+    expect(content?.clientContent.turns[0]?.parts[0]?.text).toContain("utt-turn-7");
+  });
+
+  /**
+   * Why requestSpeech is safe to exist at all.
+   *
+   * It carries no wording. A tampered client calling it unprompted produces a
+   * model that asks the tool surface for a probe and is refused server-side — a
+   * wasted round trip, not an invented interview turn.
+   */
+  it("sends no scenario wording when asking the model to speak", () => {
+    const h = build();
+    h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "utt-1" });
+
+    const wire = JSON.stringify(h.sent);
+    expect(wire).toContain("get_probe_wording");
+    expect(wire).not.toMatch(/duplicate|scanner|conveyor/i);
+  });
+
+  it("does nothing when asked to speak before the session is ready", () => {
+    const sent: Array<Record<string, unknown>> = [];
+    let handlers!: RealtimeTransportHandlers;
+    const voice = new RealtimeVoice({
+      credential: CREDENTIAL,
+      captureRate: 48_000,
+      connect: (h) => {
+        handlers = h;
+        return { send: (d) => sent.push(JSON.parse(d)), close: () => {}, connected: true };
+      },
+    });
+
+    voice.connect();
+    handlers.onOpen();
+    voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "utt-1" });
+
+    expect(JSON.stringify(sent)).not.toContain("clientContent");
   });
 
   it("refuses a credential that does not disable automatic activity detection", () => {
