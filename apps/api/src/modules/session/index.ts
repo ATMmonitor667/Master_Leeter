@@ -2,7 +2,12 @@ import { InterviewModeSchema, type ServerMessage, type SessionEvent } from "@mas
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.js";
-import { MintLimiter, RealtimeTokenError, type RealtimeTokenMinter } from "../realtime/index.js";
+import {
+  MintLimiter,
+  RealtimeTokenError,
+  executeVoiceTool,
+  type RealtimeTokenMinter,
+} from "../realtime/index.js";
 import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
@@ -48,6 +53,11 @@ const CreateSessionBody = z.object({
   scenarioRef: z.string().min(1),
   mode: InterviewModeSchema.default("MOCK"),
   language: z.string().default("python"),
+});
+
+const VoiceToolBody = z.object({
+  name: z.string().min(1),
+  args: z.record(z.unknown()).default({}),
 });
 
 const RunBody = z.object({
@@ -234,6 +244,23 @@ export async function registerSessionModule(
           { sessionId, action: decision.action, reason: decision.reason },
           "interviewer authorized to speak",
         );
+
+        /**
+         * M3-5. The client is told THAT the interviewer may speak, never what it
+         * will say.
+         *
+         * The wording is authored scenario content — probe variants, hint text,
+         * a canonical fact — and putting it on this channel would land it in the
+         * browser where a candidate can read ahead. The voice agent fetches it
+         * from the tool surface instead, which checks the same authorization
+         * this message reflects.
+         */
+        const utteranceId = (utterance as { utteranceId?: string } | null)?.utteranceId;
+        pushToSession(sessionId, {
+          kind: "ACTION",
+          action: decision.action,
+          ...(utteranceId ? { utteranceId } : {}),
+        } as ServerMessage);
         void utterance;
 
         // No audio pipeline yet, so the utterance is "finished" the instant it
@@ -519,6 +546,77 @@ export async function registerSessionModule(
         message: "Could not obtain a voice credential. Retry shortly.",
       });
     }
+  });
+
+  /**
+   * Voice agent tool relay (M3-5, completing M3-3).
+   *
+   * Gemini Live delivers tool calls to whoever holds the socket, which is the
+   * browser. So the browser relays them here rather than answering them: the
+   * five tools read pinned scenario content and check the gate's authorization,
+   * and neither of those may live in a client the candidate controls.
+   *
+   * The browser therefore sees a tool result in flight. That is a real and
+   * accepted narrowing of invariant 2 — it is transient, never rendered, and the
+   * alternative is holding the Live socket server-side and relaying audio both
+   * ways, which ADR-001 did not choose. What must never happen is the wording
+   * arriving unsolicited on the app channel, and it does not.
+   */
+  app.post("/interview-sessions/:id/voice-tool", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+
+    const body = VoiceToolBody.safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
+    }
+
+    const scenario = opts.library.get(session.scenarioVersionId);
+    const runtime = runtimes.get(id);
+    if (!scenario || !runtime) {
+      // No live orchestrator means no authorization to check against, and an
+      // unchecked tool call is exactly what this surface exists to prevent.
+      return reply.code(409).send({ error: "NO_LIVE_SESSION" });
+    }
+
+    const voice = runtime.voiceContext();
+
+    const result = await executeVoiceTool(
+      { name: body.data.name, args: body.data.args },
+      {
+        scenario: scenario.version,
+        state: voice.state,
+        remainingSeconds: remainingSeconds(session, Date.now()),
+        candidateState: voice.candidateState,
+        probeUseCounts: voice.probeUseCounts,
+        answeredFactKeys: voice.answeredFactKeys,
+        authorized: voice.authorized,
+      },
+      {
+        recordDelivery: async (entry) => {
+          await eventLog.append({
+            sessionId: id,
+            type: "BRIEF_DELIVERED",
+            actor: "INTERVIEWER",
+            scenarioVersionId: session.scenarioVersionId,
+            payload: { ...entry, utteranceId: voice.utteranceId },
+            traceId: session.traceId,
+            idempotencyKey: `delivery:${voice.utteranceId ?? "none"}:${entry.kind}`,
+          });
+        },
+      },
+    );
+
+    if (!result.ok) {
+      app.log.info({ sessionId: id, tool: body.data.name, refusal: result.refusal }, "voice tool refused");
+      // 200 with a refusal, not an HTTP error: the model needs to read this and
+      // carry on, and a 4xx would look like a transport fault to the relay.
+      return reply.send(result);
+    }
+
+    return reply.send(result);
   });
 
   app.post("/interview-sessions/:id/runs", async (req, reply) => {

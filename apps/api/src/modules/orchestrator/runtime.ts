@@ -162,6 +162,19 @@ export class InterviewRuntime {
   private heldTurn: { turn: Turn; classification: TurnClassification } | null = null;
   private reevaluationTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /**
+   * The decision currently authorizing speech, if any.
+   *
+   * The voice agent's tools are checked against this: it may fetch the wording
+   * for the probe the gate chose and nothing else. Cleared when the utterance
+   * finishes, so a model that calls a tool a second later gets a refusal rather
+   * than a second turn.
+   */
+  private authorized: { decision: GateDecision; utteranceId: string } | null = null;
+
+  /** Fact keys already answered aloud, so the agent knows what it has said. */
+  private readonly answeredFactKeys: string[] = [];
+
   private readonly classifier: IntentClassifier;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
@@ -173,6 +186,32 @@ export class InterviewRuntime {
     this.candidateState = emptyCandidateState(new Date(this.now()).toISOString());
     this.lastCodeActivityMs = this.now();
     this.lastSpokeAtMs = this.now();
+  }
+
+  /**
+   * What the voice tool surface needs to answer a call.
+   *
+   * Plain data on purpose: the orchestrator does not import the realtime module,
+   * so the session module composes this with the scenario and the clock. The
+   * layering is the same as everywhere else — the orchestrator is a domain layer
+   * that others call into.
+   */
+  voiceContext(): {
+    state: InterviewState;
+    candidateState: CandidateState;
+    probeUseCounts: Readonly<Record<string, number>>;
+    answeredFactKeys: readonly string[];
+    authorized: GateDecision | null;
+    utteranceId: string | null;
+  } {
+    return {
+      state: this.state,
+      candidateState: this.candidateState,
+      probeUseCounts: this.probeUseCounts,
+      answeredFactKeys: [...this.answeredFactKeys],
+      authorized: this.authorized?.decision ?? null,
+      utteranceId: this.authorized?.utteranceId ?? null,
+    };
   }
 
   /** Read-only view, for tests and for the resume path. Never mutate through this. */
@@ -420,6 +459,10 @@ export class InterviewRuntime {
 
     const utterance = await this.realize(decision, turn);
 
+    // The window in which the voice agent may fetch words. Opened by the gate,
+    // closed by markSpeechFinished — nothing else opens it.
+    this.authorized = utterance ? { decision, utteranceId: utterance.utteranceId } : null;
+
     this.lastSpokeAtMs = this.now();
     this.candidateSpeechStarted = false;
     // Held until the audio actually finishes. Gate rule 1 reads this to yield
@@ -556,6 +599,9 @@ export class InterviewRuntime {
    */
   markSpeechFinished(): void {
     this.interviewerCurrentlySpeaking = false;
+    // The authorization does not outlive the utterance. A tool call arriving
+    // after this is a model trying to take a second turn, and gets refused.
+    this.authorized = null;
   }
 
   /**
@@ -579,6 +625,7 @@ export class InterviewRuntime {
           { factKey: fact.key, turnId: turn.turnId },
           `clarification:${turn.turnId}`,
         );
+        if (!this.answeredFactKeys.includes(fact.key)) this.answeredFactKeys.push(fact.key);
         return { ...base, text: fact.value };
       }
 
