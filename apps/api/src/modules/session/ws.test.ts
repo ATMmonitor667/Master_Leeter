@@ -50,6 +50,21 @@ class FakeSocket implements SocketLike {
   kinds(): string[] {
     return this.sent.map((m) => m.kind);
   }
+
+  /**
+   * Messages the client received in response to what it sent.
+   *
+   * Excludes the STATE greeting pushed on connect: it is asynchronous, so its
+   * position relative to the first ACK is not something these tests should
+   * depend on. `greeting` covers it directly instead.
+   */
+  replies(): ServerMessage[] {
+    return this.sent.filter((m) => m.kind !== "STATE");
+  }
+
+  replyKinds(): string[] {
+    return this.replies().map((m) => m.kind);
+  }
 }
 
 let log: InMemoryEventLog;
@@ -96,7 +111,7 @@ describe("framing", () => {
   it("acks a valid event and forwards it to the orchestrator", async () => {
     await socket.deliver(clientEvent(0, "e0"));
 
-    expect(socket.kinds()).toEqual(["ACK"]);
+    expect(socket.replyKinds()).toEqual(["ACK"]);
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]?.type).toBe("CODE_DELTA");
   });
@@ -104,17 +119,17 @@ describe("framing", () => {
   it("survives an unparseable frame instead of dropping the connection", async () => {
     await socket.deliver("{not json");
 
-    expect(socket.sent[0]).toMatchObject({ kind: "ERROR", code: "INVALID_JSON" });
+    expect(socket.replies()[0]).toMatchObject({ kind: "ERROR", code: "INVALID_JSON" });
 
     // Still usable — the candidate's editor channel is worth more than strictness.
     await socket.deliver(clientEvent(0, "e0"));
-    expect(socket.kinds()).toEqual(["ERROR", "ACK"]);
+    expect(socket.replyKinds()).toEqual(["ERROR", "ACK"]);
   });
 
   it("reports a schema-invalid event without forwarding it", async () => {
     await socket.deliver({ sessionId, nonsense: true });
 
-    expect(socket.sent[0]).toMatchObject({ kind: "ERROR" });
+    expect(socket.replies()[0]).toMatchObject({ kind: "ERROR" });
     expect(dispatched).toHaveLength(0);
   });
 });
@@ -125,7 +140,7 @@ describe("duplicates and gaps reach the orchestrator correctly", () => {
     await socket.deliver(clientEvent(0, "e0"));
 
     // Two ACKs — the client must not be able to tell, or blind retry is unsafe.
-    expect(socket.kinds()).toEqual(["ACK", "ACK"]);
+    expect(socket.replyKinds()).toEqual(["ACK", "ACK"]);
     // One application. Replaying a delta must not re-drive interview state.
     expect(dispatched).toHaveLength(1);
   });
@@ -136,8 +151,31 @@ describe("duplicates and gaps reach the orchestrator correctly", () => {
 
     await socket.deliver(clientEvent(5, "e5"));
 
-    expect(socket.sent.at(-1)).toMatchObject({ kind: "REPLAY_FROM", seq: 1 });
+    expect(socket.replies().at(-1)).toMatchObject({ kind: "REPLAY_FROM", seq: 1 });
     expect(dispatched).toHaveLength(0);
+  });
+});
+
+describe("the state greeting", () => {
+  /**
+   * SessionChannel.resume() built this message from the start and nothing ever
+   * called it, so STATE reached no client: the timer counted down locally from
+   * one HTTP read and the interviewer indicator was frozen on LISTENING. A
+   * refresh mid-interview re-synced the editor and not the clock.
+   */
+  it("sends current state as soon as the socket opens", async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const state = socket.sent.find((m) => m.kind === "STATE");
+    expect(state, "no STATE was pushed on connect").toBeDefined();
+    expect(state).toMatchObject({ kind: "STATE", interviewerStatus: "LISTENING" });
+  });
+
+  it("sends it once, not on every frame", async () => {
+    await socket.deliver(clientEvent(0, "g0"));
+    await socket.deliver(clientEvent(1, "g1"));
+
+    expect(socket.sent.filter((m) => m.kind === "STATE")).toHaveLength(1);
   });
 });
 
@@ -158,6 +196,6 @@ describe("close", () => {
 
     // A fresh connection starting from 0 again must not be told it has a hole.
     await reconnected.deliver(clientEvent(0, "e-new"));
-    expect(reconnected.kinds()).toEqual(["ACK"]);
+    expect(reconnected.replyKinds()).toEqual(["ACK"]);
   });
 });

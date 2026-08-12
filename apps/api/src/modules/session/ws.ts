@@ -51,6 +51,22 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
 
   const detach = deps.attach?.(sessionId, (msg) => write([msg]));
 
+  /**
+   * Send the current state as soon as the socket opens.
+   *
+   * `SessionChannel.resume()` has always built this message and nothing ever
+   * called it, so `STATE` reached no client: the timer counted down locally from
+   * a single HTTP read and the interviewer indicator was frozen on LISTENING
+   * forever. A refresh mid-interview re-synced the editor and not the clock.
+   *
+   * Failure is swallowed on purpose. A state snapshot is a convenience; losing
+   * it must not cost the candidate the socket that carries their code.
+   */
+  void deps.channel
+    .resume(sessionId, -1)
+    .then((result) => write(result.messages.filter((m) => m.kind === "STATE")))
+    .catch((err: unknown) => deps.log?.warn({ sessionId, err }, "initial state push failed"));
+
   socket.on("message", (raw) => {
     void (async () => {
       let parsed: unknown;

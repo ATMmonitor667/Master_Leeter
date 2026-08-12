@@ -15,9 +15,13 @@ which needs human graders. M4-1 and M4-2 are in — the interviewer now judges t
 words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
 transcript half is unblocked now that the classifier exists.
 
-**M3 (voice) is the whole critical path.** M3-1 has landed — the browser can now be issued a
-credential, and that credential is what enforces silence control. Six open issues remain, and
-M4-2's timing half cannot be exercised end to end until M3-2 emits speech-stop.
+**M3 (voice) is the whole critical path.** M3-1 is verified against the live API, and M3-2 is
+code complete: the browser can be issued a credential, that credential is what enforces silence
+control, and the client now emits `SPEECH_STARTED` / `SPEECH_STOPPED` — the input M4-2's timing
+half has been waiting for. Five open issues remain.
+
+**Nothing has been spoken into a microphone yet.** That single session is now the whole
+measurement, and every remaining estimate in this file is inference until it happens.
 
 M3-1 is done on a stronger standard than the rest of this file: it has been run against the
 live API, and the run **failed first time** on a request shape 29 green unit tests could not
@@ -53,7 +57,7 @@ The remaining work is now almost entirely the product's actual thesis: voice (M3
 quality (M4), and the code-aware interviewer (M5). That is the correct shape for what's left.
 
 **Compiled and green as of 2026-08-11.** `pnpm typecheck` passes across all three packages;
-`pnpm test` is 512 passing (458 api / 30 web / 24 contracts); `pnpm sim` 32; `pnpm eval` meets
+`pnpm test` is 605 passing (470 api / 97 web / 38 contracts); `pnpm sim` 32; `pnpm eval` meets
 every threshold. The earlier "nothing is currently compiled" caveat is discharged — every
 `[x]` above has now actually been executed at least once.
 
@@ -325,8 +329,47 @@ shape: `ModelJudgeRunner` posts to `api.openai.com` with a Gemini key and `JUDGE
 `gemini-3.5-flash`, and its tests are green because they inject a fake `complete`. That is the
 same failure, still live, one module over.
 
-### `[ ]` M3-2 · WebRTC voice connection · M
+### `[~]` M3-2 · Voice connection · M — **code complete; never run against a microphone**
 **Deps:** M3-1, M2-3. Mute, barge-in (stop output audio and listen immediately), device selection.
+
+Not WebRTC. ADR-001 selected Gemini Live, which is a WebSocket API — the issue title predates
+that decision.
+
+Five modules, four of them testable without a browser and tested there:
+
+- `lib/vad.ts` — client-side VAD, which ADR-001 says we own because disabling
+  `automaticActivityDetection` means we send the activity boundaries. Biased hard toward
+  *late* speech-ends: a false start only holds the floor, while a premature end starts the
+  clock M4-2 measures `silenceMs` from and credits the candidate with silence they never took.
+- `lib/audio.ts` — PCM16 conversion and resampling. Clamping, the asymmetric Int16 range, and
+  explicit little-endian, each with a test; box-filter downsampling so content above the new
+  Nyquist is attenuated rather than folded into the speech band.
+- `lib/playback.ts` — gapless scheduling with a running cursor, and a `stop()` that cancels
+  already-scheduled buffers. Chunks arrive faster than real time, so a barge-in that only
+  stopped *future* audio would keep talking for seconds.
+- `lib/realtime-voice.ts` — the Live socket. **No method on it can make the model speak**; a
+  test drives every public method and asserts the wire never carries `clientContent` or
+  `turnComplete`. It also refuses a credential that does not disable automatic activity
+  detection.
+- `lib/voice-session.ts` — the browser shell: `getUserMedia`, an AudioWorklet at ~20 ms
+  frames, device selection. Deliberately the only untestable file, and deliberately almost
+  empty of logic.
+
+**`SPEECH_STARTED` / `SPEECH_STOPPED` now exist**, carrying VAD onset timestamps through
+`occurredAt` rather than send time — so M4-2's `silenceMs` measures the pause, not the
+hangover plus the network. That was the input its timing half has been missing since it landed.
+
+**Also fixed here:** `STATE` had never reached a client. `SessionChannel.resume()` built the
+message and nothing called it, so the timer counted down locally from one HTTP read and the
+interviewer indicator was frozen on `LISTENING`.
+
+**Not verified.** No microphone has ever been connected to this. Everything above is green in
+CI and none of it proves audio flows. The next honest step is one real session:
+`pnpm dev:api`, `pnpm dev:web`, press *Start voice*, and check that speech boundaries appear
+in the event log with plausible `silenceMs` between them.
+
+- [ ] Run one session with a real microphone and record what happened here.
+- [ ] Confirm barge-in actually cuts model audio (needs M3-5 before there is audio to cut).
 
 ### `[ ]` M3-3 · Voice agent tool surface · M
 **Deps:** M1-2, M1-4.

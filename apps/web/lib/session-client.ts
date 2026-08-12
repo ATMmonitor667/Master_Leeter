@@ -189,13 +189,31 @@ export class SessionClient {
    * means nobody writes the code that gets rejected at runtime in the first
    * place.
    */
-  private enqueue(type: ClientEventType, payload: Record<string, unknown>): void {
+  /**
+   * Report a VAD boundary (M3-2).
+   *
+   * `atMs` is when the boundary *happened*, not when this was called, and it is
+   * carried through as `occurredAt`. That matters more than it looks: the server
+   * computes `silenceMs` as the interval between two logged `occurredAt`
+   * timestamps (M4-2). Stamping send time instead would fold the VAD's hangover
+   * and the network hop into the measurement, shortening every observed pause
+   * and making the gate more willing to speak.
+   */
+  speechBoundary(type: "SPEECH_STARTED" | "SPEECH_STOPPED", atMs: number): void {
+    this.enqueue(type, {}, atMs);
+  }
+
+  private enqueue(
+    type: ClientEventType,
+    payload: Record<string, unknown>,
+    occurredAtMs?: number,
+  ): void {
     const event: ClientEvent = {
       sessionId: this.opts.sessionId,
       clientSeq: this.clientSeq++,
       idempotencyKey: this.newId(),
       type,
-      occurredAt: new Date(this.now()).toISOString(),
+      occurredAt: new Date(occurredAtMs ?? this.now()).toISOString(),
       payload,
     };
 
