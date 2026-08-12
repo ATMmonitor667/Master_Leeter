@@ -28,6 +28,21 @@ export const EVENT_TYPES = [
   "SPEECH_STOPPED",
   /** Finalized transcript. The gate only acts on finalized turns. */
   "SPEECH_FINAL",
+  /**
+   * A held turn's quiet period crossed the policy floor. Server-authored.
+   *
+   * The gate used to run only on `SPEECH_FINAL`, which meant a turn whose
+   * transcript finalized *before* the floor elapsed was judged too early and
+   * never looked at again — the interviewer went quiet until the candidate spoke
+   * next. Browser transcription finalizes in a few hundred milliseconds and MOCK
+   * needs ~2.4s, so that was every think-aloud turn.
+   *
+   * This exists rather than a bare timer because the timer would break replay.
+   * Decisions are a function of the log (MVP definition-of-done #8), so the
+   * moment of re-evaluation has to BE in the log. Live, a timer appends this;
+   * on replay it is already there and reproduces the same decision.
+   */
+  "SILENCE_ELAPSED",
   /** Candidate spoke over the interviewer; output audio was cut. */
   "BARGE_IN",
 

@@ -140,6 +140,30 @@ export function silenceCeiling(silenceMs: number, policy: InterviewPolicy): numb
   return HELD_FLOOR_CEILING + t * (1 - HELD_FLOOR_CEILING);
 }
 
+/**
+ * The quiet time at which `silenceCeiling` first permits `threshold`.
+ *
+ * The inverse of the ramp, and it exists to keep the interviewer's patience
+ * honest rather than merely long. When a turn is held for timing, the runtime
+ * waits exactly this long before reconsidering — not until `settled`, which
+ * would add ~400ms of dead air in MOCK for no benefit, and not a fixed guess.
+ *
+ * Returns `minTurnEndSilenceMs` when the threshold is at or under the held-floor
+ * ceiling (nothing to wait for), and `Infinity` when no amount of silence can
+ * satisfy it — a misconfigured policy should hold the floor forever rather than
+ * silently round down into speech.
+ */
+export function silenceRequiredFor(threshold: number, policy: InterviewPolicy): number {
+  if (threshold <= HELD_FLOOR_CEILING) return policy.minTurnEndSilenceMs;
+  if (threshold > 1) return Number.POSITIVE_INFINITY;
+
+  const span = policy.settledTurnEndSilenceMs - policy.minTurnEndSilenceMs;
+  if (span <= 0) return policy.settledTurnEndSilenceMs;
+
+  const t = (threshold - HELD_FLOOR_CEILING) / (1 - HELD_FLOOR_CEILING);
+  return policy.minTurnEndSilenceMs + t * span;
+}
+
 export function estimateTurnCompletion(input: TurnCompletionInput): TurnCompletion {
   const text = clamp01(input.textEndProbability);
   const silenceMs = normalizeSilence(input.silenceMs);

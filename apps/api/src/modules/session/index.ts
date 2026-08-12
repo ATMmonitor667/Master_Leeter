@@ -168,6 +168,8 @@ export async function registerSessionModule(
       // nothing. The failure is invisible in the logs and only shows up as an
       // interviewer that never notices a complexity claim.
       ...(opts.classifier ? { classifier: opts.classifier } : {}),
+      // A decision reached by the re-evaluation timer has no caller awaiting it.
+      onAuthorized: (result) => deliver(session.id, result),
     });
 
     runtimes.set(session.id, runtime);
@@ -203,14 +205,33 @@ export async function registerSessionModule(
     if (!runtime) return;
 
     try {
-      const { decision, utterance } = await runtime.ingest(event);
-      if (decision && decision.action !== "STAY_SILENT") {
+      const result = await runtime.ingest(event);
+      deliver(event.sessionId, result);
+    } catch (err) {
+      app.log.error({ sessionId: event.sessionId, err }, "orchestrator ingest failed");
+    }
+  }
+
+  /**
+   * Hand an authorized decision to the speech path.
+   *
+   * Shared by `dispatch` and by the runtime's `onAuthorized` callback. A turn
+   * re-judged after its silence floor elapses is decided by a timer with nobody
+   * awaiting it, so without a single place for this the interviewer would decide
+   * to speak and then say nothing.
+   */
+  function deliver(sessionId: string, result: { decision: unknown; utterance: unknown }): void {
+    const runtime = runtimes.get(sessionId);
+    const decision = result.decision as { action: string; reason: string } | null;
+    const utterance = result.utterance;
+
+    if (decision && decision.action !== "STAY_SILENT") {
         // M3-5 wires this to realtime response creation. Until then the
         // decision and its authored wording live in the log, which is what the
         // eval harness reads — so silence quality is measurable before a single
         // byte of audio exists.
         app.log.info(
-          { sessionId: event.sessionId, action: decision.action, reason: decision.reason },
+          { sessionId, action: decision.action, reason: decision.reason },
           "interviewer authorized to speak",
         );
         void utterance;
@@ -218,11 +239,8 @@ export async function registerSessionModule(
         // No audio pipeline yet, so the utterance is "finished" the instant it
         // is produced. M3-5 replaces this with the realtime response-done
         // event, at which point barge-in has a real window to interrupt.
-        runtime.markSpeechFinished();
+        runtime?.markSpeechFinished();
       }
-    } catch (err) {
-      app.log.error({ sessionId: event.sessionId, err }, "orchestrator ingest failed");
-    }
   }
 
   queue = opts.runner
