@@ -111,8 +111,16 @@ function errorOf(msg: Json): Json | undefined {
 async function openSession(
   wsUrl: string,
   listenMs: number,
-): Promise<{ opened: boolean; unpromptedAudio: number; detail: string; elapsedMs: number }> {
+): Promise<{ opened: boolean; unpromptedAudio: number; detail: string; readyMs: number }> {
   const started = Date.now();
+  /**
+   * Time to `setupComplete`, NOT to the end of this function.
+   *
+   * The first version reported elapsed-on-return, which silently included the
+   * listening window — so a 229ms connect was recorded as 4229ms. A latency
+   * number nobody can interpret is worse than none, because it gets quoted.
+   */
+  let readyMs = 0;
   const ws = new WebSocket(wsUrl);
   let unpromptedAudio = 0;
   let detail = "";
@@ -160,6 +168,7 @@ async function openSession(
             resolve(false);
           }
           if (setupComplete(msg)) {
+            readyMs = Date.now() - started;
             clearTimeout(timer);
             ws.removeEventListener("message", onMessage);
             resolve(true);
@@ -174,7 +183,7 @@ async function openSession(
         opened: false,
         unpromptedAudio,
         detail: detail || "no setupComplete",
-        elapsedMs: Date.now() - started,
+        readyMs: Date.now() - started,
       };
     }
 
@@ -182,13 +191,13 @@ async function openSession(
     // through this, because the gate is the only thing that may authorize speech.
     await new Promise((r) => setTimeout(r, listenMs));
 
-    return { opened: true, unpromptedAudio, detail: "", elapsedMs: Date.now() - started };
+    return { opened: true, unpromptedAudio, detail: "", readyMs };
   } catch (err) {
     return {
       opened: false,
       unpromptedAudio,
       detail: err instanceof Error ? err.message : String(err),
-      elapsedMs: Date.now() - started,
+      readyMs: Date.now() - started,
     };
   } finally {
     ws.removeEventListener("message", audioWatch);
@@ -245,16 +254,16 @@ async function run(): Promise<CheckResult> {
   const first = await openSession(credential.wsUrl, LISTEN_MS);
   result.sessionOpened = first.opened;
   result.unpromptedAudioEvents = first.unpromptedAudio;
-  result.openMs = first.elapsedMs;
+  result.openMs = first.readyMs;
 
   if (!first.opened) {
     console.error(`   FAIL: ${first.detail}`);
     result.notes.push(
-      "session did not open — check the constraint shape in liveConnectConstraints() first; " +
+      "session did not open — check the constraint shape in constrainedSetup() first; " +
         "a rejected field is the likeliest cause and the detail above usually names it",
     );
   } else {
-    console.log(`   PASS: session opened in ${first.elapsedMs}ms`);
+    console.log(`   PASS: session opened in ${first.readyMs}ms (to setupComplete)`);
     console.log(
       first.unpromptedAudio === 0
         ? "   PASS: no unprompted model audio — silence is enforced by the credential"
@@ -283,7 +292,7 @@ console.log(`session_opened:          ${result.sessionOpened}`);
 console.log(`single_use:              ${result.singleUse}`);
 console.log(`unprompted_audio:        ${result.unpromptedAudioEvents}`);
 console.log(`mint_ms:                 ${result.mintMs}`);
-console.log(`open_ms:                 ${result.openMs}`);
+console.log(`open_ms:                 ${result.openMs}   (mint -> setupComplete, excl. listen window)`);
 console.log("═══════════════════════════════════════");
 
 for (const note of result.notes) console.log(`note: ${note}`);

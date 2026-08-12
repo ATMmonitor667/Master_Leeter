@@ -11,7 +11,7 @@
  *
  * ── The part that is more than key hygiene ─────────────────────────────────
  *
- * A minted token can carry `liveConnectConstraints`: a model and a connect
+ * A minted token can carry `bidiGenerateContentSetup`: a model and a connect
  * config that the eventual session is locked to. Whatever the client sends in
  * its own `setup` message, the constraints win.
  *
@@ -163,18 +163,30 @@ export function toModelResource(model: string): string {
  * asserted directly in tests rather than inferred from a request body. If this
  * function ever stops returning `disabled: true`, silence control has quietly
  * become advisory again.
+ *
+ * ── Shape, established against the live API rather than the docs ───────────
+ *
+ * Google's guides call this `liveConnectConstraints` with a nested `config`.
+ * That is the SDK's name for it and does not exist on REST — `auth_tokens`
+ * rejects it as an unknown field on `v1beta` *and* `v1alpha`. The REST field is
+ * `bidiGenerateContentSetup`, and it takes the Live API `setup` message
+ * verbatim: `model` at the top, generation options under `generationConfig`,
+ * and `realtimeInputConfig` as a sibling — not wrapped in `config`.
+ *
+ * Both wrong shapes fail as a 400 at mint time, which is loud. Worth knowing
+ * anyway, because the docs will send you to the wrong one.
  */
-export function liveConnectConstraints(model: string, voice?: string | undefined) {
+export function constrainedSetup(model: string, voice?: string | undefined) {
   return {
     model: toModelResource(model),
-    config: {
+    generationConfig: {
       responseModalities: ["AUDIO"],
       ...(voice
         ? { speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
         : {}),
-      // ADR-001, made structural. See the module comment.
-      realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
     },
+    // ADR-001, made structural. See the module comment.
+    realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
   };
 }
 
@@ -224,7 +236,7 @@ export class GeminiTokenMinter implements RealtimeTokenMinter {
       uses: 1,
       expireTime: expiresAt,
       newSessionExpireTime: sessionExpiresAt,
-      liveConnectConstraints: liveConnectConstraints(this.opts.model, this.opts.voice),
+      bidiGenerateContentSetup: constrainedSetup(this.opts.model, this.opts.voice),
     };
 
     let res: Response;

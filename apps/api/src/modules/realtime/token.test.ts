@@ -7,7 +7,7 @@ import {
   GeminiTokenMinter,
   MintLimiter,
   RealtimeTokenError,
-  liveConnectConstraints,
+  constrainedSetup,
   minterFromEnv,
   realtimeWsUrl,
   toModelResource,
@@ -75,11 +75,28 @@ describe("the minted token cannot auto-respond", () => {
     const { instance, calls } = minter(() => ok());
     await instance.mint();
 
-    const constraints = calls[0]?.body["liveConnectConstraints"] as {
-      config: { realtimeInputConfig: { automaticActivityDetection: { disabled: boolean } } };
+    const setup = calls[0]?.body["bidiGenerateContentSetup"] as {
+      realtimeInputConfig: { automaticActivityDetection: { disabled: boolean } };
     };
 
-    expect(constraints.config.realtimeInputConfig.automaticActivityDetection.disabled).toBe(true);
+    expect(setup.realtimeInputConfig.automaticActivityDetection.disabled).toBe(true);
+  });
+
+  /**
+   * Pins the wire field name, which a fake-fetch test otherwise cannot notice.
+   *
+   * The first version of this module sent `liveConnectConstraints` — the SDK's
+   * name for this, and the one the published guides use. Every test below was
+   * green against it and the API rejects it as an unknown field on both v1beta
+   * and v1alpha. `verify:token` is what caught it; this assertion is what stops
+   * it coming back quietly.
+   */
+  it("sends the REST field name, not the SDK's", async () => {
+    const { instance, calls } = minter(() => ok());
+    await instance.mint();
+
+    expect(calls[0]?.body).toHaveProperty("bidiGenerateContentSetup");
+    expect(calls[0]?.body).not.toHaveProperty("liveConnectConstraints");
   });
 
   it("says so in the credential, so the client can refuse a bad one", async () => {
@@ -89,14 +106,14 @@ describe("the minted token cannot auto-respond", () => {
   });
 
   it("constrains the model, so a leaked token cannot drive arbitrary generation", () => {
-    const constraints = liveConnectConstraints("gemini-2.5-flash-native-audio-latest");
-    expect(constraints.model).toBe("models/gemini-2.5-flash-native-audio-latest");
-    expect(constraints.config.responseModalities).toEqual(["AUDIO"]);
+    const setup = constrainedSetup("gemini-2.5-flash-native-audio-latest");
+    expect(setup.model).toBe("models/gemini-2.5-flash-native-audio-latest");
+    expect(setup.generationConfig.responseModalities).toEqual(["AUDIO"]);
   });
 
   it("carries the voice only when one is configured", () => {
-    expect(liveConnectConstraints("m", "Puck").config).toHaveProperty("speechConfig");
-    expect(liveConnectConstraints("m").config).not.toHaveProperty("speechConfig");
+    expect(constrainedSetup("m", "Puck").generationConfig).toHaveProperty("speechConfig");
+    expect(constrainedSetup("m").generationConfig).not.toHaveProperty("speechConfig");
   });
 });
 

@@ -114,28 +114,58 @@ Until M3-1 that was enforced by a line of client setup code
 invariant was one refactor away from silently disappearing — and its absence would only
 surface as an interviewer talking over people.
 
-Ephemeral tokens accept `liveConnectConstraints`: a model and connect config the resulting
-session is locked to, regardless of what the client's own `setup` message asks for. M3-1 pins
+Ephemeral tokens accept a constraint block: a model and connect config the resulting session
+is locked to, regardless of what the client's own `setup` message asks for. M3-1 pins
 `automaticActivityDetection.disabled: true` into every minted credential
-(`modules/realtime/token.ts`, `liveConnectConstraints()`).
+(`modules/realtime/token.ts`, `constrainedSetup()`).
 
 **Consequence:** a client that forgets the flag, or a tampered client that deliberately omits
 it, still cannot obtain a connection that answers on its own. Invariant 1 is now a property of
 the credential rather than of the caller. This is strictly stronger than the ADR originally
 required, and it is the reason the constraint block is not optional.
 
-### Two facts M3-2 needs and will not find in the M0-1 spike
+### Three facts M3-2 needs and will not find in the M0-1 spike
 
-1. **Ephemeral tokens connect to `BidiGenerateContentConstrained`**, not the
+1. **The REST constraint field is `bidiGenerateContentSetup`, not `liveConnectConstraints`.**
+   The published guides document the SDK's name; `auth_tokens` rejects it as an unknown field
+   on **both** `v1beta` and `v1alpha`. The REST field takes the Live `setup` message verbatim —
+   `model` at the top, generation options under `generationConfig`, `realtimeInputConfig` as a
+   sibling, *not* wrapped in a `config` object. Established by probing the live endpoint; see
+   the verification results below.
+2. **Ephemeral tokens connect to `BidiGenerateContentConstrained`**, not the
    `BidiGenerateContent` endpoint the spike used with a raw key. The unconstrained endpoint
    rejects a token with an auth error that reads like a bad token, so the obvious next move —
    mint another one — never helps. Build the URL with `realtimeWsUrl()`.
-2. **Tokens are single-use** (`uses: 1`) and carry two independent deadlines: `expireTime`
+3. **Tokens are single-use** (`uses: 1`) and carry two independent deadlines: `expireTime`
    bounds how long a session may live, `newSessionExpireTime` (60s) bounds the window to open
    one at all. A reconnect mints a fresh credential; it must not reuse the old one.
 
-Verify both against the live API with `pnpm --filter @master-leeter/api verify:token` before
-starting M3-2, so that a failure there is known to belong to M3-2.
+### M3-1 verification (2026-08-11)
+
+`pnpm --filter @master-leeter/api verify:token` — mints a real credential, opens a real
+constrained session, listens 4s for unprompted audio, then attempts to reuse the token.
+
+```text
+minted:            true      mint_ms:  221
+key_absent:        true      open_ms:  223   (to setupComplete)
+session_opened:    true
+single_use:        true      (second connection refused)
+unprompted_audio:  0
+```
+
+**The result that matters is `unprompted_audio: 0` on a session whose own `setup` message did
+not ask for silence.** The check deliberately sends `{setup: {model}}` and nothing else; the
+credential's constraint is what keeps the model quiet. That is ADR-001 holding at the
+credential layer, measured rather than argued.
+
+Latency note for the M4-2 budget: ~444 ms from mint to a live constrained session, which sits
+*before* the p50 ≈ 1.0 s end-of-turn → first-audio-byte figure above, not inside it. It is
+paid once at session start, not per turn.
+
+**This check failed on its first run** — `liveConnectConstraints` was rejected while all 29
+unit tests were green, because a fake-fetch test cannot know what the provider accepts. That
+is the whole argument for keeping this script: run it before starting M3-2, so a failure there
+is known to belong to M3-2.
 
 ---
 

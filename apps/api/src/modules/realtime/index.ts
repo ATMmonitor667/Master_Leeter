@@ -16,7 +16,7 @@ export {
   GeminiTokenMinter,
   MintLimiter,
   RealtimeTokenError,
-  liveConnectConstraints,
+  constrainedSetup,
   minterFromEnv,
   realtimeWsUrl,
   toModelResource,

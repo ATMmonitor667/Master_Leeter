@@ -19,9 +19,9 @@ transcript half is unblocked now that the classifier exists.
 credential, and that credential is what enforces silence control. Six open issues remain, and
 M4-2's timing half cannot be exercised end to end until M3-2 emits speech-stop.
 
-M3-1 is marked done on the same standard the rest of this file uses, which is worth stating
-plainly: it compiles, it is unit-green, and it has **never spoken to Google**. `verify:token`
-exists so that stops being true in one command.
+M3-1 is done on a stronger standard than the rest of this file: it has been run against the
+live API, and the run **failed first time** on a request shape 29 green unit tests could not
+see. `pnpm --filter @master-leeter/api verify:token` is now the check, and it passes.
 
 The loop is closed end to end without voice: pick a scenario, write and run code, end the
 session, read an evidence-backed report. Five scenarios in the library, covering hashing,
@@ -274,26 +274,33 @@ Feed a recorded event stream + pinned scenario version back through the orchestr
 
 ## M3 — Voice and oral delivery · Lane C
 
-### `[x]` M3-1 · Ephemeral realtime credentials · S — **written and unit-green; unrun against the live API**
+### `[x]` M3-1 · Ephemeral realtime credentials · S — **VERIFIED against the live API 2026-08-11**
 **Deps:** M2-1. Server-minted, short-lived. **The provider key never reaches the browser.**
 
 `modules/realtime/token.ts` — `GeminiTokenMinter` over Google's `auth_tokens` endpoint, wired
 to `POST /v1/interview-sessions/:id/realtime-token` (which was a `501` until now). 29 tests.
 
-**The part worth more than key hygiene.** A minted token carries `liveConnectConstraints` — a
-model and connect config the session is locked to, whatever the client's own `setup` asks for.
-`automaticActivityDetection.disabled: true` is pinned into every credential, so **ADR-001 is
-now enforced by the thing the browser is issued rather than by client setup code.** A client
-that forgets the flag, or a tampered one that omits it deliberately, cannot obtain a
+**The part worth more than key hygiene.** A minted token carries `bidiGenerateContentSetup` —
+a model and connect config the session is locked to, whatever the client's own `setup` asks
+for. `automaticActivityDetection.disabled: true` is pinned into every credential, so **ADR-001
+is now enforced by the thing the browser is issued rather than by client setup code.** A
+client that forgets the flag, or a tampered one that omits it deliberately, cannot obtain a
 connection that answers on its own. See the ADR-001 amendment.
+
+**Measured, not asserted.** `verify:token` opens a session whose own `setup` message asks only
+for a model, and observes zero unprompted audio across a 4-second listen. The silence comes
+from the credential.
 
 Also: single-use (`uses: 1`), 10-minute expiry with a separate 60-second window to *open* the
 session, per-session mint cap of 12 so a client retry loop cannot drain the free-tier quota,
 503 when voice is unconfigured, and no provider error text echoed to the browser.
 
-**Two findings M3-2 needs**, both absent from the M0-1 spike because it used a raw key:
-tokens connect to `BidiGenerateContentConstrained` (the unconstrained endpoint rejects them
-with what looks like a bad-token error), and they are single-use, so a reconnect must mint.
+**Three findings M3-2 needs**, all absent from the M0-1 spike because it used a raw key. The
+REST constraint field is `bidiGenerateContentSetup`, **not** the `liveConnectConstraints` the
+published guides document — that is the SDK's name and `auth_tokens` rejects it on `v1beta`
+and `v1alpha` alike; it takes the Live `setup` message verbatim, ungrouped. Tokens connect to
+`BidiGenerateContentConstrained` (the unconstrained endpoint rejects them with what looks like
+a bad-token error). And they are single-use, so a reconnect must mint.
 
 **Deliberately not idempotent**, breaking the `CLAUDE.md` convention. A mint is not a mutation
 of interview state, and replaying a key after a drop would return a single-use token that has
@@ -302,14 +309,21 @@ covers the abuse case instead. Nothing is appended to the event log either: a cr
 not evidence about a candidate, and widening the frozen M0-3 `EVENT_TYPES` seam to record one
 is a bad trade. Mints are logged at info level.
 
-**Unrun against the live API, and that is the honest limit.** Every test here passes without
-the provider existing, so a renamed endpoint or a rejected constraint field would leave them
-all green. `pnpm --filter @master-leeter/api verify:token` closes that without a microphone:
-it mints a real credential, opens a real constrained session, confirms the session stays
-silent unprompted, and confirms a second connection with the same token is refused.
+**`verify:token` results, 2026-08-11:** minted ✅ · key absent ✅ · session opened ✅ ·
+single-use ✅ · unprompted audio **0** · mint 221 ms · open 223 ms (to `setupComplete`).
+~444 ms from mint to a live constrained session — paid once at session start, before the
+p50 ≈ 1.0 s first-audio-byte figure in ADR-001, not inside it.
 
-- [ ] **Run `verify:token` once and record the numbers here.** Until then this issue is
-      written, not measured — and a constraint the API rejects is the likeliest first failure.
+**And it failed on its first run**, which is the point of it existing. `liveConnectConstraints`
+was rejected as an unknown field while all 29 unit tests were green — a fake-fetch test cannot
+know what the provider accepts, so the shape was wrong in exactly the way unit tests are
+structurally unable to see. Two probes against the live endpoint established the real field
+name. `token.test.ts` now pins it so it cannot regress quietly.
+
+**The lesson is bigger than this issue.** Everything here that talks to a vendor has this
+shape: `ModelJudgeRunner` posts to `api.openai.com` with a Gemini key and `JUDGE_MODEL` set to
+`gemini-3.5-flash`, and its tests are green because they inject a fake `complete`. That is the
+same failure, still live, one module over.
 
 ### `[ ]` M3-2 · WebRTC voice connection · M
 **Deps:** M3-1, M2-3. Mute, barge-in (stop output audio and listen immediately), device selection.
