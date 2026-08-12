@@ -111,9 +111,12 @@ describe("the minted token cannot auto-respond", () => {
     expect(setup.generationConfig.responseModalities).toEqual(["AUDIO"]);
   });
 
-  it("carries the voice only when one is configured", () => {
-    expect(constrainedSetup("m", "Puck").generationConfig).toHaveProperty("speechConfig");
-    expect(constrainedSetup("m").generationConfig).not.toHaveProperty("speechConfig");
+  it("always pins a voice, defaulting to a chosen one", () => {
+    // Previously the voice was omitted when unconfigured, which left the choice
+    // to the provider. M3-6 makes it a decision: prosody carries as much of
+    // "this is an interview" as the words do. See persona.test.ts.
+    expect(constrainedSetup("m", "Kore").generationConfig.speechConfig).toBeDefined();
+    expect(constrainedSetup("m").generationConfig.speechConfig).toBeDefined();
   });
 });
 

@@ -42,6 +42,8 @@
  * are logged at info level (M7-2, as reduced).
  */
 
+import { DEFAULT_INTERVIEWER_VOICE, INTERVIEWER_PERSONA } from "./persona.js";
+
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 /**
@@ -181,10 +183,20 @@ export function constrainedSetup(model: string, voice?: string | undefined) {
     model: toModelResource(model),
     generationConfig: {
       responseModalities: ["AUDIO"],
-      ...(voice
-        ? { speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
-        : {}),
+      speechConfig: {
+        voiceConfig: { prebuiltVoiceConfig: { voiceName: voice ?? DEFAULT_INTERVIEWER_VOICE } },
+      },
     },
+    /**
+     * The persona travels in the credential too (M3-6).
+     *
+     * Same reasoning as the constraint below it: a system instruction the
+     * browser sends is one the browser can replace, and "you are a helpful
+     * tutor, explain the optimal solution" is a single line of tampering. Pinned
+     * here, the client's own `setup` cannot widen what the model is willing to
+     * be — it can only send the model name, which is what `RealtimeVoice` does.
+     */
+    systemInstruction: { parts: [{ text: INTERVIEWER_PERSONA }] },
     // ADR-001, made structural. See the module comment.
     realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
   };

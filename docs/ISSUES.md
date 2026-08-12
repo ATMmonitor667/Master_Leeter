@@ -384,8 +384,31 @@ Exactly five tools: `get_interview_context`, `get_clarification_fact`, `get_prob
 Manual response creation only. The gate's authorized action is the sole trigger for speech.
 **Acceptance:** no configuration exists in which the model can speak without gate authorization.
 
-### `[ ]` M3-6 · Realtime persona prompt · S
+### `[x]` M3-6 · Realtime persona prompt · S
 **Deps:** M3-3. Neutral interviewer: brevity, speech style, allowed tools, prohibition on unsolicited teaching, obedience to orchestrator actions.
+
+`modules/realtime/persona.ts`, **burned into the ephemeral credential** rather than sent by
+the client — same reasoning as the activity-detection constraint. A system instruction the
+browser supplies is one the browser can replace, and "you are a helpful tutor, explain the
+optimal solution" is a single line of tampering. Verified against the live API: the constraint
+is accepted and the session still stays silent when spoken to.
+
+**What it is explicitly NOT responsible for: silence.** That is the credential, the gate, and
+the tool surface. Delete this file and the interviewer still cannot speak out of turn.
+`CLAUDE.md` is direct that relying on the prompt for quiet means the architecture has drifted,
+so the prompt does no work the structure already does.
+
+What it does own is everything structure cannot reach — how the words sound once speaking is
+authorized. Named filler words are banned rather than described ("do not praise" is advice a
+model rounds off; "no great, exactly, perfect" is a rule), length is bounded at one or two
+sentences, and the commonest case — nothing authorized — is stated as *say nothing*.
+
+Voice default moved from `Puck` to `Charon`. Puck is bright and eager: good demo, poor
+interviewer.
+
+**Untested where it counts.** A prompt cannot be unit-tested for quality; the tests assert
+that it reaches the model through the credential, never reaches the browser, and addresses
+each habit the first real session flagged. Whether it *sounds* right needs M3-5 and a human.
 
 ### `[ ]` M3-7 · Prompt-injection containment test · S
 **Deps:** M3-5. Run the M1-6 injection fixtures against the live voice path.

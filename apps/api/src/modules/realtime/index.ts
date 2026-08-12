@@ -1,10 +1,10 @@
 /**
  * Realtime module (M3).
  *
- * Credential issuance and the voice agent's tool surface — the whole boundary
- * between this system and the realtime provider. Not an HTTP module: the session
- * module owns the routes, the same way it calls into the orchestrator rather
- * than the other way round.
+ * Credential issuance, the interviewer persona, and the voice agent's tool
+ * surface — the whole boundary between this system and the realtime provider.
+ * Not an HTTP module: the session module owns the routes, the same way it calls
+ * into the orchestrator rather than the other way round.
  *
  * Pure re-exports, deliberately: a barrel with logic in it is a barrel that
  * grows into a second home for the thing it re-exports.
@@ -26,6 +26,12 @@ export {
   type RealtimeTokenErrorKind,
   type RealtimeTokenMinter,
 } from "./token.js";
+
+export {
+  DEFAULT_INTERVIEWER_VOICE,
+  INTERVIEWER_PERSONA,
+  PERSONA_PROHIBITIONS,
+} from "./persona.js";
 
 export {
   VOICE_TOOLS,
