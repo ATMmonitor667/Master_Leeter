@@ -43,36 +43,53 @@ Voice infrastructure is largely built (Gemini Live credentials, client audio sta
 Modular monolith: one TypeScript backend, one Next.js client, shared contracts, Postgres event log, Redis session leases.
 
 ```mermaid
-flowchart TB
-  subgraph Browser["Browser (Next.js)"]
-    UI["Workspace · Monaco · Notes · Captions"]
-    Voice["Gemini Live · VAD · WebSocket"]
-    UI --> Voice
+flowchart LR
+  subgraph Browser["Client · Next.js"]
+    direction TB
+    UI["Editor · Notes · Captions"]
+    Voice["Voice · VAD · Live API"]
   end
 
-  subgraph API["API (Fastify)"]
-    GW["Session / WebSocket Gateway"]
-    ORCH["Interview Orchestrator"]
+  subgraph Brain["Interview Brain · Fastify"]
+    direction TB
+    GW["WebSocket Gateway"]
+    ORCH["Orchestrator"]
     GATE["Response Gate"]
+    GW --> ORCH --> GATE
+  end
+
+  subgraph Services["Domain Services"]
+    direction TB
     SCEN["Scenario Engine"]
     OBS["Candidate Observer"]
     EVAL["Post-session Evaluator"]
-    GW --> ORCH
-    ORCH --> GATE
-    ORCH --> SCEN
-    ORCH --> OBS
   end
 
-  subgraph Store["Infrastructure"]
-    PG[(Postgres · Event Log)]
-    RD[(Redis · Session Lease)]
+  subgraph Infra["Infrastructure"]
+    direction TB
+    PG[("Postgres<br/>Event Log")]
+    RD[("Redis<br/>Session Lease")]
   end
 
-  Voice <-->|WebRTC / WS| GW
-  UI <-->|WebSocket| GW
+  Voice <-->|live audio| GW
+  UI <-->|session events| GW
+  ORCH --> SCEN
+  ORCH --> OBS
   ORCH --> PG
-  GW --> RD
   EVAL --> PG
+  GW --> RD
+
+  classDef client fill:#4f46e5,stroke:#3730a3,color:#fff,stroke-width:2px
+  classDef brain fill:#0ea5e9,stroke:#0369a1,color:#fff,stroke-width:2px
+  classDef gate fill:#e11d48,stroke:#9f1239,color:#fff,stroke-width:3px
+  classDef svc fill:#8b5cf6,stroke:#6d28d9,color:#fff,stroke-width:2px
+  classDef infra fill:#059669,stroke:#047857,color:#fff,stroke-width:2px
+
+  class UI,Voice client
+  class GW,ORCH brain
+  class GATE gate
+  class SCEN,OBS,EVAL svc
+  class PG,RD infra
 ```
 
 **Four model roles**, each with a conflicting job:
