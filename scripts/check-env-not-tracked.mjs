@@ -13,15 +13,21 @@ const TRACKED = execSync("git ls-files", { encoding: "utf8" })
   .split("\n")
   .filter(Boolean);
 
-const FORBIDDEN = [
-  /^\.env$/,
-  /^\.env\.local$/,
-  /^apps\/api\/\.env$/,
-  /^apps\/api\/\.env\.local$/,
-  /^\.env\..+\.local$/,
-];
+/**
+ * Any tracked file whose basename starts with `.env`, except the template.
+ *
+ * Was a list of exact names, which the real near-miss walked straight past:
+ * `apps/api/.env.local.bak` is a copy of live credentials and matched none of
+ * them. Enumerating filenames means the guard only catches the spellings
+ * someone already thought of, and a backup is exactly the spelling nobody
+ * does — so this asks the question by prefix instead.
+ */
+const isSecretName = (path) => {
+  const base = path.split("/").pop() ?? "";
+  return base.startsWith(".env") && base !== ".env.example";
+};
 
-const trackedForbidden = TRACKED.filter((f) => FORBIDDEN.some((re) => re.test(f)));
+const trackedForbidden = TRACKED.filter(isSecretName);
 
 if (trackedForbidden.length > 0) {
   console.error("✗ tracked secrets files (must be gitignored, never committed):");
@@ -38,9 +44,17 @@ const KEY_PATTERNS = [
   /\bAIza[A-Za-z0-9_-]{20,}/,
 ];
 
-const scanPaths = TRACKED.filter(
-  (f) => f === ".env.example" || f.endsWith(".env.example") || f.endsWith(".md"),
-);
+/**
+ * Every tracked text file, not just templates and docs.
+ *
+ * The old scan looked at `.env.example` and `*.md` only — the two places a key
+ * is least likely to end up by accident, because both are read by humans. A key
+ * pasted into a test fixture, a script default, or a config file was invisible
+ * to it. Binary and lockfiles are skipped because they cannot be usefully read
+ * and the lockfile is large enough to slow the check noticeably.
+ */
+const SKIP = /(^|\/)(pnpm-lock\.yaml|package-lock\.json)$|\.(png|jpe?g|gif|ico|pdf|woff2?)$/;
+const scanPaths = TRACKED.filter((f) => !SKIP.test(f));
 
 const leaks = [];
 for (const file of scanPaths) {

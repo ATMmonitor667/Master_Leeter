@@ -6,13 +6,17 @@ coverage/
 *.tsbuildinfo
 
 # Secrets — never commit. Only .env.example (placeholders) is tracked.
-.env
-.env.local
-.env.*.local
-apps/api/.env
-apps/api/.env.local
-**/.env.local
+#
+# Deny everything named .env*, then allow the one template back. The previous
+# list named exact files, which meant every derivative of a real env file was
+# still committable: apps/api/.env.local.bak sat untracked in the working tree
+# and `git add -A` would have taken it, key and all. Backups, ".old", "copy",
+# and dated variants are the normal way a credentials file gets duplicated, so
+# the rule has to be shaped by prefix rather than by enumeration.
+.env*
+**/.env*
 !.env.example
+!**/.env.example
 
 .DS_Store
 *.log
