@@ -163,6 +163,10 @@ export function runBot(bot: CandidateBot, scenario: InterviewScenarioVersion): S
       solvedOptimally: (candidateState.milestonesReached as readonly string[]).includes(
         "BASE_TESTS_PASS",
       ),
+      // Every trajectory starts after the problem has been delivered — none of
+      // them is a test of the opening, and a bot that re-heard the brief on
+      // step one would be measuring something else entirely.
+      briefDeliveryCount: 1,
     });
 
     // Apply the consequences so later steps see a session that actually

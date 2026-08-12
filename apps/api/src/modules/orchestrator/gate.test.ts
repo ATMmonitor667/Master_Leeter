@@ -22,7 +22,17 @@ beforeAll(async () => {
 });
 
 function deps(overrides: Partial<GateDependencies> = {}): GateDependencies {
-  return { scenario, probeUseCounts: {}, followUpsUsed: [], solvedOptimally: false, ...overrides };
+  return {
+    scenario,
+    probeUseCounts: {},
+    followUpsUsed: [],
+    solvedOptimally: false,
+    // Default to an interview already underway. The opening is its own case and
+    // is tested explicitly below; leaving it at 0 here would put every other
+    // test one state-change away from a brief delivery it never asked for.
+    briefDeliveryCount: 1,
+    ...overrides,
+  };
 }
 
 function ctx(overrides: Partial<InterviewContext> = {}): InterviewContext {
@@ -271,5 +281,67 @@ describe("orchestrator is the policy authority", () => {
     expect(() =>
       assertActionPermitted(ctx(), { action: "STAY_SILENT", reason: "…", decidedByRule: true }),
     ).not.toThrow();
+  });
+});
+
+describe("the oral brief (M3-4)", () => {
+  /**
+   * The one utterance that is not a response.
+   *
+   * Every other rule in the gate answers something the candidate did. The brief
+   * has no turn behind it — the candidate is waiting to hear the problem — so an
+   * interview that only spoke in response would never start at all.
+   */
+  it("opens the interview before any turn exists", () => {
+    const decision = decideAction(
+      ctx({ state: "ORAL_PROBLEM_DELIVERY", turn: null }),
+      deps({ briefDeliveryCount: 0 }),
+    );
+
+    expect(decision.action).toBe("DELIVER_BRIEF");
+  });
+
+  it("delivers it once, not on every event", () => {
+    const decision = decideAction(
+      ctx({ state: "ORAL_PROBLEM_DELIVERY", turn: null }),
+      deps({ briefDeliveryCount: 1 }),
+    );
+
+    expect(decision.action).toBe("STAY_SILENT");
+  });
+
+  it("does not talk over itself while already delivering", () => {
+    const decision = decideAction(
+      ctx({ state: "ORAL_PROBLEM_DELIVERY", turn: null, interviewerCurrentlySpeaking: true }),
+      deps({ briefDeliveryCount: 0 }),
+    );
+
+    expect(decision.action).toBe("STAY_SILENT");
+  });
+
+  it("repeats on request, from the reviewed variants", () => {
+    const decision = decideAction(
+      ctx({
+        state: "CLARIFICATION",
+        turn: turn("sorry, can you say that again", "EXPLICIT_QUESTION"),
+      }),
+      deps({ briefDeliveryCount: 1 }),
+    );
+
+    expect(decision.action).toBe("DELIVER_BRIEF");
+  });
+
+  it("does not re-read the problem over a working candidate", () => {
+    // The matcher is narrow on purpose: re-delivering the brief because someone
+    // said "again" mid-sentence is a worse interruption than most.
+    const decision = decideAction(
+      ctx({
+        state: "IMPLEMENTATION",
+        turn: turn("let me try that again with a set", "THINK_ALOUD"),
+      }),
+      deps({ briefDeliveryCount: 1 }),
+    );
+
+    expect(decision.action).not.toBe("DELIVER_BRIEF");
   });
 });

@@ -105,8 +105,23 @@ function build(): Harness {
   };
 }
 
+/**
+ * Move past the opening.
+ *
+ * A session begins in ORAL_PROBLEM_DELIVERY with the brief undelivered, where
+ * the gate's first rule is to speak it — correctly, since the candidate is
+ * waiting to hear the problem. These tests are about turn completion, so they
+ * start where an interview actually is when someone is thinking aloud.
+ */
+async function reachImplementation(h: Harness): Promise<void> {
+  for (const to of ["CLARIFICATION", "APPROACH_EXPLORATION", "IMPLEMENTATION"]) {
+    await h.feed("STATE_TRANSITIONED", { to }, 1_000);
+  }
+}
+
 /** Candidate stops, then the transcript lands `afterMs` later. */
 async function stopThenFinalize(h: Harness, afterMs: number): Promise<void> {
+  await reachImplementation(h);
   await h.feed("SPEECH_STOPPED", {}, 10_000);
   await h.feed("SPEECH_FINAL", { transcript: "so the whole thing is linear time", finalized: true }, 10_000 + afterMs);
 }

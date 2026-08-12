@@ -175,6 +175,14 @@ export class InterviewRuntime {
   /** Fact keys already answered aloud, so the agent knows what it has said. */
   private readonly answeredFactKeys: string[] = [];
 
+  /**
+   * How many times the brief has been spoken.
+   *
+   * Zero means the interview has not opened. Above zero, a repeat request is
+   * answered from the reviewed variants rather than by paraphrase.
+   */
+  private briefDeliveryCount = 0;
+
   private readonly classifier: IntentClassifier;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
@@ -323,6 +331,12 @@ export class InterviewRuntime {
         return none;
       }
 
+      case "SESSION_STARTED":
+        // The one utterance that is not a response. Routed through the gate like
+        // everything else, so it lands in the log with an ACTION_DECIDED behind
+        // it rather than as speech nobody authorized.
+        return this.openInterview();
+
       case "SESSION_ENDED":
         this.state = applyEvent({ state: this.state, eventType: "SESSION_ENDED" }).state;
         return none;
@@ -420,6 +434,7 @@ export class InterviewRuntime {
       probeUseCounts: this.probeUseCounts,
       followUpsUsed: this.followUpsUsed,
       solvedOptimally: this.solvedOptimally(),
+      briefDeliveryCount: this.briefDeliveryCount,
     });
 
     // Every decision is recorded, including silence. "Why didn't it speak at
@@ -574,6 +589,49 @@ export class InterviewRuntime {
   }
 
   /**
+   * Ask the gate to open the interview.
+   *
+   * There is no turn here, and that is why the brief rule sits above the turn
+   * checks: an interview that waited for the candidate to speak first would
+   * never begin, since the candidate is waiting to hear the problem.
+   */
+  private async openInterview(): Promise<RuntimeResult> {
+    const ctx = this.buildContext(null);
+    const decision = decideAction(ctx, {
+      scenario: this.deps.scenario,
+      probeUseCounts: this.probeUseCounts,
+      followUpsUsed: this.followUpsUsed,
+      solvedOptimally: this.solvedOptimally(),
+      briefDeliveryCount: this.briefDeliveryCount,
+    });
+
+    if (decision.action === "STAY_SILENT") return { decision, utterance: null };
+
+    await this.append(
+      "ACTION_DECIDED",
+      "INTERVIEWER",
+      { action: decision.action, reason: decision.reason, decidedByRule: decision.decidedByRule },
+      "action:opening",
+    );
+
+    const utterance = await this.realize(decision, {
+      turnId: "opening",
+      finalized: true,
+      transcript: "",
+      semanticEndProbability: 1,
+      intent: "THINK_ALOUD",
+      intentProbabilities: {},
+      endedAt: new Date(this.now()).toISOString(),
+    });
+
+    this.authorized = utterance ? { decision, utteranceId: utterance.utteranceId } : null;
+    this.lastSpokeAtMs = this.now();
+    if (utterance) this.interviewerCurrentlySpeaking = true;
+
+    return { decision, utterance };
+  }
+
+  /**
    * Quiet time between the last speech-stop and this finalized transcript.
    *
    * Both timestamps come off logged events, so this is a pure function of the
@@ -699,6 +757,29 @@ export class InterviewRuntime {
         );
 
         return { ...base, text: followUp.oralDelta };
+      }
+
+      case "DELIVER_BRIEF": {
+        const brief = this.deps.scenario.oralBrief;
+        // First telling is the opening script; later ones rotate through the
+        // REVIEWED variants. Nothing here composes a retelling, because a
+        // paraphrase is exactly how a second hearing leaks more than the first.
+        const variants = brief.repeatVariants;
+        const text =
+          this.briefDeliveryCount === 0
+            ? brief.openingScript
+            : (variants[(this.briefDeliveryCount - 1) % variants.length] ?? brief.openingScript);
+
+        this.briefDeliveryCount += 1;
+
+        await this.append(
+          "BRIEF_DELIVERED",
+          "INTERVIEWER",
+          { delivery: this.briefDeliveryCount, repeat: this.briefDeliveryCount > 1 },
+          `brief:${this.briefDeliveryCount}`,
+        );
+
+        return { ...base, text };
       }
 
       case "ACKNOWLEDGE_BRIEFLY":

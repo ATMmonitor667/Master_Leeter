@@ -31,6 +31,16 @@ export type InterviewState = z.infer<typeof InterviewStateSchema>;
  */
 export const INTERVIEW_ACTIONS = [
   "STAY_SILENT",
+  /**
+   * Speak the authored oral brief (M3-4).
+   *
+   * The interview's one unconditional utterance: the candidate cannot start
+   * without it, so there is no judgement about whether to say it — only about
+   * when, and about which reviewed wording. It still goes through the gate,
+   * because invariant 1 admits no exceptions and an utterance that bypassed the
+   * gate would be an utterance with no ACTION_DECIDED behind it in the log.
+   */
+  "DELIVER_BRIEF",
   "ACKNOWLEDGE_BRIEFLY",
   "ANSWER_CLARIFICATION",
   "ASK_PROBE",
@@ -51,11 +61,15 @@ export type InterviewAction = z.infer<typeof InterviewActionSchema>;
  * programming error, and the orchestrator throws rather than degrading to it.
  */
 export const ALLOWED_ACTIONS: Record<InterviewState, readonly InterviewAction[]> = {
-  ORAL_PROBLEM_DELIVERY: ["STAY_SILENT", "TRANSITION_STAGE"],
+  ORAL_PROBLEM_DELIVERY: ["STAY_SILENT", "DELIVER_BRIEF", "TRANSITION_STAGE"],
   CLARIFICATION: [
     "STAY_SILENT",
     "ACKNOWLEDGE_BRIEFLY",
     "ANSWER_CLARIFICATION",
+    // "Sorry, can you say that again?" is normal interview behaviour, not an
+    // accommodation, and it must not be answered by paraphrase — the reviewed
+    // repeat variants exist so a second telling cannot leak more than the first.
+    "DELIVER_BRIEF",
     "TRANSITION_STAGE",
   ],
   APPROACH_EXPLORATION: [

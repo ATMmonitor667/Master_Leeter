@@ -38,7 +38,22 @@ export interface GateDependencies {
   followUpsUsed: readonly string[];
   /** True when base tests pass and the detected family is the optimal one. */
   solvedOptimally: boolean;
+  /**
+   * How many times the brief has been spoken. 0 means the interview has not
+   * started, which is the one situation where the interviewer speaks first.
+   */
+  briefDeliveryCount: number;
 }
+
+/**
+ * A candidate asking to hear the problem again.
+ *
+ * Deliberately narrow. Broad matching here would re-deliver the brief whenever
+ * someone said "sorry" or "again" mid-sentence, and re-reading the problem over
+ * a working candidate is a far worse interruption than most.
+ */
+const REPEAT_REQUEST =
+  /\b(say that again|repeat (that|the (question|problem))|hear that again|didn'?t (quite )?catch|missed that)\b/i;
 
 export function decideAction(ctx: InterviewContext, deps: GateDependencies): GateDecision {
   const decision = decide(ctx, deps);
@@ -56,6 +71,23 @@ export function decideAction(ctx: InterviewContext, deps: GateDependencies): Gat
 }
 
 function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
+  // ── 0. The brief ───────────────────────────────────────────────────────────
+  // Before everything, including the turn checks, because this is the one
+  // utterance that is not a response. The candidate is waiting on it and there
+  // is no turn to finalize — an interview that opened in silence and waited for
+  // the candidate to speak first would simply never begin.
+  if (
+    ctx.state === "ORAL_PROBLEM_DELIVERY" &&
+    deps.briefDeliveryCount === 0 &&
+    !ctx.interviewerCurrentlySpeaking
+  ) {
+    return {
+      action: "DELIVER_BRIEF",
+      reason: "opening brief not yet delivered",
+      decidedByRule: true,
+    };
+  }
+
   // ── 1. Barge-in ────────────────────────────────────────────────────────────
   // The candidate talking over the interviewer is never a cue to talk more.
   // Output audio is cancelled client-side; here we simply yield the floor.
@@ -80,6 +112,17 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
   }
 
   const { turn } = ctx;
+
+  // ── 3b. "Sorry, can you say that again?" ───────────────────────────────────
+  // Answered from the reviewed repeat variants rather than by paraphrase, so a
+  // second telling cannot disclose more than the first (invariant 2).
+  if (REPEAT_REQUEST.test(turn.transcript) && deps.briefDeliveryCount > 0) {
+    return {
+      action: "DELIVER_BRIEF",
+      reason: "candidate asked to hear the problem again",
+      decidedByRule: true,
+    };
+  }
 
   // ── 4. The candidate asked something ───────────────────────────────────────
   // Direct questions are the one case where silence is the wrong answer.
