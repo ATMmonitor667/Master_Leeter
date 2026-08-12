@@ -9,6 +9,18 @@
   --warn: #e0b355;
   --err: #e07a72;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Marketing landing — separate scale; interview/report screens use tokens above */
+  --mkt-bg: #08090c;
+  --mkt-panel: #0c0e13;
+  --mkt-border: rgba(255, 255, 255, 0.08);
+  --mkt-text: #e6e8ee;
+  --mkt-muted: #9aa1b1;
+  --mkt-dim: #6b7385;
+  --mkt-faint: #4d5464;
+  --mkt-accent: #7fe3c2;
+  --mkt-accent-2: #8f8bff;
+  --mkt-num: #e0a0ff;
 }
 
 * {
@@ -59,4 +71,141 @@ textarea:focus,
 input:focus,
 select:focus {
   outline: 1px solid var(--accent);
+}
+
+/* ── Marketing landing page ─────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes mkt-blink {
+    0%,
+    49% {
+      opacity: 1;
+    }
+    50%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes mkt-floaty {
+    0% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-10px);
+    }
+    100% {
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes mkt-sweep {
+    0% {
+      transform: translateX(-120%);
+    }
+    100% {
+      transform: translateX(220%);
+    }
+  }
+
+  @keyframes mkt-pulse-dot {
+    0%,
+    100% {
+      opacity: 0.35;
+      transform: scale(0.85);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.15);
+    }
+  }
+
+  @keyframes mkt-marquee {
+    0% {
+      transform: translateX(0);
+    }
+    100% {
+      transform: translateX(-50%);
+    }
+  }
+
+  .mkt-blink {
+    animation: mkt-blink 1.1s step-end infinite;
+  }
+
+  .mkt-floaty {
+    animation: mkt-floaty 9s ease-in-out infinite;
+  }
+
+  .mkt-pulse-dot {
+    animation: mkt-pulse-dot 1.6s infinite;
+  }
+
+  .mkt-marquee {
+    animation: mkt-marquee 34s linear infinite;
+  }
+
+  .mkt-sweep {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 180px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+    animation: mkt-sweep 6s linear infinite;
+  }
+}
+
+.landing-page .mkt-nav-link {
+  color: #9aa1b1;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.landing-page .mkt-nav-link:hover {
+  color: #e6e8ee;
+}
+
+.landing-page .mkt-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 30px rgba(127, 227, 194, 0.35);
+}
+
+.landing-page .mkt-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.landing-page button.mkt-btn-primary,
+.landing-page a.mkt-btn-primary {
+  color: #08090c;
+  background: #7fe3c2;
+  border: none;
+}
+
+.landing-page button.mkt-btn-ghost,
+.landing-page span.mkt-btn-ghost {
+  color: #e6e8ee;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.landing-page .mkt-feature-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 26px 24px 28px;
+  transition: border-color 0.25s, transform 0.25s, background 0.25s;
+}
+
+.landing-page .mkt-feature-card:hover {
+  border-color: rgba(127, 227, 194, 0.3);
+  transform: translateY(-3px);
+  background: rgba(127, 227, 194, 0.04);
+}
+
+@media (max-width: 720px) {
+  .landing-page nav .mkt-nav-link {
+    display: none;
+  }
 }
