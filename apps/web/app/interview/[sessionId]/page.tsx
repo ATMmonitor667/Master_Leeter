@@ -5,9 +5,12 @@ import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "../../../components/CodeEditor";
 import { InterviewerStatus, type InterviewerState } from "../../../components/InterviewerStatus";
 import { Notepad } from "../../../components/Notepad";
+import { SpeechCaption } from "../../../components/SpeechCaption";
 import { TestPanel } from "../../../components/TestPanel";
 import { Timer } from "../../../components/Timer";
+import { VoiceControls } from "../../../components/VoiceControls";
 import { SessionClient } from "../../../lib/session-client";
+import { VoiceSession, type VoiceStatus } from "../../../lib/voice-session";
 
 /**
  * The candidate workspace (M2-3).
@@ -45,8 +48,12 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   const [result, setResult] = useState<RunResult | null>(null);
   const [ending, setEnding] = useState(false);
   const [restored, setRestored] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("IDLE");
+  const [voiceMuted, setVoiceMuted] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const clientRef = useRef<SessionClient | null>(null);
+  const voiceRef = useRef<VoiceSession | null>(null);
 
   const onServerMessage = useCallback((msg: ServerMessage) => {
     switch (msg.kind) {
@@ -60,6 +67,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         break;
       case "ERROR":
         if (msg.code === "RUNNER_UNAVAILABLE") setRunnerAvailable(false);
+        setRunning(false);
         break;
       default:
         break;
@@ -142,6 +150,53 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     };
   }, [sessionId, onServerMessage]);
 
+  /**
+   * Start voice on request, never on load.
+   *
+   * A microphone that opens itself is hostile, and the candidate should be able
+   * to read the workspace before anything is listening.
+   */
+  const onVoiceStart = useCallback(
+    (deviceId?: string) => {
+      setVoiceError(null);
+
+      const session = new VoiceSession({
+        sessionId,
+        apiBase: process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000",
+        ...(deviceId ? { deviceId } : {}),
+        onStatus: setVoiceStatus,
+        onError: (err) => setVoiceError(err.message),
+        // The events M4-2 measures silenceMs between. They carry the VAD's
+        // onset timestamps, not the moment they were sent.
+        onSpeechBoundary: (boundary) =>
+          clientRef.current?.speechBoundary(boundary.type, boundary.atMs),
+      });
+
+      voiceRef.current = session;
+      session.start().catch(() => {
+        // Already surfaced through onError; the rejection is the same failure.
+      });
+    },
+    [sessionId],
+  );
+
+  const onVoiceStop = useCallback(() => {
+    void voiceRef.current?.stop();
+    voiceRef.current = null;
+    setVoiceMuted(false);
+  }, []);
+
+  const onToggleMute = useCallback(() => {
+    setVoiceMuted((current) => {
+      voiceRef.current?.setMuted(!current);
+      return !current;
+    });
+  }, []);
+
+  // Releases the microphone on unmount. A session left holding a live capture
+  // indicator after navigating away is alarming and looks like a bug.
+  useEffect(() => () => void voiceRef.current?.stop(), []);
+
   const onCodeChange = useCallback((text: string) => {
     setCode(text);
     clientRef.current?.codeChanged(text);
@@ -157,6 +212,10 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     setResult(null);
     clientRef.current?.requestRun(testInput);
   }, [testInput]);
+
+  const onSpeechFinal = useCallback((transcript: string) => {
+    clientRef.current?.speechFinal(transcript);
+  }, []);
 
   const onEnd = useCallback(async () => {
     // Flush before ending so the final revision is in the log the evaluator
@@ -191,7 +250,15 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <InterviewerStatus state={interviewer} />
+          <VoiceControls
+            status={voiceStatus}
+            muted={voiceMuted}
+            error={voiceError}
+            onStart={onVoiceStart}
+            onStop={onVoiceStop}
+            onToggleMute={onToggleMute}
+          />
+          <InterviewerStatus state={voiceStatus === "SPEAKING" ? "SPEAKING" : interviewer} />
           <Timer remainingSeconds={remaining} />
           {/* Deliberately plain. Ending an interview is a decision, not a
               call to action, and a prominent button invites misclicks. */}
@@ -201,7 +268,19 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         </div>
       </header>
     ),
-    [connected, interviewer, remaining, onEnd, ending],
+    [
+      connected,
+      interviewer,
+      remaining,
+      onEnd,
+      ending,
+      voiceStatus,
+      voiceMuted,
+      voiceError,
+      onVoiceStart,
+      onVoiceStop,
+      onToggleMute,
+    ],
   );
 
   return (
@@ -224,12 +303,15 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         <aside
           style={{
             display: "grid",
-            gridTemplateRows: "minmax(0, 1fr) minmax(0, 1.2fr)",
+            gridTemplateRows: "minmax(0, 0.9fr) minmax(0, 0.55fr) minmax(0, 1.1fr)",
             minHeight: 0,
           }}
         >
           <div style={{ borderBottom: "1px solid var(--border)", minHeight: 0 }}>
             <Notepad value={notes} onChange={onNotesChange} />
+          </div>
+          <div style={{ borderBottom: "1px solid var(--border)", minHeight: 0 }}>
+            <SpeechCaption onFinal={onSpeechFinal} />
           </div>
           <TestPanel
             input={testInput}

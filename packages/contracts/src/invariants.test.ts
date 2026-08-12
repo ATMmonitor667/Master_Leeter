@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   ALLOWED_ACTIONS,
   ALLOWED_TRANSITIONS,
+  CLIENT_EVENT_TYPES,
   ClarificationResultSchema,
+  ClientEventSchema,
+  EVENT_TYPES,
   GateDecisionSchema,
   INTERVIEW_ACTIONS,
   INTERVIEW_STATES,
   InterviewScenarioVersionSchema,
+  SERVER_ONLY_EVENT_TYPES,
   SILENT,
   SessionEventSchema,
   emptyCandidateState,
@@ -214,6 +218,74 @@ describe("scenario content rules", () => {
       { id: "p1", trigger: "claimed O(1)", questionIntent: "test complexity", authoredVariants: [] },
     ]);
     expect(result.success).toBe(false);
+  });
+});
+
+describe("invariant 8 — the client states what it did, never what it meant", () => {
+  /**
+   * The envelope accepted the whole EVENT_TYPES enum until this landed, so a
+   * browser could append RUN_COMPLETED or MILESTONE into the append-only
+   * evidence log. `actor` is server-assigned and was never forgeable, but
+   * nothing downstream reads it: the evaluator switches on `type`, and the
+   * observer folds a run result wherever it came from.
+   */
+  const FORGEABLE_BEFORE = [
+    "RUN_COMPLETED",
+    "MILESTONE",
+    "SEMANTIC_SNAPSHOT",
+    "CANDIDATE_STATE_UPDATED",
+    "ACTION_DECIDED",
+    "HINT_GIVEN",
+    "PROBE_ASKED",
+    "CLARIFICATION_ANSWERED",
+    "FOLLOW_UP_PRESENTED",
+    "SESSION_ENDED",
+    "STATE_TRANSITIONED",
+  ] as const;
+
+  it.each(FORGEABLE_BEFORE)("rejects a client-sent %s", (type) => {
+    const parsed = ClientEventSchema.safeParse({
+      sessionId: "00000000-0000-4000-8000-000000000000",
+      clientSeq: 0,
+      idempotencyKey: "k",
+      type,
+      occurredAt: "2026-08-11T00:00:00.000Z",
+      payload: { status: "PASSED", kind: "BASE_TESTS_PASS" },
+    });
+
+    expect(parsed.success, `${type} must not be client-emittable`).toBe(false);
+  });
+
+  it("accepts every type the client legitimately needs", () => {
+    for (const type of CLIENT_EVENT_TYPES) {
+      const parsed = ClientEventSchema.safeParse({
+        sessionId: "00000000-0000-4000-8000-000000000000",
+        clientSeq: 0,
+        idempotencyKey: "k",
+        type,
+        occurredAt: "2026-08-11T00:00:00.000Z",
+        payload: {},
+      });
+      expect(parsed.success, `${type} must be client-emittable`).toBe(true);
+    }
+  });
+
+  it("partitions the enum — every type is either client-emittable or server-only", () => {
+    // Derived, not listed, so a new EVENT_TYPES entry is server-only by
+    // default. Forgetting to classify withholds a capability rather than
+    // granting one.
+    expect([...CLIENT_EVENT_TYPES, ...SERVER_ONLY_EVENT_TYPES].sort()).toEqual(
+      [...EVENT_TYPES].sort(),
+    );
+    expect(CLIENT_EVENT_TYPES.length).toBeLessThan(EVENT_TYPES.length);
+  });
+
+  it("keeps every conclusion server-only", () => {
+    // The line being drawn: the candidate reports actions, the server draws
+    // inferences. Anything here reaching the client list is a regression.
+    for (const type of FORGEABLE_BEFORE) {
+      expect(SERVER_ONLY_EVENT_TYPES).toContain(type);
+    }
   });
 });
 

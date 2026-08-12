@@ -1,14 +1,15 @@
-import { randomUUID } from "node:crypto";
-import { InterviewModeSchema, type SessionEvent } from "@master-leeter/contracts";
+import { InterviewModeSchema, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { InterviewRuntime } from "../orchestrator/index.js";
-import { DEFAULT_LIMITS, RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
+import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.js";
+import { MintLimiter, RealtimeTokenError, type RealtimeTokenMinter } from "../realtime/index.js";
+import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
 import { InMemoryEventLog } from "./event-log.js";
 import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
 import { reconstruct } from "./resume.js";
+import { enqueueRun, handleRunRequestedEvent, type RunContext } from "./runs.js";
 import { InMemorySessionStore, SessionNotFoundError, remainingSeconds } from "./session-store.js";
 import { registerEventsSocket } from "./ws.js";
 
@@ -59,10 +60,28 @@ export interface SessionModuleOptions {
   library: Map<string, LoadedScenario>;
   store?: InMemorySessionStore;
   eventLog?: InMemoryEventLog;
-  /** Absent until a Judge0 instance exists. The interview works without it. */
+  /** Absent until a judge model is configured. The interview works without it. */
   runner?: CodeRunner;
   /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
   evaluationQueue?: { enqueue(sessionId: string, rubricId: string): unknown };
+  /**
+   * Shared across every session in the process, deliberately.
+   *
+   * The cache warms across sessions, and — more importantly — one circuit
+   * breaker protects the whole process. A quota exhaustion is an account-level
+   * fact, not a session-level one, so per-session breakers would each have to
+   * discover it independently, at the cost of three timed-out turns apiece.
+   *
+   * Omitted in tests, where `InterviewRuntime` falls back to the rule stub.
+   */
+  classifier?: IntentClassifier;
+  /**
+   * Absent until voice is configured, and absent in most tests.
+   *
+   * Its absence is a 503 on the token route and nothing else — the interview
+   * runs without voice exactly as it runs without a runner.
+   */
+  realtimeTokenMinter?: RealtimeTokenMinter;
 }
 
 export async function registerSessionModule(
@@ -80,10 +99,39 @@ export async function registerSessionModule(
    * session or scenario version it belonged to. An unattributable run is
    * unusable evidence.
    */
-  const runContext = new Map<string, { sessionId: string; scenarioVersionId: string; traceId: string }>();
+  const runContext = new Map<string, RunContext>();
+
+  /** Connected app sockets, for async pushes such as RUN_RESULT. */
+  const sessionPushers = new Map<string, Set<(msg: ServerMessage) => void>>();
+
+  function pushToSession(sessionId: string, msg: ServerMessage): void {
+    for (const push of sessionPushers.get(sessionId) ?? []) {
+      try {
+        push(msg);
+      } catch {
+        // A dead socket must not break run completion for everyone else.
+      }
+    }
+  }
+
+  function attachSessionSocket(sessionId: string, push: (msg: ServerMessage) => void): () => void {
+    let set = sessionPushers.get(sessionId);
+    if (!set) {
+      set = new Set();
+      sessionPushers.set(sessionId, set);
+    }
+    set.add(push);
+    return () => {
+      set!.delete(push);
+      if (set!.size === 0) sessionPushers.delete(sessionId);
+    };
+  }
 
   /** Per-session connection leases. Per-process for now; Redis when multi-node. */
   const leases = new Map<string, LeaseState>();
+
+  /** Caps realtime credential minting per session. Cleared when the session ends. */
+  const mintLimiter = new MintLimiter();
 
   /**
    * Live orchestrators, one per active session.
@@ -115,11 +163,30 @@ export async function registerSessionModule(
       traceId: session.traceId,
       events: eventLog,
       remainingSeconds: () => remainingSeconds(session, Date.now()),
+      // Without this the runtime silently falls back to the rule stub, and
+      // every session runs on `stub-rules-v1` while CLASSIFIER_MODEL is read by
+      // nothing. The failure is invisible in the logs and only shows up as an
+      // interviewer that never notices a complexity claim.
+      ...(opts.classifier ? { classifier: opts.classifier } : {}),
+      // A decision reached by the re-evaluation timer has no caller awaiting it.
+      onAuthorized: (result) => deliver(session.id, result),
     });
 
     runtimes.set(session.id, runtime);
     return runtime;
   }
+
+  let queue: RunQueue | null = null;
+
+  const runDeps = {
+    get queue() {
+      return queue;
+    },
+    store,
+    runtimeFor,
+    runContext,
+    pushToSession,
+  };
 
   /**
    * Hands a committed event to the orchestrator.
@@ -130,18 +197,41 @@ export async function registerSessionModule(
    * event log is an unrecoverable one.
    */
   async function dispatch(event: SessionEvent): Promise<void> {
+    if (event.type === "RUN_REQUESTED") {
+      await handleRunRequestedEvent(event, runDeps);
+    }
+
     const runtime = await runtimeFor(event.sessionId);
     if (!runtime) return;
 
     try {
-      const { decision, utterance } = await runtime.ingest(event);
-      if (decision && decision.action !== "STAY_SILENT") {
+      const result = await runtime.ingest(event);
+      deliver(event.sessionId, result);
+    } catch (err) {
+      app.log.error({ sessionId: event.sessionId, err }, "orchestrator ingest failed");
+    }
+  }
+
+  /**
+   * Hand an authorized decision to the speech path.
+   *
+   * Shared by `dispatch` and by the runtime's `onAuthorized` callback. A turn
+   * re-judged after its silence floor elapses is decided by a timer with nobody
+   * awaiting it, so without a single place for this the interviewer would decide
+   * to speak and then say nothing.
+   */
+  function deliver(sessionId: string, result: { decision: unknown; utterance: unknown }): void {
+    const runtime = runtimes.get(sessionId);
+    const decision = result.decision as { action: string; reason: string } | null;
+    const utterance = result.utterance;
+
+    if (decision && decision.action !== "STAY_SILENT") {
         // M3-5 wires this to realtime response creation. Until then the
         // decision and its authored wording live in the log, which is what the
         // eval harness reads — so silence quality is measurable before a single
         // byte of audio exists.
         app.log.info(
-          { sessionId: event.sessionId, action: decision.action, reason: decision.reason },
+          { sessionId, action: decision.action, reason: decision.reason },
           "interviewer authorized to speak",
         );
         void utterance;
@@ -149,14 +239,11 @@ export async function registerSessionModule(
         // No audio pipeline yet, so the utterance is "finished" the instant it
         // is produced. M3-5 replaces this with the realtime response-done
         // event, at which point barge-in has a real window to interrupt.
-        runtime.markSpeechFinished();
+        runtime?.markSpeechFinished();
       }
-    } catch (err) {
-      app.log.error({ sessionId: event.sessionId, err }, "orchestrator ingest failed");
-    }
   }
 
-  const queue = opts.runner
+  queue = opts.runner
     ? new RunQueue({
         runner: opts.runner,
         onResult: async (result) => {
@@ -178,11 +265,18 @@ export async function registerSessionModule(
           // run is what clears the stuck score, and a third identical failure
           // is what makes a debugging probe defensible.
           if (!appended.duplicate) await dispatch(appended.event);
+
+          pushToSession(ctx.sessionId, { kind: "RUN_RESULT", result });
         },
         onUnavailable: (request, error) => {
           // Logged, not thrown. A runner outage must not end the interview.
           runContext.delete(request.runId);
           app.log.warn({ runId: request.runId, err: error.message }, "runner unavailable");
+          pushToSession(request.sessionId, {
+            kind: "ERROR",
+            code: "RUNNER_UNAVAILABLE",
+            message: "Execution is temporarily unavailable. Keep going.",
+          });
         },
       })
     : null;
@@ -279,6 +373,7 @@ export async function registerSessionModule(
         runtimes.delete(session.id);
       }
       channel.forget(session.id);
+      mintLimiter.forget(session.id);
 
       // Fire and forget. The live phase must complete regardless of evaluator
       // health, so this is deliberately not awaited and its failure cannot
@@ -360,10 +455,70 @@ export async function registerSessionModule(
     return reply.send({ ok: true, pendingCredit: pendingCredit(lease, Date.now()) });
   });
 
-  app.post("/interview-sessions/:id/realtime-token", async (_req, reply) => {
-    // M3-1: mint a SHORT-LIVED ephemeral credential. The provider API key must
-    // never reach the browser. Blocked on the realtime provider decision.
-    return reply.code(501).send({ error: "NOT_IMPLEMENTED", issue: "M3-1" });
+  /**
+   * Mint a short-lived realtime credential (M3-1).
+   *
+   * The response is on its way to a browser, so the rules are strict: the
+   * provider key never appears in it, no provider error text is echoed back, and
+   * no scenario content rides along. The token itself is safe to send — it is
+   * single-use, expires in minutes, and is locked to a connect config that
+   * cannot auto-respond.
+   */
+  app.post("/interview-sessions/:id/realtime-token", async (req, reply) => {
+    const { id } = req.params as { id: string };
+
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+
+    if (!opts.realtimeTokenMinter) {
+      // Same posture as the runner: a missing capability is a 503 that explains
+      // itself, not a boot failure and not a silent stub.
+      return reply.code(503).send({
+        error: "REALTIME_UNAVAILABLE",
+        message: "Voice is not configured. Set REALTIME_MODEL and REALTIME_API_KEY.",
+      });
+    }
+
+    if (!mintLimiter.take(id)) {
+      // Almost always a client retry loop rather than an attacker, and the
+      // symptom of not catching it — voice dying for every session once the
+      // quota is gone — looks nothing like the cause.
+      app.log.warn({ sessionId: id, mints: mintLimiter.used(id) }, "realtime token cap reached");
+      return reply.code(429).send({
+        error: "TOKEN_CAP_REACHED",
+        message: "Too many realtime credentials issued for this session.",
+      });
+    }
+
+    try {
+      const credential = await opts.realtimeTokenMinter.mint();
+
+      app.log.info(
+        {
+          sessionId: id,
+          traceId: session.traceId,
+          model: credential.model,
+          expiresAt: credential.expiresAt,
+          mints: mintLimiter.used(id),
+        },
+        "minted realtime credential",
+      );
+
+      return reply.code(201).send(credential);
+    } catch (err) {
+      const kind = err instanceof RealtimeTokenError ? err.kind : "PROVIDER_ERROR";
+
+      // Full detail to the log — a rejected constraint is explained precisely in
+      // the provider's body and that is the first thing anyone debugging this
+      // will want. The client gets a code and nothing else.
+      app.log.error({ sessionId: id, kind, err }, "realtime token mint failed");
+
+      return reply.code(kind === "RATE_LIMITED" ? 429 : 502).send({
+        error: kind === "RATE_LIMITED" ? "TOKEN_CAP_REACHED" : "REALTIME_MINT_FAILED",
+        message: "Could not obtain a voice credential. Retry shortly.",
+      });
+    }
   });
 
   app.post("/interview-sessions/:id/runs", async (req, reply) => {
@@ -372,8 +527,6 @@ export async function registerSessionModule(
     if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
     if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
 
-    // No runner configured yet (no Judge0 instance). The interview continues —
-    // a candidate can still reason and write code, they just cannot execute it.
     if (!queue) {
       return reply.code(503).send({
         error: "RUNNER_UNAVAILABLE",
@@ -386,25 +539,13 @@ export async function registerSessionModule(
       return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
     }
 
-    const runId = randomUUID();
-    runContext.set(runId, {
-      sessionId: session.id,
-      scenarioVersionId: session.scenarioVersionId,
-      traceId: session.traceId,
-    });
+    const enqueued = enqueueRun(
+      session,
+      { source: body.data.source, revision: body.data.revision, input: body.data.input },
+      runDeps,
+    );
 
-    const accepted = queue.enqueue({
-      runId,
-      sessionId: session.id,
-      language: session.language,
-      source: body.data.source,
-      codeRevision: body.data.revision,
-      stdin: body.data.input,
-      limits: DEFAULT_LIMITS,
-    });
-
-    if (!accepted) {
-      runContext.delete(runId);
+    if (!enqueued) {
       return reply.code(429).send({ error: "RUNNER_BUSY", message: "Too many runs queued." });
     }
 
@@ -413,19 +554,23 @@ export async function registerSessionModule(
       type: "RUN_REQUESTED",
       actor: "CANDIDATE",
       scenarioVersionId: session.scenarioVersionId,
-      payload: { runId, revision: body.data.revision, inputHash: hashInput(body.data.input) },
+      payload: {
+        runId: enqueued.runId,
+        revision: body.data.revision,
+        inputHash: hashInput(body.data.input),
+      },
       traceId: session.traceId,
-      idempotencyKey: `run-requested:${runId}`,
+      idempotencyKey: `run-requested:${enqueued.runId}`,
     });
 
     // 202: the work is queued, not done. Execution is asynchronous from this
     // thread by design — a runaway submission must never pin the session
     // service, which also holds the editor channel and the timer.
-    return reply.code(202).send({ runId, revision: body.data.revision });
+    return reply.code(202).send({ runId: enqueued.runId, revision: body.data.revision });
   });
 
   // WS /v1/interview-sessions/:id/events — M2-2's transport, finally attached.
   // The channel owns the protocol and the runtime owns the interview; this only
   // moves bytes between them.
-  await registerEventsSocket(app, { channel, dispatch });
+  await registerEventsSocket(app, { channel, dispatch, attach: attachSessionSocket });
 }

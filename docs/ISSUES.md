@@ -11,8 +11,21 @@ Status key: `[ ]` open · `[~]` in progress · `[x]` done · `[-]` **cut** (pers
 2026-08-11 — see the banner in [`MVP.md`](MVP.md); each carries the condition that revives it)
 
 **Progress:** M0, M1, M2 complete except M2-8 (auth). M6 complete except calibration (M6-5),
-which needs human graders. M5-1 half done — the code-derived half of CandidateState works;
-the transcript half waits on a real intent classifier (M4-1).
+which needs human graders. M4-1 and M4-2 are in — the interviewer now judges turn ends on the
+words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
+transcript half is unblocked now that the classifier exists.
+
+**M3 (voice) is the whole critical path.** M3-1 is verified against the live API, and M3-2 is
+code complete: the browser can be issued a credential, that credential is what enforces silence
+control, and the client now emits `SPEECH_STARTED` / `SPEECH_STOPPED` — the input M4-2's timing
+half has been waiting for. Five open issues remain.
+
+**Nothing has been spoken into a microphone yet.** That single session is now the whole
+measurement, and every remaining estimate in this file is inference until it happens.
+
+M3-1 is done on a stronger standard than the rest of this file: it has been run against the
+live API, and the run **failed first time** on a request shape 29 green unit tests could not
+see. `pnpm --filter @master-leeter/api verify:token` is now the check, and it passes.
 
 The loop is closed end to end without voice: pick a scenario, write and run code, end the
 session, read an evidence-backed report. Five scenarios in the library, covering hashing,
@@ -43,31 +56,46 @@ matter this week.
 The remaining work is now almost entirely the product's actual thesis: voice (M3), silence
 quality (M4), and the code-aware interviewer (M5). That is the correct shape for what's left.
 
-**Nothing is currently compiled.** The integration pass and `apps/api/src/env.ts` were both
-written without a package registry available. `pnpm install && pnpm typecheck` is the
-outstanding precondition for trusting any `[x]` above.
+**Compiled and green as of 2026-08-11.** `pnpm typecheck` passes across all three packages;
+`pnpm test` is 605 passing (470 api / 97 web / 38 contracts); `pnpm sim` 32; `pnpm eval` meets
+every threshold. The earlier "nothing is currently compiled" caveat is discharged — every
+`[x]` above has now actually been executed at least once.
 
 ---
 
 ## M0 — De-risk and lay the seam
 
-### `[ ]` M0-1 · Realtime turn-detection spike · S · Lane C
+### `[x]` M0-1 · Realtime turn-detection spike · S · Lane C — **PASSED 2026-08-11**
 **Blocks:** all of M3, M4. **Deps:** none.
 
 Prove the realtime voice API can emit VAD speech events with automatic response creation
 **disabled**, and that the application can create a response on demand.
 
-- [ ] Connect to the realtime API with turn detection on, `create_response: false`
-- [ ] Confirm speech-start and speech-stop events fire with no model audio generated
-- [ ] Confirm an application-initiated response produces audio
-- [ ] Measure end-of-turn → first-audio-byte latency, p50 and p95, ≥ 20 samples
-- [ ] Write findings to `docs/adr/ADR-001-response-control.md`
+- [x] Connect to the realtime API with turn detection on, `create_response: false`
+- [x] Confirm speech-start and speech-stop events fire with no model audio generated
+- [x] Confirm an application-initiated response produces audio
+- [x] Measure end-of-turn → first-audio-byte latency, p50 and p95, ≥ 20 samples
+- [x] Write findings to `docs/adr/ADR-001-response-control.md`
 
-**Acceptance:** a runnable script demonstrating silence-by-default, plus recorded latency
-numbers. **If this fails, stop and redesign** — every downstream milestone assumes it.
+Run against Gemini Live (`gemini-2.5-flash-native-audio-latest`): 0 unprompted audio events,
+20/20 manual responses produced audio, p50 1044 ms / p95 1638 ms. Script:
+`apps/api/scripts/m0-1-realtime-spike.ts`, dual-provider.
 
-### `[ ]` M0-2 · Judge0 sandbox spike · S · Lane B
+**One caveat carried forward, and it is not small.** Gemini has no equivalent of OpenAI's
+"VAD fires but does not answer". Disabling `automatic_activity_detection` means the client
+sends `activity_start` / `activity_end` itself, so the `speech_started` / `speech_stopped`
+counts in the spike are echoes of our own signals, not evidence that any VAD works. The
+invariant is proven; **turn-boundary detection is not**. That risk moved into M3-2, where it
+lands on the tuning surface that drives the unwanted-interruption metric.
+
+### `[-]` M0-2 · Judge0 sandbox spike · S · Lane B — **cut on `simplified`**
 **Blocks:** M2-4. **Deps:** none.
+
+**Cut on this branch only.** Candidate code is never executed — `ModelJudgeRunner` reads it
+and predicts the result — so there is no sandbox to attack. Invariant 6 is trivially
+satisfied. `main` keeps Judge0 and this issue stays open there.
+
+**Revived by:** wanting run results you can trust. See the honesty note under M2-4.
 
 - [ ] Stand up Judge0 (self-hosted or managed) and run a Python submission end to end
 - [ ] Verify outbound network is disabled from candidate code
@@ -196,8 +224,27 @@ logs a warning rather than failing to start.
 Monaco (Python), notepad with **no AI autocomplete**, timer, custom test input, stdout/stderr panel, interviewer status indicator (Listening / Waiting / Speaking).
 **Acceptance:** the full problem statement appears nowhere in the DOM, network payloads, or client bundle.
 
-### `[x]` M2-4 · Runner service · M
-**Deps:** M0-2, M2-2.
+### `[x]` M2-4 · Runner service · M — **model-judged on `simplified`**
+**Deps:** M2-2.
+
+`ModelJudgeRunner` satisfies the same `CodeRunner` interface Judge0 did, so the queue, event
+log, milestone detection, observer, and report pipeline are unchanged. Swapping back is one
+line in `apps/api/src/index.ts`.
+
+**What this costs, so it is on the record:**
+- A judged run is a prediction. The model is confidently wrong about off-by-one errors,
+  floating point formatting, aliasing, and dict/set iteration order — the exact bugs an
+  interview exists to surface.
+- `BASE_TESTS_PASS` and `REPEATED_SAME_FAILURE` therefore derive from an opinion. A probe
+  grounded in "your third identical failure" may be grounded in a hallucinated one.
+- **Evaluator scores are not measurements on this branch.** Combined with M6-5 being cut,
+  they are uncalibrated *and* downstream of a guess.
+- M4-4 is unaffected — it scores gate decisions, which never touch run results.
+
+Mitigations, all deliberate: `cpuTimeMs`/`memoryKb` report 0 rather than plausible fiction;
+a malformed or sub-0.5-confidence verdict becomes `INTERNAL_ERROR` rather than a salvaged
+`PASSED`; every result carries a visible notice in stderr; the server warns at every boot.
+
 Queue-backed: enqueue → Judge0 → normalized result event appended → pushed to client → observer notified.
 **Acceptance:** a runaway execution never blocks the session service.
 
@@ -231,11 +278,98 @@ Feed a recorded event stream + pinned scenario version back through the orchestr
 
 ## M3 — Voice and oral delivery · Lane C
 
-### `[ ]` M3-1 · Ephemeral realtime credentials · S
+### `[x]` M3-1 · Ephemeral realtime credentials · S — **VERIFIED against the live API 2026-08-11**
 **Deps:** M2-1. Server-minted, short-lived. **The provider key never reaches the browser.**
 
-### `[ ]` M3-2 · WebRTC voice connection · M
+`modules/realtime/token.ts` — `GeminiTokenMinter` over Google's `auth_tokens` endpoint, wired
+to `POST /v1/interview-sessions/:id/realtime-token` (which was a `501` until now). 29 tests.
+
+**The part worth more than key hygiene.** A minted token carries `bidiGenerateContentSetup` —
+a model and connect config the session is locked to, whatever the client's own `setup` asks
+for. `automaticActivityDetection.disabled: true` is pinned into every credential, so **ADR-001
+is now enforced by the thing the browser is issued rather than by client setup code.** A
+client that forgets the flag, or a tampered one that omits it deliberately, cannot obtain a
+connection that answers on its own. See the ADR-001 amendment.
+
+**Measured, not asserted.** `verify:token` opens a session whose own `setup` message asks only
+for a model, and observes zero unprompted audio across a 4-second listen. The silence comes
+from the credential.
+
+Also: single-use (`uses: 1`), 10-minute expiry with a separate 60-second window to *open* the
+session, per-session mint cap of 12 so a client retry loop cannot drain the free-tier quota,
+503 when voice is unconfigured, and no provider error text echoed to the browser.
+
+**Three findings M3-2 needs**, all absent from the M0-1 spike because it used a raw key. The
+REST constraint field is `bidiGenerateContentSetup`, **not** the `liveConnectConstraints` the
+published guides document — that is the SDK's name and `auth_tokens` rejects it on `v1beta`
+and `v1alpha` alike; it takes the Live `setup` message verbatim, ungrouped. Tokens connect to
+`BidiGenerateContentConstrained` (the unconstrained endpoint rejects them with what looks like
+a bad-token error). And they are single-use, so a reconnect must mint.
+
+**Deliberately not idempotent**, breaking the `CLAUDE.md` convention. A mint is not a mutation
+of interview state, and replaying a key after a drop would return a single-use token that has
+already been spent — the one thing a reconnecting client must not get. The per-session cap
+covers the abuse case instead. Nothing is appended to the event log either: a credential is
+not evidence about a candidate, and widening the frozen M0-3 `EVENT_TYPES` seam to record one
+is a bad trade. Mints are logged at info level.
+
+**`verify:token` results, 2026-08-11:** minted ✅ · key absent ✅ · session opened ✅ ·
+single-use ✅ · unprompted audio **0** · mint 221 ms · open 223 ms (to `setupComplete`).
+~444 ms from mint to a live constrained session — paid once at session start, before the
+p50 ≈ 1.0 s first-audio-byte figure in ADR-001, not inside it.
+
+**And it failed on its first run**, which is the point of it existing. `liveConnectConstraints`
+was rejected as an unknown field while all 29 unit tests were green — a fake-fetch test cannot
+know what the provider accepts, so the shape was wrong in exactly the way unit tests are
+structurally unable to see. Two probes against the live endpoint established the real field
+name. `token.test.ts` now pins it so it cannot regress quietly.
+
+**The lesson is bigger than this issue.** Everything here that talks to a vendor has this
+shape: `ModelJudgeRunner` posts to `api.openai.com` with a Gemini key and `JUDGE_MODEL` set to
+`gemini-3.5-flash`, and its tests are green because they inject a fake `complete`. That is the
+same failure, still live, one module over.
+
+### `[~]` M3-2 · Voice connection · M — **code complete; never run against a microphone**
 **Deps:** M3-1, M2-3. Mute, barge-in (stop output audio and listen immediately), device selection.
+
+Not WebRTC. ADR-001 selected Gemini Live, which is a WebSocket API — the issue title predates
+that decision.
+
+Five modules, four of them testable without a browser and tested there:
+
+- `lib/vad.ts` — client-side VAD, which ADR-001 says we own because disabling
+  `automaticActivityDetection` means we send the activity boundaries. Biased hard toward
+  *late* speech-ends: a false start only holds the floor, while a premature end starts the
+  clock M4-2 measures `silenceMs` from and credits the candidate with silence they never took.
+- `lib/audio.ts` — PCM16 conversion and resampling. Clamping, the asymmetric Int16 range, and
+  explicit little-endian, each with a test; box-filter downsampling so content above the new
+  Nyquist is attenuated rather than folded into the speech band.
+- `lib/playback.ts` — gapless scheduling with a running cursor, and a `stop()` that cancels
+  already-scheduled buffers. Chunks arrive faster than real time, so a barge-in that only
+  stopped *future* audio would keep talking for seconds.
+- `lib/realtime-voice.ts` — the Live socket. **No method on it can make the model speak**; a
+  test drives every public method and asserts the wire never carries `clientContent` or
+  `turnComplete`. It also refuses a credential that does not disable automatic activity
+  detection.
+- `lib/voice-session.ts` — the browser shell: `getUserMedia`, an AudioWorklet at ~20 ms
+  frames, device selection. Deliberately the only untestable file, and deliberately almost
+  empty of logic.
+
+**`SPEECH_STARTED` / `SPEECH_STOPPED` now exist**, carrying VAD onset timestamps through
+`occurredAt` rather than send time — so M4-2's `silenceMs` measures the pause, not the
+hangover plus the network. That was the input its timing half has been missing since it landed.
+
+**Also fixed here:** `STATE` had never reached a client. `SessionChannel.resume()` built the
+message and nothing called it, so the timer counted down locally from one HTTP read and the
+interviewer indicator was frozen on `LISTENING`.
+
+**Not verified.** No microphone has ever been connected to this. Everything above is green in
+CI and none of it proves audio flows. The next honest step is one real session:
+`pnpm dev:api`, `pnpm dev:web`, press *Start voice*, and check that speech boundaries appear
+in the event log with plausible `silenceMs` between them.
+
+- [ ] Run one session with a real microphone and record what happened here.
+- [ ] Confirm barge-in actually cuts model audio (needs M3-5 before there is audio to cut).
 
 ### `[ ]` M3-3 · Voice agent tool surface · M
 **Deps:** M1-2, M1-4.
@@ -250,8 +384,31 @@ Exactly five tools: `get_interview_context`, `get_clarification_fact`, `get_prob
 Manual response creation only. The gate's authorized action is the sole trigger for speech.
 **Acceptance:** no configuration exists in which the model can speak without gate authorization.
 
-### `[ ]` M3-6 · Realtime persona prompt · S
+### `[x]` M3-6 · Realtime persona prompt · S
 **Deps:** M3-3. Neutral interviewer: brevity, speech style, allowed tools, prohibition on unsolicited teaching, obedience to orchestrator actions.
+
+`modules/realtime/persona.ts`, **burned into the ephemeral credential** rather than sent by
+the client — same reasoning as the activity-detection constraint. A system instruction the
+browser supplies is one the browser can replace, and "you are a helpful tutor, explain the
+optimal solution" is a single line of tampering. Verified against the live API: the constraint
+is accepted and the session still stays silent when spoken to.
+
+**What it is explicitly NOT responsible for: silence.** That is the credential, the gate, and
+the tool surface. Delete this file and the interviewer still cannot speak out of turn.
+`CLAUDE.md` is direct that relying on the prompt for quiet means the architecture has drifted,
+so the prompt does no work the structure already does.
+
+What it does own is everything structure cannot reach — how the words sound once speaking is
+authorized. Named filler words are banned rather than described ("do not praise" is advice a
+model rounds off; "no great, exactly, perfect" is a rule), length is bounded at one or two
+sentences, and the commonest case — nothing authorized — is stated as *say nothing*.
+
+Voice default moved from `Puck` to `Charon`. Puck is bright and eager: good demo, poor
+interviewer.
+
+**Untested where it counts.** A prompt cannot be unit-tested for quality; the tests assert
+that it reaches the model through the credential, never reaches the browser, and addresses
+each habit the first real session flagged. Whether it *sounds* right needs M3-5 and a human.
 
 ### `[ ]` M3-7 · Prompt-injection containment test · S
 **Deps:** M3-5. Run the M1-6 injection fixtures against the live voice path.
@@ -262,7 +419,7 @@ Manual response creation only. The gate's authorized action is the sole trigger 
 
 **The milestone that decides whether the product is real.**
 
-### `[~]` M4-1 · Semantic intent classifier · M — rules-only stub in place; model still needed
+### `[x]` M4-1 · Semantic intent classifier · M — Gemini classifier landed, **unrun**
 **Deps:** M1-3.
 Classes: `THINK_ALOUD`, `EXPLICIT_QUESTION`, `CLARIFICATION_REQUEST`, `HINT_REQUEST`, `COMPLEXITY_CLAIM`, `APPROACH_COMMITMENT`, `TEST_PLAN`, `CONFUSION`, `DONE_SIGNAL`, `SOCIAL_SMALL_TALK`. Returns probabilities; the deterministic gate decides consequences. Cache obvious cases.
 
@@ -273,11 +430,104 @@ rather than interrupts**. Intent detection is serviceable; turn completion is no
 is M4-2's whole job. Every decision persists `classifierId`, so sessions graded under the stub
 are identifiable later.
 
-**Still open:** replace with a small fast model, keeping the interface and the silence bias.
+**Now shipped:** `GeminiClassifier` (`orchestrator/gemini-classifier.ts`, id
+`gemini:<model>@v1`) over `lib/gemini.ts`. Native `generateContent` with `responseSchema`, so
+the intent cannot come back outside the enum. `thinkingBudget: 0` and `temperature: 0` —
+latency and determinism both matter more than flourish on this call.
 
-### `[ ]` M4-2 · Turn-completion confidence · M
+`IntentClassifier.classify` now returns `TurnClassification | Promise<TurnClassification>`.
+The union is deliberate: `RuleBasedClassifier` stays synchronous because it is the fallback,
+and a fallback that costs a microtask is a worse fallback. `runBot` never touches the
+classifier, so `sim`, `eval`, and `replay.test.ts` are unaffected.
+
+**How the silence bias survives the model.** The mid-thought veto (`endsMidThought`, shared
+with the stub so the two cannot drift) caps end-probability at 0.2 whenever the transcript
+ends on a connective — unconditionally, and it only ever lowers the number. Everything else
+trusts the model, which is the point: the stub's 0.55 on unpunctuated speech sits below every
+mode's threshold, and beating that is what M4-2 is for.
+
+**Degradation is a first-class path, not error handling.** Timeout, 429, malformed reply, or
+no key all fall back to rules synchronously, and `classifierId` records
+`gemini:<model>@v1+fallback:stub-rules-v1` so a session that ran half on each is identifiable.
+A 429 opens the circuit breaker immediately — free-tier quota does not return inside a retry
+window, so retrying only buys latency. Fallback results are never cached; caching a degraded
+answer would outlive the outage that caused it.
+
+**Free tier is an expected operating condition.** This runs once per finalized turn against a
+low-double-digit RPM limit. A clarification burst can exceed it. When that happens the
+interview continues on rules — quieter than ideal, never wrong.
+
+**Executed 2026-08-11:** 18 tests in `gemini-classifier.test.ts`, all passing. Turn-completion
+quality belonged to M4-2, which is now closed on top of this — the classifier supplies the
+textual half of that number.
+
+**One gap remains, and it is a wiring gap rather than a code gap.** `classifierFromEnv()` has
+no caller outside the barrel export: `buildServer` never constructs it and
+`SessionModuleOptions` has no `classifier` field, so `InterviewRuntime` falls back to
+`ruleBasedClassifier` in the live path and `CLASSIFIER_MODEL` in `.env.example` is read by
+nothing. Every real session therefore runs on the stub, which is exactly the class of error
+the correction note at the top of this file describes. Threading it through is small and is
+the next thing to do.
+
+### `[x]` M4-2 · Turn-completion confidence · M — **timing half unexercised until M3-2**
 **Deps:** M4-1. Semantic end-of-turn probability feeding `END_THRESHOLD`.
-**Acceptance:** a 1.5s pause mid-explanation does not read as turn end.
+**Acceptance:** a 1.5s pause mid-explanation does not read as turn end. ✅
+
+`orchestrator/turn-completion.ts` — `estimateTurnCompletion` fuses what the words say (M4-1)
+with how long the candidate has been quiet. **The gate is unchanged**: it still thresholds one
+number against `endOfTurnThreshold`. What changed is that the number is now worth
+thresholding.
+
+**Why timing had to enter at all.** "I'll use a hash map" is a complete sentence and also the
+first half of "I'll use a hash map... but that doesn't handle duplicates". At the moment of the
+pause they are the same string, so no classifier reading the transcript can separate them. The
+only evidence available before the candidate resumes is the length of the silence.
+
+Two new policy fields per mode: `minTurnEndSilenceMs` (below it, nothing counts as a turn end)
+and `settledTurnEndSilenceMs` (above it, the transcript decides alone), ramping linearly
+between. MOCK is 1500/2800 — at exactly 1.5s the ceiling is `HELD_FLOOR_CEILING` (0.35),
+which sits below every mode's threshold, so a pause that short cannot read as a turn end no
+matter how finished the words look. In practice a non-question turn needs ~2.4s of quiet.
+STRICT waits 2200/4000; patience is now part of a mode's character rather than a comment.
+
+**The property that made this safe to drop into a live gate:** every step is a `min`, so the
+result is never greater than the text probability it started from. Fusing can turn speech into
+silence but never silence into speech, so it cannot invent an interruption in a trajectory that
+was previously clean. Asserted over a sweep of every intent × probability × silence, not
+argued.
+
+**Questions bypass the silence gate entirely.** `EXPLICIT_QUESTION`,
+`CLARIFICATION_REQUEST` and `HINT_REQUEST` skip the timer, because making someone wait 2.4s
+after "is the list sorted?" is not patience — it reads as not having heard them, and
+missed-response is a tracked metric too. The mid-thought veto still sits above the exemption,
+so a question that trails off unfinished is still held.
+
+**No per-intent suppression of think-aloud**, deliberately. To bite it would have to sit below
+`endOfTurnThreshold`, and there it stops being a prior and becomes a ban on the commonest
+intent — and since the gate is only ever invoked on a finalized turn, that would make probes
+and stall hints close to unreachable. Timing is the honest discriminator; intent is not.
+
+`SPEECH_STOPPED` is no longer inert: it records *when*, still not permission to speak.
+`silenceMs` is computed between two logged `occurredAt` timestamps, never a wall clock, so
+replay determinism holds (`replay.test.ts` still green). Absent speech-stop means *unknown*,
+never zero — read as zero it would hold the floor forever and mute the interviewer.
+
+`ACTION_DECIDED` now carries `textEndProbability`, `semanticEndProbability`, `silenceMs` and
+`turnEndReason`. M4-5b's method is reading these back off real sessions and asking which half
+got it wrong, which needs all four.
+
+**New trajectory `paused-explainer`** (1b): four complete, confident sentences separated only
+by how long the candidate stayed quiet. A probe is eligible from the first step, so each
+silence is attributable to turn completion rather than to the interviewer having nothing to
+say — and the settled step MUST speak, so the trajectory cannot be satisfied by an interviewer
+that never talks. Suite is now 29 steps across 7 bots, 96.6% annotated, 0 unwanted / 0 missed.
+
+**The honest limit.** Nothing emits `SPEECH_STOPPED` until WebRTC lands (M3-2), so the live
+path still runs the text-only branch today — identical to pre-M4-2 behaviour. The mechanism,
+the policy and the tests are real; the timing half is not yet exercised end to end. ADR-001's
+caveat compounds it: Gemini's turn boundaries are currently our own `activity_end` signals
+echoed back, so the *quality* of `silenceMs` in production is M3-2's problem before it is this
+module's. The thresholds are starting points, not findings — M4-5b tunes them.
 
 ### `[ ]` M4-3 · Activity-aware policy · M
 **Deps:** M2-5, M1-3. Code activity in last N seconds, stall duration, `stuckScore` feeding gate inputs.

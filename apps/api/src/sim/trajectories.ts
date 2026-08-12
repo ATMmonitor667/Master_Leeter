@@ -14,20 +14,76 @@ import type { CandidateBot } from "./harness.js";
  * The single most important trajectory. Someone reasoning aloud produces a dozen
  * gaps of one to three seconds. A gate keyed on silence duration would interrupt
  * at every one. MUST produce zero utterances.
+ *
+ * Since M4-2 every step carries the length of the pause that preceded it, which
+ * is what makes this a test of turn completion rather than only of the gate. The
+ * two at 1500ms are the acceptance criterion from CLAUDE.md sitting exactly on
+ * the MOCK minimum: at that boundary the candidate is still mid-explanation, so
+ * even the most finished-looking transcript must not read as a turn end.
  */
 export const longThinker: CandidateBot = {
   name: "long-thinker",
   mode: "MOCK",
   tests: "many short pauses mid-reasoning must never be treated as turn ends",
   steps: [
-    { at: 70, label: "starts reasoning", state: "APPROACH_EXPLORATION", turn: { transcript: "okay so", intent: "THINK_ALOUD", semanticEndProbability: 0.2 } },
-    { at: 74, label: "pause after 'okay so'", turn: { transcript: "okay so I could", intent: "THINK_ALOUD", semanticEndProbability: 0.31 } },
-    { at: 78, label: "trails off", turn: { transcript: "okay so I could just compare everything", intent: "THINK_ALOUD", semanticEndProbability: 0.55 } },
-    { at: 82, label: "changes direction mid-sentence", turn: { transcript: "...but that's quadratic, hmm", intent: "THINK_ALOUD", semanticEndProbability: 0.62 } },
-    { at: 87, label: "long pause, still thinking", turn: { transcript: "...", intent: "THINK_ALOUD", semanticEndProbability: 0.4 } },
-    { at: 93, label: "resumes", turn: { transcript: "what if I remember what I've seen", intent: "THINK_ALOUD", semanticEndProbability: 0.7 } },
-    { at: 99, label: "another gap", turn: { transcript: "yeah", intent: "THINK_ALOUD", semanticEndProbability: 0.35 } },
-    { at: 105, label: "unfinalized fragment", turn: { transcript: "so a set would", intent: "THINK_ALOUD", semanticEndProbability: 0.95, finalized: false } },
+    { at: 70, label: "starts reasoning", state: "APPROACH_EXPLORATION", silenceMs: 900, turn: { transcript: "okay so", intent: "THINK_ALOUD", semanticEndProbability: 0.2 } },
+    { at: 74, label: "pause after 'okay so'", silenceMs: 1_500, turn: { transcript: "okay so I could", intent: "THINK_ALOUD", semanticEndProbability: 0.31 } },
+    { at: 78, label: "trails off", silenceMs: 1_200, turn: { transcript: "okay so I could just compare everything", intent: "THINK_ALOUD", semanticEndProbability: 0.55 } },
+    { at: 82, label: "changes direction mid-sentence", silenceMs: 800, turn: { transcript: "...but that's quadratic, hmm", intent: "THINK_ALOUD", semanticEndProbability: 0.62 } },
+    { at: 87, label: "long pause, still thinking", silenceMs: 1_500, turn: { transcript: "...", intent: "THINK_ALOUD", semanticEndProbability: 0.4 } },
+    { at: 93, label: "resumes", silenceMs: 1_100, turn: { transcript: "what if I remember what I've seen", intent: "THINK_ALOUD", semanticEndProbability: 0.7 } },
+    { at: 99, label: "another gap", silenceMs: 1_400, turn: { transcript: "yeah", intent: "THINK_ALOUD", semanticEndProbability: 0.35 } },
+    { at: 105, label: "unfinalized fragment", silenceMs: 300, turn: { transcript: "so a set would", intent: "THINK_ALOUD", semanticEndProbability: 0.95, finalized: false } },
+  ],
+};
+
+/**
+ * 1b. The transcript that looks finished and is not.
+ *
+ * The failure M4-2 exists to prevent, isolated. Every step here is a complete,
+ * confident, well-formed sentence — a text-only classifier scores each one high
+ * and a gate reading that number alone speaks over the candidate every time. The
+ * only thing separating these from a genuine turn end is how long the candidate
+ * has been quiet, and mid-explanation that is never long.
+ *
+ * The last step is the control: identical wording, identical text confidence,
+ * but the candidate has actually stopped. It MUST produce speech. A trajectory
+ * that only proved the interviewer can stay quiet would be satisfied by an
+ * interviewer that never speaks at all.
+ */
+export const pausedExplainer: CandidateBot = {
+  name: "paused-explainer",
+  mode: "MOCK",
+  tests: "complete-sounding sentences mid-explanation are pauses, not turn ends",
+  steps: [
+    {
+      at: 300,
+      label: "complete sentence, 1.5s pause",
+      state: "IMPLEMENTATION",
+      codeRevision: 8,
+      observerRevision: 8,
+      secondsSinceCodeActivity: 30,
+      // An eligible probe is armed from the first step, so every silence below
+      // is caused by turn completion and nothing else. Without this the
+      // trajectory would pass even if the estimator did nothing — the
+      // interviewer would have had nothing to say either way.
+      candidateState: {
+        currentApproach: "seen set, single pass",
+        claimedTime: "O(1)",
+        detectedSolutionFamilyId: "sf-set-single-pass",
+        confidence: { approach: 0.9, complexity: 0.85 },
+      },
+      silenceMs: 1_500,
+      turn: { transcript: "I'll use a set so lookups are all O(1)", intent: "COMPLEXITY_CLAIM", semanticEndProbability: 0.92 },
+    },
+    { at: 306, label: "another complete sentence, 1.9s pause", silenceMs: 1_900, turn: { transcript: "that gives me constant time lookups", intent: "COMPLEXITY_CLAIM", semanticEndProbability: 0.9 } },
+    { at: 312, label: "still going, 2.2s pause", silenceMs: 2_200, turn: { transcript: "and I only need one pass through the list", intent: "COMPLEXITY_CLAIM", semanticEndProbability: 0.94 } },
+    {
+      at: 400,
+      label: "genuinely finished — 3.5s of silence",
+      silenceMs: 3_500,
+      turn: { transcript: "so the whole thing is O(1) overall", intent: "COMPLEXITY_CLAIM", semanticEndProbability: 0.94 },
+    },
   ],
 };
 
@@ -159,6 +215,7 @@ export const instantSolver: CandidateBot = {
 
 export const ALL_TRAJECTORIES: CandidateBot[] = [
   longThinker,
+  pausedExplainer,
   rapidClarifier,
   promptInjector,
   wrongComplexityClaim,

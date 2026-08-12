@@ -44,7 +44,28 @@ export interface ClassifierInput {
 }
 
 export interface IntentClassifier {
-  classify(input: ClassifierInput): TurnClassification;
+  /**
+   * Stable identity, recorded on every ACTION_DECIDED event.
+   *
+   * Both implementations already carried this; the interface simply failed to
+   * declare it, which meant a caller holding an `IntentClassifier` could not
+   * ask which one it had. That matters at exactly two moments: the boot log,
+   * and reading back a session to find out whether it ran on the model or
+   * degraded to the stub halfway through.
+   */
+  readonly id: string;
+
+  /**
+   * Sync or async, and callers must `await` regardless.
+   *
+   * The union is load-bearing rather than lazy typing. A model-backed
+   * classifier is necessarily async, but `RuleBasedClassifier` must stay
+   * synchronous: it is the fallback the model path degrades to, and a fallback
+   * that costs a microtask on the critical path is a worse fallback. Widening
+   * the interface lets both be first-class without wrapping the cheap one in a
+   * promise it never needed.
+   */
+  classify(input: ClassifierInput): TurnClassification | Promise<TurnClassification>;
 }
 
 /**
@@ -106,6 +127,21 @@ const INTERROGATIVE_OPENER =
  */
 const TRAILING_CONTINUATION =
   /\b(so|and|but|or|because|then|which|that|if|when|the|a|an|to|of|for|with|maybe|like|um|uh|erm|actually|basically|i|we|it)\s*$/i;
+
+/**
+ * Does this transcript end mid-thought?
+ *
+ * Exported because the model classifier applies it as a hard veto over whatever
+ * the model returns (see `gemini-classifier.ts`). Keeping one definition means
+ * the rule cannot drift between the two implementations and quietly stop
+ * protecting the trailing-off case in the path that actually ships.
+ */
+export function endsMidThought(transcript: string): boolean {
+  return TRAILING_CONTINUATION.test(transcript.trim());
+}
+
+/** Ceiling applied to a model's end-probability when the veto fires. */
+export const MID_THOUGHT_CEILING = 0.2;
 
 export class RuleBasedClassifier implements IntentClassifier {
   readonly id = "stub-rules-v1";

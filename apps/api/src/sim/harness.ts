@@ -11,6 +11,7 @@ import {
 } from "@master-leeter/contracts";
 import { decideAction } from "../modules/orchestrator/gate.js";
 import { policyFor } from "../modules/orchestrator/policy.js";
+import { estimateTurnCompletion } from "../modules/orchestrator/turn-completion.js";
 
 /**
  * Candidate-bot simulation harness (M1-6).
@@ -30,13 +31,28 @@ export interface ScriptedStep {
   at: number;
   label: string;
   state?: InterviewState;
-  /** Null means no finalized turn at this moment (e.g. pure code activity). */
+  /**
+   * Null means no finalized turn at this moment (e.g. pure code activity).
+   *
+   * `semanticEndProbability` is the TEXT probability — what a classifier made of
+   * the words. The harness runs it through the same M4-2 estimator production
+   * uses, so a scripted value is an input to the decision, not the decision.
+   */
   turn?: {
     transcript: string;
     intent: TurnIntent;
     semanticEndProbability: number;
     finalized?: boolean;
   } | null;
+  /**
+   * Quiet time before this turn's transcript was finalized.
+   *
+   * Optional because most trajectories predate M4-2 and are fixtures for the
+   * gate rather than for the estimator; omitting it reproduces the pre-M4-2
+   * text-only path exactly. Supplying it is what makes a trajectory a test of
+   * turn completion — see `longThinker`, where the pauses are the point.
+   */
+  silenceMs?: number;
   candidateState?: Partial<CandidateState>;
   codeRevision?: number;
   secondsSinceCodeActivity?: number;
@@ -94,17 +110,34 @@ export function runBot(bot: CandidateBot, scenario: InterviewScenarioVersion): S
       candidateState = { ...candidateState, derivedFromRevision: step.observerRevision };
     }
 
-    const turn: Turn | null = step.turn
-      ? {
-          turnId: `${bot.name}-${step.at}`,
-          finalized: step.turn.finalized ?? true,
+    // Fused exactly as the runtime fuses it, so the simulator cannot drift into
+    // measuring a gate that production does not run.
+    const completion = step.turn
+      ? estimateTurnCompletion({
           transcript: step.turn.transcript,
-          semanticEndProbability: step.turn.semanticEndProbability,
           intent: step.turn.intent,
-          intentProbabilities: { [step.turn.intent]: 0.9 },
-          endedAt: new Date(step.at * 1000).toISOString(),
-        }
+          textEndProbability: step.turn.semanticEndProbability,
+          ...(step.silenceMs !== undefined ? { silenceMs: step.silenceMs } : {}),
+          policy,
+        })
       : null;
+
+    const turn: Turn | null =
+      step.turn && completion
+        ? {
+            turnId: `${bot.name}-${step.at}`,
+            finalized: step.turn.finalized ?? true,
+            transcript: step.turn.transcript,
+            semanticEndProbability: completion.endProbability,
+            textEndProbability: completion.textEndProbability,
+            ...(completion.silenceMs !== undefined
+              ? { silenceMsBeforeEnd: completion.silenceMs }
+              : {}),
+            intent: step.turn.intent,
+            intentProbabilities: { [step.turn.intent]: 0.9 },
+            endedAt: new Date(step.at * 1000).toISOString(),
+          }
+        : null;
 
     const ctx: InterviewContext = {
       sessionId: SESSION_ID,

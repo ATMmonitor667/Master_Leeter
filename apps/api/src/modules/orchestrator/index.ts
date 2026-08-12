@@ -19,12 +19,20 @@ export {
   type Utterance,
 } from "./runtime.js";
 export {
+  MID_THOUGHT_CEILING,
   RuleBasedClassifier,
+  endsMidThought,
   ruleBasedClassifier,
   type ClassifierInput,
   type IntentClassifier,
   type TurnClassification,
 } from "./classifier.js";
+export {
+  GeminiClassifier,
+  buildClassifierPrompt,
+  classifierFromEnv,
+  type GeminiClassifierOptions,
+} from "./gemini-classifier.js";
 export {
   ForbiddenTransitionError,
   INITIAL_STATE,
@@ -35,6 +43,13 @@ export {
   type TransitionResult,
 } from "./state-machine.js";
 export { POLICIES, canHintNow, policyFor } from "./policy.js";
+export {
+  HELD_FLOOR_CEILING,
+  estimateTurnCompletion,
+  silenceCeiling,
+  type TurnCompletion,
+  type TurnCompletionInput,
+} from "./turn-completion.js";
 
 /**
  * Last line of defense before any action reaches the voice agent.

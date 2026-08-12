@@ -19,9 +19,10 @@ import {
   observe,
 } from "../observer/index.js";
 import { getHint, selectProbeWording } from "../scenario/probes.js";
-import { type IntentClassifier, ruleBasedClassifier } from "./classifier.js";
+import { type IntentClassifier, type TurnClassification, ruleBasedClassifier } from "./classifier.js";
 import { decideAction } from "./gate.js";
 import { INITIAL_STATE, applyEvent } from "./state-machine.js";
+import { estimateTurnCompletion, silenceRequiredFor } from "./turn-completion.js";
 
 /**
  * Interview Runtime — the live per-session orchestrator.
@@ -94,6 +95,16 @@ export interface InterviewRuntimeDeps {
   remainingSeconds: () => number;
   classifier?: IntentClassifier;
   now?: () => number;
+  /**
+   * Delivers a decision reached off the ingest path.
+   *
+   * A turn re-judged after its silence floor elapses is decided by a timer, so
+   * no caller is awaiting it. Without this the interviewer would decide to
+   * speak, log the decision, and never say anything.
+   */
+  onAuthorized?: (result: RuntimeResult) => void | Promise<void>;
+  /** Injected so tests drive the re-evaluation clock instead of sleeping. */
+  schedule?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
 }
 
 export class InterviewRuntime {
@@ -114,6 +125,17 @@ export class InterviewRuntime {
   private interviewerCurrentlySpeaking = false;
   private candidateSpeechStarted = false;
 
+  /**
+   * When VAD last reported the candidate stopping, or null if they are speaking
+   * or never started.
+   *
+   * Taken from the event's `occurredAt` rather than a wall clock on purpose:
+   * turn-completion now depends on this interval, and replay must reproduce the
+   * same gate decisions from the log alone (`replay.test.ts`). A wall-clock read
+   * would make every decision a function of how fast the replay ran.
+   */
+  private lastSpeechStoppedAtMs: number | null = null;
+
   /** Coalescing observation loop. At most one pass in flight, ever. */
   private observationDirty = false;
   private observationRunning: Promise<void> | null = null;
@@ -127,12 +149,27 @@ export class InterviewRuntime {
    */
   private readonly pendingRuns: RunResult[] = [];
 
+  /**
+   * A turn the gate held only because not enough silence had elapsed.
+   *
+   * Kept so it can be judged again once the floor is crossed. Without this the
+   * gate ran exactly once per turn, at whatever moment the transcript happened
+   * to finalize — a few hundred milliseconds after the candidate stopped, with
+   * browser transcription — and MOCK needs ~2.4 s. Every think-aloud turn was
+   * therefore judged too early and never reconsidered, so the interviewer stayed
+   * silent until the candidate spoke again.
+   */
+  private heldTurn: { turn: Turn; classification: TurnClassification } | null = null;
+  private reevaluationTimer: ReturnType<typeof setTimeout> | null = null;
+
   private readonly classifier: IntentClassifier;
   private readonly now: () => number;
+  private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
 
   constructor(private readonly deps: InterviewRuntimeDeps) {
     this.now = deps.now ?? (() => Date.now());
     this.classifier = deps.classifier ?? ruleBasedClassifier;
+    this.schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms));
     this.candidateState = emptyCandidateState(new Date(this.now()).toISOString());
     this.lastCodeActivityMs = this.now();
     this.lastSpokeAtMs = this.now();
@@ -153,6 +190,17 @@ export class InterviewRuntime {
       latestCodeRevision: this.latestCodeRevision,
       observedRevision: this.candidateState.derivedFromRevision,
     };
+  }
+
+  /**
+   * Source at `revision`, or null when the server has not seen that revision.
+   *
+   * RUN_REQUESTED carries only revision + stdin over the socket; the code itself
+   * must already be in the log via CODE_DELTA.
+   */
+  codeAtRevision(revision: number): string | null {
+    if (revision !== this.latestCodeRevision) return null;
+    return this.latestCode;
   }
 
   /**
@@ -187,22 +235,41 @@ export class InterviewRuntime {
       }
 
       case "SPEECH_STARTED":
+        // The candidate resumed. Whatever was waiting on silence is moot, and
+        // acting on it now would answer a thought they have already continued.
+        this.clearHeldTurn();
         this.candidateSpeechStarted = true;
+        // New speech invalidates the previous quiet period. Silence is measured
+        // from the most recent stop, not the first one in the session.
+        this.lastSpeechStoppedAtMs = null;
         return none;
 
       case "SPEECH_STOPPED":
-        // Intentionally inert. This is the whole thesis: VAD noticing that the
-        // candidate stopped talking is an observation, not permission to speak
-        // (ADR-001). Only a finalized turn reaches the gate.
+        // Still not permission to speak — that is the whole thesis, and nothing
+        // here changes it (ADR-001). What it now does is note WHEN, because how
+        // long the candidate has been quiet is the only evidence that separates
+        // a finished thought from a breath (M4-2). The observation is recorded;
+        // the decision still belongs to the gate, and only a finalized turn
+        // reaches it.
+        this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.now();
         return none;
 
       case "BARGE_IN":
+        this.clearHeldTurn();
         this.interviewerCurrentlySpeaking = false;
         this.candidateSpeechStarted = true;
         return none;
 
       case "SPEECH_FINAL":
         return this.evaluateTurn(event);
+
+      case "SILENCE_ELAPSED": {
+        // Replay reaches the re-judgement through here; live, the timer has
+        // already appended this event and called the same path. Either way the
+        // decision is a function of the log.
+        const result = await this.reevaluate(Date.parse(event.occurredAt) || this.now());
+        return result ?? none;
+      }
 
       case "STATE_TRANSITIONED": {
         const to = stringOf(event.payload["to"]);
@@ -243,19 +310,69 @@ export class InterviewRuntime {
    * action; it never mutates anything itself, which is what keeps it replayable.
    */
   private async evaluateTurn(event: SessionEvent): Promise<RuntimeResult> {
+    // A new turn supersedes any turn still waiting on silence.
+    this.clearHeldTurn();
+
     const transcript = stringOf(event.payload["transcript"]) ?? "";
     const finalized = event.payload["finalized"] !== false;
 
-    const classification = this.classifier.classify({ transcript, finalized });
+    // The only await between a turn arriving and the gate ruling on it. A model
+    // classifier suspends here for a few hundred milliseconds, so anything read
+    // into `ctx` below is read AFTER that gap, not before it — which is what we
+    // want: the gate should judge the world as it is when it decides, not as it
+    // was when the candidate stopped talking.
+    const classification = await this.classifier.classify({ transcript, finalized });
+
+    // How long the candidate has been quiet, measured between two logged
+    // timestamps. Undefined when no speech-stop preceded this turn — a text-only
+    // client, or voice that has not reported one — and the estimator reads that
+    // as unknown rather than zero.
+    const silenceMs = this.silenceBefore(event);
 
     const turn: Turn = {
       turnId: `turn-${event.seq}`,
       finalized,
       transcript,
-      semanticEndProbability: classification.semanticEndProbability,
+      // Overwritten by `judge`, which owns the fusion. Kept in the shape a Turn
+      // requires so the two entry points build one identically.
+      semanticEndProbability: 0,
       intent: classification.intent,
       intentProbabilities: classification.intentProbabilities,
       endedAt: event.occurredAt,
+    };
+
+    return this.judge(turn, classification, silenceMs, 0);
+  }
+
+  /**
+   * Judge a turn against the clock as it stands, and act.
+   *
+   * Called once when the transcript finalizes and, when that verdict was "held
+   * for timing", once more after enough silence has actually elapsed. Both paths
+   * share this so a re-judged turn cannot drift from a first-judged one.
+   */
+  private async judge(
+    base: Turn,
+    classification: TurnClassification,
+    silenceMs: number | undefined,
+    attempt: number,
+  ): Promise<RuntimeResult> {
+    // M4-2. The classifier judged the words; this weighs them against the clock.
+    // The gate is unchanged and still thresholds one number — what changed is
+    // that the number is now worth thresholding.
+    const completion = estimateTurnCompletion({
+      transcript: base.transcript,
+      intent: base.intent,
+      textEndProbability: classification.semanticEndProbability,
+      ...(silenceMs !== undefined ? { silenceMs } : {}),
+      policy: this.deps.policy,
+    });
+
+    const turn: Turn = {
+      ...base,
+      semanticEndProbability: completion.endProbability,
+      textEndProbability: completion.textEndProbability,
+      ...(silenceMs !== undefined ? { silenceMsBeforeEnd: silenceMs } : {}),
     };
 
     const ctx = this.buildContext(turn);
@@ -276,7 +393,13 @@ export class InterviewRuntime {
       reason: decision.reason,
       decidedByRule: decision.decidedByRule,
       intent: classification.intent,
-      semanticEndProbability: classification.semanticEndProbability,
+      // The fused number the gate actually thresholded, then the parts it was
+      // made of. M4-5b's whole method is reading these back off real sessions
+      // and asking which half got it wrong, which needs all three.
+      semanticEndProbability: completion.endProbability,
+      textEndProbability: completion.textEndProbability,
+      turnEndReason: completion.reason,
+      ...(completion.silenceMs !== undefined ? { silenceMs: completion.silenceMs } : {}),
       classifierId: classification.classifierId,
       ...(decision.probeId ? { probeId: decision.probeId } : {}),
       ...(decision.hintLevel ? { hintLevel: decision.hintLevel } : {}),
@@ -285,11 +408,13 @@ export class InterviewRuntime {
       ...(decision.groundedInRevision !== undefined
         ? { groundedInRevision: decision.groundedInRevision }
         : {}),
-    }, `action:${turn.turnId}`);
+      ...(attempt > 0 ? { reevaluated: true } : {}),
+    }, `action:${turn.turnId}:${attempt}`);
 
     if (decision.action === "STAY_SILENT") {
       // The common case, and it costs one append and nothing else.
       this.candidateSpeechStarted = false;
+      if (attempt === 0) this.holdForSilence(turn, classification, completion, silenceMs);
       return { decision, utterance: null };
     }
 
@@ -303,6 +428,121 @@ export class InterviewRuntime {
     if (utterance) this.interviewerCurrentlySpeaking = true;
 
     return { decision, utterance };
+  }
+
+  /**
+   * Remember a turn the gate held only because the clock had not caught up, and
+   * arrange to look at it again.
+   *
+   * The condition is narrow on purpose. `endProbability === HELD_FLOOR_CEILING`
+   * or below, with timing known, is the one case where waiting changes the
+   * answer — the words were confident enough and only the silence was short.
+   * A turn held because the transcript trailed off mid-thought, or because the
+   * model was genuinely unsure, is not improved by waiting, and re-judging it
+   * would be a second chance to speak that nothing has justified.
+   */
+  private holdForSilence(
+    turn: Turn,
+    classification: TurnClassification,
+    completion: { endProbability: number; textEndProbability: number },
+    silenceMs: number | undefined,
+  ): void {
+    if (silenceMs === undefined) return;
+
+    const threshold = this.deps.policy.endOfTurnThreshold;
+
+    // Both conditions are the definition of "only the clock said no". Tested on
+    // numbers rather than on `completion.reason`, which reads "held:" whenever
+    // the ceiling *capped* the estimate — including when the capped value still
+    // clears the threshold and the interviewer speaks. A predicate keyed on a
+    // human-readable string was going to drift the first time someone improved
+    // the wording.
+    if (completion.endProbability >= threshold) return;
+    if (completion.textEndProbability < threshold) return;
+
+    const required = silenceRequiredFor(this.deps.policy.endOfTurnThreshold, this.deps.policy);
+    if (!Number.isFinite(required)) return;
+
+    // A small margin past the crossing point, so a rounding error does not cost
+    // a whole extra round trip.
+    const waitMs = required - silenceMs + 25;
+    if (waitMs <= 0) return;
+
+    this.heldTurn = { turn, classification };
+    this.reevaluationTimer = this.schedule(() => {
+      void this.onSilenceElapsed();
+    }, waitMs);
+  }
+
+  /**
+   * The timer fired: record the moment, then re-judge against it.
+   *
+   * The append is what keeps this replayable. A bare timer would make the
+   * decision a function of how fast the process ran; logging the moment makes it
+   * a function of the log again, which is what `replay.test.ts` asserts and what
+   * the evaluator depends on.
+   */
+  private async onSilenceElapsed(): Promise<void> {
+    const held = this.heldTurn;
+    if (!held) return;
+
+    const occurredAt = new Date(this.now()).toISOString();
+    await this.append(
+      "SILENCE_ELAPSED",
+      "SYSTEM",
+      { turnId: held.turn.turnId },
+      `silence:${held.turn.turnId}`,
+      occurredAt,
+    );
+
+    const result = await this.reevaluate(Date.parse(occurredAt));
+    if (result?.decision && result.decision.action !== "STAY_SILENT") {
+      // Nobody is awaiting this call — it came from a timer, not from ingest —
+      // so an authorized action has to be handed back explicitly or it would be
+      // decided, logged, and never spoken.
+      await this.deps.onAuthorized?.(result);
+    }
+  }
+
+  /**
+   * Judge the held turn again, with silence measured to `atMs`.
+   *
+   * Shared by the live timer and by replay, which reaches it through
+   * `ingest(SILENCE_ELAPSED)`. Same inputs, same decision, either way.
+   */
+  private async reevaluate(atMs: number): Promise<RuntimeResult | null> {
+    const held = this.heldTurn;
+    if (!held) return null;
+
+    this.clearHeldTurn();
+
+    const silenceMs =
+      this.lastSpeechStoppedAtMs === null ? undefined : Math.max(0, atMs - this.lastSpeechStoppedAtMs);
+
+    return this.judge(held.turn, held.classification, silenceMs, 1);
+  }
+
+  private clearHeldTurn(): void {
+    this.heldTurn = null;
+    if (this.reevaluationTimer !== null) {
+      clearTimeout(this.reevaluationTimer);
+      this.reevaluationTimer = null;
+    }
+  }
+
+  /**
+   * Quiet time between the last speech-stop and this finalized transcript.
+   *
+   * Both timestamps come off logged events, so this is a pure function of the
+   * log. Returns undefined when there is no stop to measure from: unknown
+   * timing, which the estimator treats as "no timing evidence" rather than as
+   * zero silence.
+   */
+  private silenceBefore(event: SessionEvent): number | undefined {
+    if (this.lastSpeechStoppedAtMs === null) return undefined;
+    const finalAtMs = Date.parse(event.occurredAt);
+    if (!Number.isFinite(finalAtMs)) return undefined;
+    return Math.max(0, finalAtMs - this.lastSpeechStoppedAtMs);
   }
 
   /**
@@ -574,6 +814,7 @@ export class InterviewRuntime {
     actor: SessionEvent["actor"],
     payload: Record<string, unknown>,
     idempotencyKey: string,
+    occurredAt?: string,
   ): Promise<void> {
     await this.deps.events.append({
       sessionId: this.deps.sessionId,
@@ -583,6 +824,7 @@ export class InterviewRuntime {
       payload,
       traceId: this.deps.traceId,
       idempotencyKey,
+      ...(occurredAt ? { occurredAt } : {}),
     });
   }
 }

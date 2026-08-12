@@ -32,6 +32,8 @@ export interface EventsSocketDeps {
   channel: SessionChannel;
   /** Called with each committed event so the orchestrator can apply it. */
   dispatch: (event: SessionEvent) => Promise<void>;
+  /** Registers this socket to receive async server pushes (run results, etc.). */
+  attach?: (sessionId: string, push: (msg: ServerMessage) => void) => () => void;
   log?: { warn(o: unknown, msg: string): void; error(o: unknown, msg: string): void };
 }
 
@@ -46,6 +48,24 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
   const write = (messages: ServerMessage[]): void => {
     for (const message of messages) socket.send(JSON.stringify(message));
   };
+
+  const detach = deps.attach?.(sessionId, (msg) => write([msg]));
+
+  /**
+   * Send the current state as soon as the socket opens.
+   *
+   * `SessionChannel.resume()` has always built this message and nothing ever
+   * called it, so `STATE` reached no client: the timer counted down locally from
+   * a single HTTP read and the interviewer indicator was frozen on LISTENING
+   * forever. A refresh mid-interview re-synced the editor and not the clock.
+   *
+   * Failure is swallowed on purpose. A state snapshot is a convenience; losing
+   * it must not cost the candidate the socket that carries their code.
+   */
+  void deps.channel
+    .resume(sessionId, -1)
+    .then((result) => write(result.messages.filter((m) => m.kind === "STATE")))
+    .catch((err: unknown) => deps.log?.warn({ sessionId, err }, "initial state push failed"));
 
   socket.on("message", (raw) => {
     void (async () => {
@@ -76,6 +96,7 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
   });
 
   socket.on("close", () => {
+    detach?.();
     // Clear the sequence watermark so a reconnecting client resuming from its
     // own last-acked seq is not mistaken for one with a gap.
     deps.channel.forget(sessionId);
@@ -111,7 +132,7 @@ export async function registerEventsSocket(
    *
    * The API is useful without a socket — sessions, runs, reports and the whole
    * HTTP surface still work — so a missing plugin degrades to a warning rather
-   * than refusing to start. Same reasoning as Judge0 being optional: a missing
+   * than refusing to start. Same reasoning as the judge being optional: a missing
    * dependency should cost a capability, not the service.
    */
   let plugin: { default: unknown } | null = null;

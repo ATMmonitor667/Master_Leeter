@@ -139,6 +139,22 @@ export const InterviewPolicySchema = z.object({
   acknowledgeSmallTalk: z.boolean(),
   /** Semantic end-of-turn probability required before any response is considered. */
   endOfTurnThreshold: z.number().min(0).max(1),
+  /**
+   * Quiet time below which no transcript, however complete it reads, counts as a
+   * finished turn (M4-2).
+   *
+   * This is the acceptance criterion in CLAUDE.md expressed as a number: a
+   * 1.5-second pause mid-explanation is a breath, not a yielded floor. Text
+   * confidence cannot buy its way past it, because the words "I'll use a hash
+   * map" look equally finished whether the candidate stopped there or is drawing
+   * breath before "...but that doesn't handle duplicates".
+   */
+  minTurnEndSilenceMs: z.number().int().min(0),
+  /**
+   * Quiet time above which timing stops constraining and the transcript decides
+   * alone. Between this and the minimum, the ceiling ramps.
+   */
+  settledTurnEndSilenceMs: z.number().int().min(0),
   /** Maximum age, in seconds, of a code revision an interviewer response may reference. */
   maxCodeStalenessSeconds: z.number().int().min(1),
   expectedMinutes: z.number().int().min(1),

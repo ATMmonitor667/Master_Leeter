@@ -33,8 +33,30 @@ export const TurnSchema = z.object({
   /** The gate never acts on a non-finalized turn. Guessing is worse than waiting. */
   finalized: z.boolean(),
   transcript: z.string(),
-  /** Confidence that the candidate actually finished their thought. */
+  /**
+   * Confidence that the candidate actually finished their thought.
+   *
+   * The number the gate thresholds against. Since M4-2 this fuses what the words
+   * say with how long the candidate has been quiet — see the two fields below
+   * for the parts it was built from.
+   */
   semanticEndProbability: z.number().min(0).max(1),
+  /**
+   * What the classifier made of the transcript alone, before timing was applied.
+   *
+   * Kept for evidence rather than for decisions: when a session produces an
+   * interruption worth annotating (M4-5b), "the model was sure and the clock
+   * disagreed" and "the model was unsure" are different bugs with different
+   * fixes, and the fused number alone cannot tell them apart.
+   */
+  textEndProbability: z.number().min(0).max(1).optional(),
+  /**
+   * Quiet time between VAD speech-stop and this finalized transcript.
+   *
+   * Absent when no speech-stop preceded the turn — a text-only path, or voice
+   * that has not reported one. Absence means "unknown", never "zero".
+   */
+  silenceMsBeforeEnd: z.number().nonnegative().optional(),
   intent: TurnIntentSchema,
   intentProbabilities: z.record(z.number().min(0).max(1)),
   endedAt: z.string().datetime(),

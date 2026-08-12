@@ -7,10 +7,9 @@ import { fileURLToPath } from "node:url";
  *
  * Deliberately not `dotenv`. This runs once at boot, reads two files, and has
  * no behaviour worth a dependency — and the failure mode it prevents is the
- * expensive kind: `scripts/judge0-setup.sh` told you to put JUDGE0_URL in
- * `apps/api/.env.local`, nothing read it, and the server booted with
- * `runner: "none"` while looking perfectly healthy. A config file that is
- * silently ignored is worse than no config file.
+ * expensive kind: a variable was set in `apps/api/.env.local`, nothing read it,
+ * and the server booted with `runner: "none"` while looking perfectly healthy.
+ * A config file that is silently ignored is worse than no config file.
  *
  * Rules, in order of precedence:
  *
@@ -20,7 +19,7 @@ import { fileURLToPath } from "node:url";
  *   3. `.env`       — shared defaults, may be committed.
  *
  * Both files are optional. A missing file is silence, not an error: the API is
- * designed to boot without Judge0 or a realtime key (M2-4 / M0-2), so absence
+ * designed to boot without a judge model or a realtime key (M2-4), so absence
  * is a supported state rather than a misconfiguration.
  *
  * NOT imported by the module graph at import time — `loadEnv()` is called

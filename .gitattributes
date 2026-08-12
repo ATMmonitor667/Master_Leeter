@@ -1,0 +1,22 @@
+# Normalise line endings to LF in the repository.
+#
+# Without this, an editor or a WSL/Windows round-trip rewrites every file as
+# CRLF and `git status` reports the entire tree as modified — 3,000+ changed
+# lines with no content change. Real edits then become impossible to find, which
+# is how a genuinely corrupted file slipped through review once already.
+*         text=auto eol=lf
+
+# Shell scripts must be LF regardless of platform; CRLF makes them unrunnable
+# with a "bad interpreter" error that names the right file and the wrong reason.
+*.sh      text eol=lf
+
+# Binary — never touch.
+*.pdf     binary
+*.png     binary
+*.jpg     binary
+*.ico     binary
+*.woff    binary
+*.woff2   binary
+
+# Generated. Collapse in diffs; nobody reviews it line by line.
+pnpm-lock.yaml linguist-generated=true -diff

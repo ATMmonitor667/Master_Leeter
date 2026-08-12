@@ -1,4 +1,4 @@
-import type { ClientEvent, EventType, ServerMessage } from "@master-leeter/contracts";
+import type { ClientEvent, ClientEventType, ServerMessage } from "@master-leeter/contracts";
 
 /**
  * Browser session client (M2-3 / M2-5 client half).
@@ -180,13 +180,47 @@ export class SessionClient {
     }, this.debounceMs);
   }
 
-  private enqueue(type: EventType, payload: Record<string, unknown>): void {
+  /**
+   * `ClientEventType`, not `EventType`.
+   *
+   * The narrow type is the point: the client is now structurally incapable of
+   * emitting a conclusion — `RUN_COMPLETED`, `MILESTONE`, `HINT_GIVEN` — into
+   * the evidence log. The server rejects them anyway, but a compile error here
+   * means nobody writes the code that gets rejected at runtime in the first
+   * place.
+   */
+  /**
+   * Report a VAD boundary (M3-2).
+   *
+   * `atMs` is when the boundary *happened*, not when this was called, and it is
+   * carried through as `occurredAt`. That matters more than it looks: the server
+   * computes `silenceMs` as the interval between two logged `occurredAt`
+   * timestamps (M4-2). Stamping send time instead would fold the VAD's hangover
+   * and the network hop into the measurement, shortening every observed pause
+   * and making the gate more willing to speak.
+   */
+  speechBoundary(type: "SPEECH_STARTED" | "SPEECH_STOPPED", atMs: number): void {
+    this.enqueue(type, {}, atMs);
+  }
+
+  /** Finalized candidate transcript — the gate's only speech input (M4-2). */
+  speechFinal(transcript: string, occurredAtMs?: number): void {
+    const text = transcript.trim();
+    if (!text) return;
+    this.enqueue("SPEECH_FINAL", { transcript: text, finalized: true }, occurredAtMs);
+  }
+
+  private enqueue(
+    type: ClientEventType,
+    payload: Record<string, unknown>,
+    occurredAtMs?: number,
+  ): void {
     const event: ClientEvent = {
       sessionId: this.opts.sessionId,
       clientSeq: this.clientSeq++,
       idempotencyKey: this.newId(),
       type,
-      occurredAt: new Date(this.now()).toISOString(),
+      occurredAt: new Date(occurredAtMs ?? this.now()).toISOString(),
       payload,
     };
 
