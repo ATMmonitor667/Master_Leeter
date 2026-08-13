@@ -593,8 +593,20 @@ registry was available. Treat as "written and unit-verified", not "green".
 **Also partly delivers the reduced M7-5:** `pnpm eval --csv metrics.csv` appends one row per
 run, which is the trend line the cut dashboard was for.
 
-### `[ ]` M4-4b · Leakage + factuality eval sets · M
+### `[x]` M4-4b · Leakage + factuality eval sets · M
 **Deps:** M1-4, M1-5. Every clarification answer matches a canonical fact; no probe or hint exceeds the mode's permitted disclosure. **Fails the build on regression.**
+
+`src/eval/factuality.ts` replays every authored `askedAs` phrasing through the real
+`getClarificationFact` matcher: the resolved fact key and value must match verbatim, AFTER_PROBE
+facts must be unanswerable before any probe has fired, and a set of off-topic utterances must
+never match anything (no hallucinated answers). `src/eval/leakage.ts` drives `selectProbeWording`
+(only ever authored variants, never invented) and `nextAllowedHintLevel` under all three real mode
+policies pushed well past budget (never exceeds `maxHintLevel`, never exceeds `hintBudget`, never
+resurrects a hint after the gate goes quiet). `src/eval/content.ts` runs both checks over every
+scenario version under `content/scenarios` — not only ACTIVE ones, since a retired version a
+session pinned must stay honest too (invariant 4) — and gates at zero violations either way.
+Folded into `pnpm eval` alongside M4-4, so the existing CI step covers it with no workflow change.
+52 new tests; full suite (595 tests) and monorepo typecheck stay green.
 
 ### `[-]` M4-5 · Human review round · M — **cut, replaced by M4-5b**
 **Deps:** M4-4, M3-*. ≥ 20 real sessions rated by experienced engineers.
