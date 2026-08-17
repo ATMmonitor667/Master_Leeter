@@ -15,6 +15,11 @@ which needs human graders. M4-1 and M4-2 are in — the interviewer now judges t
 words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
 transcript half is unblocked now that the classifier exists.
 
+**One unticketed gap outranks everything below: M1-2b.** The interview state machine has no
+driver, so a live session cannot leave `ORAL_PROBLEM_DELIVERY` and the interviewer goes silent
+after the brief. Found by inspection on 2026-08-13; the bot suite cannot see it because the
+simulator sets `state` by hand on every step.
+
 **M3 (voice) is code complete.** M3-1 is verified against the live API; M3-2 through M3-7 are
 written, wired and green in CI. The path exists end to end: credential → constrained socket →
 VAD → turn completion → gate → authorization → tool surface → speech.
@@ -46,6 +51,13 @@ two pointers, sliding window, top-k selection, and data-structure design.
 > `InterviewRuntime` (`modules/orchestrator/runtime.ts`) is the piece that was missing: the
 > per-session state holder that the gate, observer and state machine all hang off. The path
 > is now client → socket → channel → event log → runtime → gate → recorded decision.
+
+**`PgEventLog` is not merely unverified — it is unwired.** `buildServer` constructs an
+`InMemoryEventLog`, and nothing constructs the Postgres one, so **every session's evidence is lost
+when the process restarts**: transcripts, decisions, reports, all of it. Acceptable while the only
+consumer is a local session you are watching live, and not acceptable the moment you want to read
+a report tomorrow or tune thresholds against sessions from last week (M4-5b assumes exactly that).
+Wiring it is a constructor swap plus a Postgres service in CI.
 
 Two components are written but UNVERIFIED against real infrastructure, and are marked as
 such in their own headers: `PgEventLog` (no Postgres in CI) and `Judge0Runner` (no Judge0
@@ -171,6 +183,48 @@ lifecycle, provenance enforced at load. Scenarios live in `content/scenarios/`, 
 **Deps:** M0-3.
 Pure function `(state, event) → (state, allowedActions)`. Forbidden transitions throw.
 **Acceptance:** unit tests cover every legal transition and a representative set of illegal ones.
+
+> **The function is done. Nothing calls it with a real transition — see M1-2b.**
+
+### `[ ]` M1-2b · Stage advancement — the state machine has no driver · M
+**Deps:** M1-2, M1-3. **Blocks:** every stage-gated behaviour, and any useful voice session.
+
+Found by code inspection on 2026-08-13, not by a failing test. `applyEvent` is correct and well
+tested; **nothing in the codebase ever produces a `STATE_TRANSITIONED` event**, so a live session
+pins to `ORAL_PROBLEM_DELIVERY` forever.
+
+Verified, all four independently:
+
+- No code appends `type: "STATE_TRANSITIONED"` anywhere outside tests.
+- The gate can emit `DELIVER_BRIEF`, `ANSWER_CLARIFICATION`, `ASK_PROBE`, `GIVE_HINT_L1/L2`,
+  `PRESENT_FOLLOW_UP`, `ACKNOWLEDGE_BRIEFLY` — but never `TRANSITION_STAGE`.
+- `SessionStore.transition()` is dead code; it has no callers.
+- Clients cannot send it, correctly — it is server-only under the M0-3 allowlist.
+
+**What this means in a real session.** `ALLOWED_ACTIONS[ORAL_PROBLEM_DELIVERY]` is
+`["STAY_SILENT", "DELIVER_BRIEF", "TRANSITION_STAGE"]`. The interviewer delivers the brief and is
+then structurally incapable of saying anything else, for the whole session: no clarifications, no
+probes, no hints, no follow-ups, no wrap-up.
+
+**Why nothing caught it.** The simulator sets `state` explicitly on every scripted step, so the
+bots never exercise the machine — which is exactly why `pnpm sim` is 32 green and `pnpm eval` sits
+at threshold while the live path cannot move. `voice-relay.test.ts` even documents the symptom as
+intended behaviour ("a fresh session sits in ORAL_PROBLEM_DELIVERY, where the stage forbids
+probing outright"). That was the bug being written down as a feature.
+
+This is the third instance of the pattern in the correction note at the top of this file:
+`decideAction` with only the simulator as a caller, `RUN_REQUESTED` with no consumer, and now a
+state machine with no driver. All three were green the entire time.
+
+- [ ] Decide the trigger for each transition and write it down before coding — brief delivered →
+      `CLARIFICATION`; approach committed or first code → `IMPLEMENTATION`; first run →
+      `TEST_AND_DEBUG`; solved with time left → `FOLLOW_UP`; time low or done → `WRAP_UP`
+- [ ] Gate produces `TRANSITION_STAGE`, runtime appends the event, `SessionStore.transition` used
+- [ ] A trajectory that does NOT set `state` per step, so the machine is exercised
+- [ ] Replay reproduces the same transitions from the log alone
+
+**Acceptance:** a session driven only by candidate events reaches `TEST_AND_DEBUG` without any
+test setting `state` by hand.
 
 ### `[x]` M1-3 · Response Gate v1, rules only · M
 **Deps:** M1-2.
@@ -594,6 +648,14 @@ registry was available. Treat as "written and unit-verified", not "green".
 run, which is the trend line the cut dashboard was for.
 
 ### `[x]` M4-4b · Leakage + factuality eval sets · M
+
+> **What it covers and what it does not.** It drives the real `getClarificationFact`,
+> `selectProbeWording` and `nextAllowedHintLevel` under all three mode policies, including
+> AFTER_PROBE sequencing and budgets pushed past their limit — so it validates the components
+> that make disclosure decisions. It does not run over `decideAction` across a session
+> trajectory, so a regression in how the *gate composes* those components (spending a budget it
+> did not check, releasing an AFTER_PROBE fact because `probeHistory` was threaded wrongly) would
+> not be caught here. Smaller residual than it sounds; worth knowing before trusting the 0.
 **Deps:** M1-4, M1-5. Every clarification answer matches a canonical fact; no probe or hint exceeds the mode's permitted disclosure. **Fails the build on regression.**
 
 `src/eval/factuality.ts` replays every authored `askedAs` phrasing through the real
