@@ -32,7 +32,7 @@ On the current `simplified` branch you can:
 - **Run** code (model-judged on this branch; Judge0 on `main`)
 - Use **live captions** for speech-to-text accessibility
 - End a session and receive an **evidence-backed report** with a 7-dimension rubric
-- Run **661 automated tests**, a **candidate-bot simulator**, and an **interruption eval harness** in CI
+- Run **751+ automated tests**, a **candidate-bot simulator**, and an **interruption eval harness** in CI
 
 Voice infrastructure is largely built (Gemini Live credentials, client audio stack, response gate) but the full oral interview loop — hear the problem, speak, get authorized replies — is still being wired end to end.
 
@@ -190,7 +190,7 @@ Invariant 6 (untrusted code isolation) is trivially satisfied here because nothi
 | `pnpm dev:api` | Start API with hot reload |
 | `pnpm dev:web` | Start Next.js dev server |
 | `pnpm typecheck` | Typecheck all packages |
-| `pnpm test` | Run unit tests (661+) |
+| `pnpm test` | Run unit tests (751+) |
 | `pnpm sim` | Candidate-bot simulator — gate behavior |
 | `pnpm eval` | Interruption + missed-response metrics |
 | `pnpm infra:up` / `infra:down` | Docker Compose lifecycle |
@@ -253,9 +253,14 @@ Target from the product spec: **fewer than 1 material unwanted interruption per 
 | Workspace UI + event log | Done |
 | Post-session reports | Done |
 | Intent classifier + turn completion | Done (bot-tested) |
-| Voice client + credentials | Built, needs first live session |
-| Oral delivery + gate → speech | In progress |
-| Code-aware probes + observer | Partial |
+| Voice client + credentials | Built, needs real-device acceptance |
+| Oral delivery + gate → speech | Implemented, needs full oral-session acceptance |
+| Code-aware probes + observer | Implemented on `codex` |
+
+The remaining in-scope engineering has been completed on the `codex` branch.
+Real-device microphone acceptance, one full oral session, and interruption
+labelling still require a human run; see
+[`docs/CODEX-COMPLETION.md`](docs/CODEX-COMPLETION.md) for the exact handoff.
 
 Roughly **~73%** of the engineering backlog and **~88%** of a usable coding mock without voice. The remaining work is the oral interview thesis itself.
 

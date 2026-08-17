@@ -107,7 +107,20 @@ export function runBot(bot: CandidateBot, scenario: InterviewScenarioVersion): S
       candidateState = { ...candidateState, ...step.candidateState };
     }
     if (step.observerRevision !== undefined) {
-      candidateState = { ...candidateState, derivedFromRevision: step.observerRevision };
+      candidateState = {
+        ...candidateState,
+        derivedFromRevision: step.observerRevision,
+        codeObservedAt: new Date(step.at * 1000).toISOString(),
+      };
+    }
+    // Production's transcript observation pass also refreshes an unchanged
+    // snapshot between turns. Mirror that here so the simulator tests the gate,
+    // not an observer that was artificially frozen despite being caught up.
+    if (latestCodeRevision > 0 && candidateState.derivedFromRevision === latestCodeRevision) {
+      candidateState = {
+        ...candidateState,
+        codeObservedAt: new Date(step.at * 1000).toISOString(),
+      };
     }
 
     // Fused exactly as the runtime fuses it, so the simulator cannot drift into

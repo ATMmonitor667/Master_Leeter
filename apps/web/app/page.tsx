@@ -20,6 +20,11 @@ interface CatalogueEntry {
 
 const API = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
 const MODES = ["LEARNING", "MOCK", "STRICT"] as const;
+const MODE_COPY: Record<(typeof MODES)[number], string> = {
+  LEARNING: "More room for hints and a gentler intervention cadence.",
+  MOCK: "A balanced, realistic interview with evidence-based feedback.",
+  STRICT: "Minimal help, longer silences, and a higher bar for intervention.",
+};
 
 export default function Home() {
   const [scenarios, setScenarios] = useState<CatalogueEntry[]>([]);
@@ -58,47 +63,83 @@ export default function Home() {
   }
 
   return (
-    <main style={{ maxWidth: 680, margin: "0 auto", padding: "64px 24px" }}>
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>Master_Leeter</h1>
-      <p style={{ color: "var(--muted)", marginTop: 0 }}>
-        You&apos;ll hear the problem out loud. Ask clarifying questions, think aloud, and write code.
-        The interviewer is listening the whole time and will speak when it has something to say.
-      </p>
+    <main className="landing-shell">
+      <nav className="landing-nav" aria-label="Product">
+        <div className="brand"><span className="brand-mark">ML</span><span className="brand-name">Master Leeter</span></div>
+        <span className="pill"><span className="status-dot" /> Voice-first technical practice</span>
+      </nav>
 
-      <section style={{ margin: "28px 0" }}>
-        <label style={{ display: "block", fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
-          Mode
-        </label>
-        <select value={mode} onChange={(e) => setMode(e.target.value as (typeof MODES)[number])}>
-          {MODES.map((m) => (
-            <option key={m} value={m}>
-              {m[0] + m.slice(1).toLowerCase()}
-            </option>
-          ))}
-        </select>
+      <section className="landing-hero">
+        <div className="landing-copy">
+          <div className="eyebrow">Practice the room, not the puzzle</div>
+          <h1>Think out loud. <span>Code under pressure.</span></h1>
+          <p>
+            A technical interview simulator that listens like a real interviewer: the problem is
+            spoken, your reasoning matters, and feedback is tied to evidence from the session.
+          </p>
+        </div>
+        <div className="hero-proof" aria-label="How it works">
+          <div className="proof-row"><span className="proof-icon">01</span><span>Hear the prompt and ask canonical clarifying questions.</span></div>
+          <div className="proof-row"><span className="proof-icon">02</span><span>Reason aloud, code, test, and debug in one focused workspace.</span></div>
+          <div className="proof-row"><span className="proof-icon">03</span><span>Review an evidence-backed rubric after the interview ends.</span></div>
+        </div>
       </section>
 
-      {error && <p style={{ color: "var(--err)" }}>{error}</p>}
+      <section className="setup-grid" aria-label="Start an interview">
+        <div className="setup-card">
+          <header className="setup-card-header">
+            <h2>Choose the room</h2>
+            <p>One interview engine, three levels of support.</p>
+          </header>
+          <div className="mode-list" role="radiogroup" aria-label="Interview mode">
+            {MODES.map((item) => (
+              <button
+                key={item}
+                type="button"
+                role="radio"
+                aria-checked={mode === item}
+                className={`mode-option${mode === item ? " active" : ""}`}
+                onClick={() => setMode(item)}
+              >
+                <span className="radio-ring" aria-hidden="true" />
+                <span>
+                  <span className="mode-title">{item[0] + item.slice(1).toLowerCase()}</span>
+                  <span className="mode-description">{MODE_COPY[item]}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {scenarios.map((s) => (
-          <button
-            key={s.ref}
-            onClick={() => start(s.ref)}
-            disabled={starting}
-            style={{ textAlign: "left", padding: 14, display: "flex", justifyContent: "space-between" }}
-          >
-            <span>
-              <strong>{s.level}</strong>
-              <span style={{ color: "var(--muted)" }}> · {s.topics.join(", ")}</span>
-            </span>
-            <span style={{ color: "var(--muted)" }}>{s.expectedMinutes} min</span>
-          </button>
-        ))}
-        {scenarios.length === 0 && !error && (
-          <p style={{ color: "var(--muted)" }}>Loading scenarios…</p>
-        )}
-      </div>
+        <div className="setup-card">
+          <header className="setup-card-header">
+            <h2>Select a session</h2>
+            <p>You see only the level and topic mix. The prompt stays oral.</p>
+          </header>
+          {error && <div className="error-banner" role="alert">{error}</div>}
+          <div className="scenario-list">
+            {scenarios.map((scenario, index) => (
+              <button
+                key={scenario.ref}
+                className="scenario-card"
+                onClick={() => start(scenario.ref)}
+                disabled={starting}
+              >
+                <span className="scenario-index">{String(index + 1).padStart(2, "0")}</span>
+                <span>
+                  <span className="scenario-title">{scenario.level} interview</span>
+                  <span className="scenario-topics">{scenario.topics.join(" · ")}</span>
+                </span>
+                <span className="scenario-meta">
+                  <span>{scenario.expectedMinutes} min</span>
+                  <span className="scenario-arrow" aria-hidden="true">→</span>
+                </span>
+              </button>
+            ))}
+            {scenarios.length === 0 && !error && <div className="loading-row">Loading interview sessions…</div>}
+          </div>
+        </div>
+      </section>
     </main>
   );
 }

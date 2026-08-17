@@ -59,9 +59,9 @@ export function VoiceControls({
   }, [refreshDevices, status]);
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div className="voice-controls">
       {error && (
-        <span style={{ color: "var(--err)", fontSize: 12, maxWidth: 260 }} title={error}>
+        <span className="voice-error" title={error}>
           {error}
         </span>
       )}
@@ -71,7 +71,7 @@ export function VoiceControls({
           value={deviceId}
           onChange={(e) => setDeviceId(e.target.value)}
           disabled={status === "CONNECTING"}
-          style={{ fontSize: 12, maxWidth: 180 }}
+          className="voice-select"
           aria-label="Microphone"
         >
           <option value="">Default microphone</option>
@@ -87,12 +87,12 @@ export function VoiceControls({
         <>
           <button
             onClick={onToggleMute}
-            style={{ fontSize: 12, padding: "4px 10px" }}
+            className="secondary-button"
             aria-pressed={muted}
           >
             {muted ? "Unmute" : "Mute"}
           </button>
-          <button onClick={onStop} style={{ fontSize: 12, padding: "4px 10px" }}>
+          <button onClick={onStop} className="ghost-button">
             End voice
           </button>
         </>
@@ -100,7 +100,7 @@ export function VoiceControls({
         <button
           onClick={() => onStart(deviceId || undefined)}
           disabled={status === "CONNECTING"}
-          style={{ fontSize: 12, padding: "4px 10px" }}
+          className="primary-button"
         >
           {LABEL[status]}
         </button>

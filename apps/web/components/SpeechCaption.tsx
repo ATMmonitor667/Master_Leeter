@@ -72,27 +72,15 @@ export function SpeechCaption({ onFinal }: SpeechCaptionProps) {
   const listening = status === "LISTENING";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg)",
-        }}
-      >
+    <div className="panel-shell">
+      <div className="caption-header">
         <PanelLabel>Captions</PanelLabel>
         <button
           type="button"
           onClick={onToggle}
           disabled={!supported}
-          style={{
-            marginRight: 8,
-            fontSize: 11,
-            padding: "2px 8px",
-            opacity: supported ? 1 : 0.5,
-          }}
+          className="ghost-button"
+          style={{ marginRight: 6, opacity: supported ? 1 : 0.5 }}
         >
           {listening ? "Stop" : "Start"}
         </button>
@@ -102,16 +90,7 @@ export function SpeechCaption({ onFinal }: SpeechCaptionProps) {
         ref={scrollRef}
         aria-live="polite"
         aria-relevant="additions text"
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "8px 10px",
-          fontFamily: "var(--mono)",
-          fontSize: 13,
-          lineHeight: 1.5,
-          background: "var(--panel)",
-          minHeight: 0,
-        }}
+        className="caption-body"
       >
         {!supported && (
           <p style={{ margin: 0, color: "var(--muted)", fontSize: 12 }}>

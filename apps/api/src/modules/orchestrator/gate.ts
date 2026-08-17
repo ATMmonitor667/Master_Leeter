@@ -8,8 +8,8 @@ import {
 import { getClarificationFact } from "../scenario/clarification.js";
 import {
   canProbeNow,
-  highestPriorityEligibleProbe,
   nextAllowedHintLevel,
+  selectRelevantProbe,
   selectFollowUp,
 } from "../scenario/probes.js";
 import type { ProbeSelectionContext } from "../scenario/probes.js";
@@ -195,22 +195,16 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
     }
   }
 
-  // ── 8. Stale observer state ────────────────────────────────────────────────
-  // Below here, every remaining action reasons about what the candidate is
-  // doing. If the observer hasn't caught up with the latest code revision, any
-  // probe risks commenting on code that no longer exists — a visible failure.
-  // Silence is cheap; being wrong out loud is not.
+  // ── 9. An authored probe is justified ──────────────────────────────────────
   const observerBehind = ctx.latestCodeRevision - ctx.candidateState.derivedFromRevision;
   if (observerBehind > 0 && ctx.secondsSinceCodeActivity < ctx.policy.maxCodeStalenessSeconds) {
-    return SILENT(
-      `observer behind by ${observerBehind} revision(s) and code is still moving`,
-    );
+    return SILENT(`observer behind by ${observerBehind} revision(s) and code is still moving`);
   }
 
-  // ── 9. An authored probe is justified ──────────────────────────────────────
   const probeCtx = triggerCtx(ctx, deps);
-  const probe = highestPriorityEligibleProbe(deps.scenario, probeCtx);
+  const probe = selectRelevantProbe(deps.scenario, probeCtx);
   if (probe) {
+    const needsCode = probeNeedsCodeGrounding(probe.trigger);
     // M4-3. Eligible, paced, and grounded is still not enough if the candidate
     // is mid-keystroke. Finishing a sentence is not the same as being free.
     if (!canInterruptNow(ctx.policy, ctx.secondsSinceCodeActivity)) {
@@ -223,12 +217,14 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
         `probe "${probe.id}" eligible but only ${ctx.secondsSinceInterviewerLastSpoke}s since last utterance (min ${ctx.policy.minSecondsBetweenProbes})`,
       );
     }
+    const stale = needsCode ? codeFreshnessReason(ctx) : null;
+    if (stale) return SILENT(stale);
     return {
       action: "ASK_PROBE",
       reason: `probe "${probe.id}": ${probe.questionIntent}`,
       decidedByRule: true,
       probeId: probe.id,
-      groundedInRevision: ctx.candidateState.derivedFromRevision,
+      ...(needsCode ? { groundedInRevision: ctx.candidateState.derivedFromRevision } : {}),
     };
   }
 
@@ -258,6 +254,8 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
       hintsUsed: ctx.candidateState.hintsUsed,
     });
     if (level !== null && level <= 2) {
+      const stale = codeFreshnessReason(ctx);
+      if (stale) return SILENT(stale);
       return {
         action: level === 1 ? "GIVE_HINT_L1" : "GIVE_HINT_L2",
         reason: `stuck score ${stuck.toFixed(2)} over threshold ${ctx.policy.stallThreshold}`,
@@ -270,6 +268,33 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
 
   // ── Default ────────────────────────────────────────────────────────────────
   return SILENT("no rule authorized speech");
+}
+
+function probeNeedsCodeGrounding(trigger: string): boolean {
+  return /detectedFamily|claimedTime|claimedSpace|milestone\((?:FIRST_COMPILES|BASE_TESTS_PASS|REPEATED_SAME_FAILURE|LARGE_REWRITE|COMPLEXITY_CLAIM_MISMATCH)\)/.test(
+    trigger,
+  );
+}
+
+function codeFreshnessReason(ctx: InterviewContext): string | null {
+  const observerBehind = ctx.latestCodeRevision - ctx.candidateState.derivedFromRevision;
+  if (observerBehind > 0) {
+    return `observer behind by ${observerBehind} revision(s); refresh required before code-grounded speech`;
+  }
+  if (ctx.latestCodeRevision === 0) return null;
+
+  const observedAt = ctx.candidateState.codeObservedAt
+    ? Date.parse(ctx.candidateState.codeObservedAt)
+    : Number.NaN;
+  const turnAt = ctx.turn ? Date.parse(ctx.turn.endedAt) : Number.NaN;
+  const ageSeconds =
+    Number.isFinite(observedAt) && Number.isFinite(turnAt)
+      ? Math.max(0, (turnAt - observedAt) / 1000)
+      : Number.POSITIVE_INFINITY;
+  if (ageSeconds <= ctx.policy.maxCodeStalenessSeconds) return null;
+  return Number.isFinite(ageSeconds)
+    ? `code observation ${ageSeconds.toFixed(1)}s old; max is ${ctx.policy.maxCodeStalenessSeconds}s`
+    : "code observation age unknown; refresh required before code-grounded speech";
 }
 
 function triggerCtx(ctx: InterviewContext, deps: GateDependencies): ProbeSelectionContext {

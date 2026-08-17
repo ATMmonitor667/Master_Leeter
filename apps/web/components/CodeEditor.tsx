@@ -22,8 +22,8 @@ export function CodeEditor({
   onChange: (text: string) => void;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <PanelLabel>{language}</PanelLabel>
+    <div className="editor-shell">
+      <PanelLabel>{language} · solution.py</PanelLabel>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Editor
           height="100%"

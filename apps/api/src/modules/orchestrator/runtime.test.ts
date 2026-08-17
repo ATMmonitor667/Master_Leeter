@@ -400,6 +400,26 @@ describe("the observer pipeline runs off the critical path", () => {
     expect(types).toContain("CANDIDATE_STATE_UPDATED");
   });
 
+  it("folds explicit transcript claims and emits a complexity mismatch", async () => {
+    const runtime = build();
+    await advanceTo(runtime, "IMPLEMENTATION");
+    await feed(runtime, "CODE_DELTA", { revision: 1, text: CODE }, "claim-code");
+    await runtime.settled();
+
+    await feed(
+      runtime,
+      "SPEECH_FINAL",
+      { transcript: "The time complexity is O(1)." },
+      "claim-turn",
+    );
+    await runtime.settled();
+
+    expect(runtime.snapshotState().candidateState.claimedTime).toBe("O(1)");
+    expect(runtime.snapshotState().milestones).toContain("COMPLEXITY_CLAIM_MISMATCH");
+    expect((await payloadsOf("MILESTONE")).map((payload) => payload["kind"]))
+      .toContain("COMPLEXITY_CLAIM_MISMATCH");
+  });
+
   it("coalesces a burst of deltas instead of parsing every revision", async () => {
     const runtime = build();
 

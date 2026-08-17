@@ -189,6 +189,7 @@ describe("gate — stale code", () => {
         candidateState: {
           ...emptyCandidateState(NOW),
           derivedFromRevision: 12,
+          codeObservedAt: NOW,
           claimedTime: "O(1)",
           detectedSolutionFamilyId: "sf-set-single-pass",
         },
@@ -208,6 +209,7 @@ describe("gate — stale code", () => {
         candidateState: {
           ...emptyCandidateState(NOW),
           derivedFromRevision: 20,
+          codeObservedAt: NOW,
           claimedTime: "O(1)",
           detectedSolutionFamilyId: "sf-set-single-pass",
         },
@@ -228,6 +230,7 @@ describe("gate — pacing", () => {
         candidateState: {
           ...emptyCandidateState(NOW),
           derivedFromRevision: 12,
+          codeObservedAt: NOW,
           claimedTime: "O(1)",
           detectedSolutionFamilyId: "sf-set-single-pass",
         },
@@ -350,6 +353,7 @@ describe("activity-aware policy (M4-3)", () => {
   const working = {
     ...emptyCandidateState(NOW),
     derivedFromRevision: 12,
+    codeObservedAt: NOW,
     claimedTime: "O(1)",
     detectedSolutionFamilyId: "sf-set-single-pass",
     implementationProgress: 0.8,

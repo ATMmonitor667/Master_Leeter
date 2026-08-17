@@ -26,15 +26,7 @@ export function InterviewerStatus({ state }: { state: InterviewerState }) {
     <div
       aria-live="polite"
       aria-label={`Interviewer ${label}`}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 12px",
-        border: "1px solid var(--border)",
-        borderRadius: 999,
-        background: "var(--panel)",
-      }}
+      className="interviewer-status"
     >
       <span
         style={{
@@ -47,8 +39,7 @@ export function InterviewerStatus({ state }: { state: InterviewerState }) {
           animation: state === "SPEAKING" ? "pulse 1.2s ease-in-out infinite" : undefined,
         }}
       />
-      <span style={{ color: "var(--muted)" }}>{label}</span>
-      <style>{`@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }`}</style>
+      <span>{label}</span>
     </div>
   );
 }

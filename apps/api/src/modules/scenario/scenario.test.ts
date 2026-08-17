@@ -9,6 +9,8 @@ import {
   accumulatedHintImpact,
   eligibleProbes,
   nextAllowedHintLevel,
+  rerankEligibleProbes,
+  selectFollowUp,
   selectProbeWording,
 } from "./probes.js";
 import { UnknownPredicateError, evaluateTrigger, validateScenarioTriggers } from "./triggers.js";
@@ -202,6 +204,17 @@ describe("triggers", () => {
     ).toBe(true);
   });
 
+  it("normalizes equivalent complexity notation before comparing", () => {
+    const equivalent = {
+      ...ctx,
+      scenario,
+      candidateState: { ...cs, claimedTime: "O( N )", detectedSolutionFamilyId: "sf-set-single-pass" },
+    };
+    expect(
+      evaluateTrigger("claimedTime.present && claimedTime != detectedFamily.timeComplexity", equivalent),
+    ).toBe(false);
+  });
+
   it("supports negation and milestone lookups", () => {
     const withMilestone = {
       ...ctx,
@@ -241,6 +254,12 @@ describe("probes and hint budget", () => {
     expect(probes[0]?.id).toBe("complexity_claim");
   });
 
+  it("reranks only eligible authored probes using evidence relevance", () => {
+    const ranked = rerankEligibleProbes(scenario, probeCtx());
+    expect(ranked[0]?.id).toBe("complexity_claim");
+    expect(ranked.every((probe) => scenario.probes.includes(probe))).toBe(true);
+  });
+
   it("respects maxUses", () => {
     const exhausted = eligibleProbes(scenario, probeCtx({ probeUseCounts: { complexity_claim: 2 } }));
     expect(exhausted.map((p) => p.id)).not.toContain("complexity_claim");
@@ -273,5 +292,25 @@ describe("probes and hint budget", () => {
   it("accumulates score impact for the report", () => {
     expect(accumulatedHintImpact(scenario, [])).toBe(0);
     expect(accumulatedHintImpact(scenario, [1, 2])).toBeCloseTo(0.2);
+  });
+});
+
+describe("follow-up selection", () => {
+  it("never repeats a follow-up that was already presented", () => {
+    const candidateState = {
+      ...emptyCandidateState("2026-08-17T00:00:00.000Z"),
+      detectedSolutionFamilyId: "sf-set-single-pass",
+      implementationProgress: 1,
+      milestonesReached: ["BASE_TESTS_PASS" as const],
+    };
+    const selected = selectFollowUp(scenario, {
+      scenario,
+      candidateState,
+      state: "FOLLOW_UP",
+      remainingMinutes: 10,
+      followUpsUsed: ["fu-streaming-window"],
+      solvedOptimally: true,
+    });
+    expect(selected).toBeNull();
   });
 });

@@ -233,23 +233,15 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
 
   const header = useMemo(
     () => (
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "10px 16px",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--panel)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <strong style={{ fontSize: 13, letterSpacing: "0.02em" }}>Master_Leeter</strong>
-          {!connected && (
-            <span style={{ color: "var(--warn)", fontSize: 12 }}>Reconnecting…</span>
-          )}
+      <header className="workspace-header">
+        <div className="workspace-header-left">
+          <div className="brand"><span className="brand-mark">ML</span><span className="brand-name">Master Leeter</span></div>
+          <span className={`connection-state${connected ? "" : " offline"}`}>
+            <span className="status-dot" />{connected ? "Connected" : "Reconnecting"}
+          </span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        <div className="workspace-stage">Live interview · Python</div>
+        <div className="workspace-header-right">
           <VoiceControls
             status={voiceStatus}
             muted={voiceMuted}
@@ -262,7 +254,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
           <Timer remainingSeconds={remaining} />
           {/* Deliberately plain. Ending an interview is a decision, not a
               call to action, and a prominent button invites misclicks. */}
-          <button onClick={onEnd} disabled={ending} style={{ fontSize: 12, padding: "4px 10px" }}>
+          <button onClick={onEnd} disabled={ending} className="ghost-button end-button">
             {ending ? "Ending…" : "End interview"}
           </button>
         </div>
@@ -284,43 +276,33 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   );
 
   return (
-    <main style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+    <main className="workspace">
       {header}
 
       <div
-        style={{
-          flex: 1,
-          opacity: restored ? 1 : 0.5,
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1.9fr) minmax(280px, 1fr)",
-          minHeight: 0,
-        }}
+        className={`workspace-grid${restored ? "" : " workspace-loading"}`}
       >
-        <section style={{ borderRight: "1px solid var(--border)", minHeight: 0 }}>
+        <section className="workspace-pane" aria-label="Code editor">
           <CodeEditor value={code} language="python" onChange={onCodeChange} />
         </section>
 
-        <aside
-          style={{
-            display: "grid",
-            gridTemplateRows: "minmax(0, 0.9fr) minmax(0, 0.55fr) minmax(0, 1.1fr)",
-            minHeight: 0,
-          }}
-        >
-          <div style={{ borderBottom: "1px solid var(--border)", minHeight: 0 }}>
+        <aside className="workspace-side" aria-label="Interview tools">
+          <div className="workspace-card">
             <Notepad value={notes} onChange={onNotesChange} />
           </div>
-          <div style={{ borderBottom: "1px solid var(--border)", minHeight: 0 }}>
+          <div className="workspace-card">
             <SpeechCaption onFinal={onSpeechFinal} />
           </div>
-          <TestPanel
-            input={testInput}
-            onInputChange={setTestInput}
-            onRun={onRun}
-            running={running}
-            runnerAvailable={runnerAvailable}
-            result={result}
-          />
+          <div className="workspace-card">
+            <TestPanel
+              input={testInput}
+              onInputChange={setTestInput}
+              onRun={onRun}
+              running={running}
+              runnerAvailable={runnerAvailable}
+              result={result}
+            />
+          </div>
         </aside>
       </div>
     </main>

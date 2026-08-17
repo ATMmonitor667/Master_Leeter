@@ -19,11 +19,17 @@
  * file produces a wall of confusing type errors that bury the actual cause.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const MIN_LINES = 8;
 const EXTENSIONS = /\.(ts|tsx|js|mjs|json|md|yml|yaml|sh)$/;
+const git = (...args) =>
+  execFileSync(
+    "git",
+    ["-c", `safe.directory=${process.cwd().replace(/\\/g, "/")}`, ...args],
+    { encoding: "utf8" },
+  );
 
 /**
  * Tracked AND new-but-not-ignored.
@@ -35,8 +41,8 @@ const EXTENSIONS = /\.(ts|tsx|js|mjs|json|md|yml|yaml|sh)$/;
  * adds new files without dragging in node_modules or anything else gitignored.
  */
 const files = [
-  ...execSync("git ls-files", { encoding: "utf8" }).split("\n"),
-  ...execSync("git ls-files --others --exclude-standard", { encoding: "utf8" }).split("\n"),
+  ...git("ls-files").split("\n"),
+  ...git("ls-files", "--others", "--exclude-standard").split("\n"),
 ].filter((f) => f && EXTENSIONS.test(f));
 
 const corrupted = [];

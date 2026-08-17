@@ -55,7 +55,7 @@ describe("the surface is exactly five tools", () => {
     expect(VOICE_TOOLS).toHaveLength(5);
   });
 
-  it("refuses anything else, including plausible-sounding names", () => {
+  it("refuses anything else, including plausible-sounding names", async () => {
     // A model will invent these. None of them are capabilities it has.
     for (const name of [
       "get_hidden_tests",
@@ -65,7 +65,7 @@ describe("the surface is exactly five tools", () => {
       "get_hint",
       "",
     ]) {
-      expect(call(name)).resolves.toMatchObject({ ok: false, refusal: "UNKNOWN_TOOL" });
+      await expect(call(name)).resolves.toMatchObject({ ok: false, refusal: "UNKNOWN_TOOL" });
     }
   });
 });

@@ -1,0 +1,7 @@
+{
+  "unwantedRecommendations": [
+    "imgildev.vscode-auto-barrel",
+    "davisoares.tsindexer",
+    "donutlaser.module-exports"
+  ]
+}

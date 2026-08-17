@@ -20,7 +20,14 @@ export {
   selectableScenarios,
 } from "./loader.js";
 export { getClarificationFact, matchFactKey } from "./clarification.js";
-export { eligibleProbes, highestPriorityEligibleProbe, nextAllowedHintLevel } from "./probes.js";
+export {
+  eligibleProbes,
+  highestPriorityEligibleProbe,
+  nextAllowedHintLevel,
+  rerankEligibleProbes,
+  selectRelevantProbe,
+  selectFollowUp,
+} from "./probes.js";
 export { evaluateTrigger, validateScenarioTriggers } from "./triggers.js";
 
 export interface ScenarioModuleOptions {

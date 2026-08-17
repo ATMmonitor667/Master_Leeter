@@ -14,6 +14,7 @@ import { SessionChannel } from "./channel.js";
 import { InMemoryEventLog } from "./event-log.js";
 import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
 import { reconstruct } from "./resume.js";
+import { buildSessionReview } from "./review.js";
 import { enqueueRun, handleRunRequestedEvent, type RunContext } from "./runs.js";
 import { InMemorySessionStore, SessionNotFoundError, remainingSeconds } from "./session-store.js";
 import { registerEventsSocket } from "./ws.js";
@@ -46,6 +47,7 @@ export {
   type LeaseState,
 } from "./lease.js";
 export { reconstruct, type ResumeState } from "./resume.js";
+export { buildSessionReview, reviewAsTsv, type ReviewEntry } from "./review.js";
 export { handleConnection, registerEventsSocket, type SocketLike } from "./ws.js";
 
 const CreateSessionBody = z.object({
@@ -385,6 +387,24 @@ export async function registerSessionModule(
       remainingSeconds: remainingSeconds(session, Date.now()),
       endedAt: session.endedAt,
     });
+  });
+
+  /**
+   * Post-session interviewer self-review (M4-5b).
+   *
+   * Ended sessions only: exposing authored wording while a round is live would
+   * turn a developer tool into a solution-content side channel.
+   */
+  app.get("/interview-sessions/:id/review", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (!session.endedAt) return reply.code(409).send({ error: "SESSION_ACTIVE" });
+    const loaded = opts.library.get(session.scenarioVersionId);
+    if (!loaded) return reply.code(409).send({ error: "SCENARIO_UNAVAILABLE" });
+
+    const entries = buildSessionReview(await eventLog.read(id), loaded.version);
+    return reply.send({ sessionId: id, entries });
   });
 
   app.post("/interview-sessions/:id/end", async (req, reply) => {

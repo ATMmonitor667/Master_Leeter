@@ -45,6 +45,14 @@ export const CandidateStateSchema = z.object({
 
   /** Code revision this state was derived from. Staleness guard input (M5-3). */
   derivedFromRevision: z.number().int().nonnegative().default(0),
+  /**
+   * When `derivedFromRevision` was actually observed.
+   *
+   * Optional for compatibility with older persisted events. A missing value is
+   * treated as unknown (and therefore unsafe for code-grounded speech), never
+   * as fresh.
+   */
+  codeObservedAt: z.string().datetime().nullable().optional(),
   updatedAt: z.string().datetime(),
 });
 export type CandidateState = z.infer<typeof CandidateStateSchema>;
@@ -66,6 +74,7 @@ export function emptyCandidateState(now: string): CandidateState {
     milestonesReached: [],
     confidence: { approach: 0, complexity: 0 },
     derivedFromRevision: 0,
+    codeObservedAt: null,
     updatedAt: now,
   };
 }

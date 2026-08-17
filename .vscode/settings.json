@@ -1,0 +1,35 @@
+{
+  // ---------------------------------------------------------------------
+  // Auto Barrel (imgildev.vscode-auto-barrel) is disabled for this repo.
+  //
+  // It writes `export * from './x';` into an index.ts whenever a new file
+  // appears beside one, and it is the identified cause of the four source
+  // corruptions logged in docs/YOUR-TASKS.md. Two of its defaults match the
+  // injected line exactly:
+  //
+  //   formatting.useSingleQuotes    true   -> './x'  (repo uses "./x")
+  //   files.keepExtensionOnExport   false  -> no .js (repo uses .js)
+  //
+  // This codebase hand-writes its barrels — apps/api/src/modules/*/index.ts
+  // carry doc comments and, in the orchestrator's case, real logic
+  // (assertActionPermitted). They are not generated files and must not be
+  // machine-rewritten.
+  //
+  // `autoBarrel.enable` is scope "resource", so this workspace setting is
+  // honoured. Disabling it in the Cursor UI is belt-and-braces, not required.
+  // ---------------------------------------------------------------------
+  "autoBarrel.enable": false,
+
+  // If it is ever deliberately re-enabled, at least make it emit this
+  // codebase's import style rather than its own defaults.
+  "autoBarrel.formatting.useSingleQuotes": false,
+  "autoBarrel.files.keepExtensionOnExport": true,
+  "autoBarrel.formatting.sortExports": "none",
+  "autoBarrel.files.ignoreFilePathPatternOnExport": [
+    "**/*.spec.*",
+    "**/*.test.*",
+    "**/*.e2e.*",
+    "**/index.ts",
+    "**/index.js"
+  ]
+}

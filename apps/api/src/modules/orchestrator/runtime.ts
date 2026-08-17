@@ -14,9 +14,12 @@ import {
 import {
   type MilestoneState,
   type SemanticSnapshot,
+  type TranscriptObservation,
+  applyComplexityMismatch,
   buildSnapshot,
   emptyMilestoneState,
   observe,
+  observeTranscript,
 } from "../observer/index.js";
 import { getHint, selectProbeWording } from "../scenario/probes.js";
 import { type IntentClassifier, type TurnClassification, ruleBasedClassifier } from "./classifier.js";
@@ -148,6 +151,8 @@ export class InterviewRuntime {
    * streak — which is the evidence a debugging probe is justified by.
    */
   private readonly pendingRuns: RunResult[] = [];
+  /** Finalized turns waiting for the asynchronous transcript observer. */
+  private readonly pendingTranscripts: TranscriptObservation[] = [];
 
   /**
    * A turn the gate held only because not enough silence had elapsed.
@@ -212,13 +217,19 @@ export class InterviewRuntime {
     authorized: GateDecision | null;
     utteranceId: string | null;
   } {
+    const authorized =
+      this.authorized && !this.staleGroundingReason(this.authorized.decision)
+        ? this.authorized
+        : null;
+    if (!authorized && this.authorized) this.authorized = null;
+
     return {
       state: this.state,
       candidateState: this.candidateState,
       probeUseCounts: this.probeUseCounts,
       answeredFactKeys: [...this.answeredFactKeys],
-      authorized: this.authorized?.decision ?? null,
-      utteranceId: this.authorized?.utteranceId ?? null,
+      authorized: authorized?.decision ?? null,
+      utteranceId: authorized?.utteranceId ?? null,
     };
   }
 
@@ -394,7 +405,19 @@ export class InterviewRuntime {
       endedAt: event.occurredAt,
     };
 
-    return this.judge(turn, classification, silenceMs, 0);
+    const result = await this.judge(turn, classification, silenceMs, 0);
+
+    // Observation starts only after this turn's gate decision. The transcript
+    // can inform a later probe, but it must never race the decision about the
+    // very utterance it came from.
+    this.pendingTranscripts.push({
+      transcript,
+      intent: classification.intent,
+      observedAt: event.occurredAt,
+    });
+    this.scheduleObservation();
+
+    return result;
   }
 
   /**
@@ -429,13 +452,24 @@ export class InterviewRuntime {
     };
 
     const ctx = this.buildContext(turn);
-    const decision = decideAction(ctx, {
+    let decision = decideAction(ctx, {
       scenario: this.deps.scenario,
       probeUseCounts: this.probeUseCounts,
       followUpsUsed: this.followUpsUsed,
       solvedOptimally: this.solvedOptimally(),
       briefDeliveryCount: this.briefDeliveryCount,
     });
+
+    const initiallyStale = this.staleGroundingReason(decision);
+    if (initiallyStale) {
+      decision = {
+        action: "STAY_SILENT",
+        reason: initiallyStale,
+        decidedByRule: true,
+      };
+    }
+
+    const freshness = this.groundingMetrics(decision);
 
     // Every decision is recorded, including silence. "Why didn't it speak at
     // 14:32?" has to be answerable from the log alone, and the classification
@@ -462,6 +496,7 @@ export class InterviewRuntime {
       ...(decision.groundedInRevision !== undefined
         ? { groundedInRevision: decision.groundedInRevision }
         : {}),
+      ...(freshness ? freshness : {}),
       ...(attempt > 0 ? { reevaluated: true } : {}),
     }, `action:${turn.turnId}:${attempt}`);
 
@@ -470,6 +505,32 @@ export class InterviewRuntime {
       this.candidateSpeechStarted = false;
       if (attempt === 0) this.holdForSilence(turn, classification, completion, silenceMs);
       return { decision, utterance: null };
+    }
+
+    // Appending yielded to the event log. A code delta can arrive during that
+    // await, so re-check at the actual speech boundary rather than assuming the
+    // gate's snapshot is still current.
+    const staleAtSpeech = this.staleGroundingReason(decision);
+    if (staleAtSpeech) {
+      const silenced = {
+        action: "STAY_SILENT" as const,
+        reason: staleAtSpeech,
+        decidedByRule: true,
+      };
+      await this.append(
+        "ACTION_DECIDED",
+        "INTERVIEWER",
+        {
+          turnId: turn.turnId,
+          ...silenced,
+          supersedesAction: decision.action,
+          freshnessRejected: true,
+          ...this.groundingMetrics(decision),
+        },
+        `action:${turn.turnId}:${attempt}:freshness`,
+      );
+      this.candidateSpeechStarted = false;
+      return { decision: silenced, utterance: null };
     }
 
     const utterance = await this.realize(decision, turn);
@@ -821,6 +882,43 @@ export class InterviewRuntime {
     return family?.isOptimal ?? false;
   }
 
+  /** Why code-grounded speech is unsafe right now, or null when it is fresh. */
+  private staleGroundingReason(decision: GateDecision): string | null {
+    if (decision.groundedInRevision === undefined) return null;
+
+    const lag = this.latestCodeRevision - decision.groundedInRevision;
+    if (lag !== 0) {
+      return `speech-time freshness rejected: grounded revision ${decision.groundedInRevision}, latest ${this.latestCodeRevision}`;
+    }
+
+    const observedAt = this.candidateState.codeObservedAt
+      ? Date.parse(this.candidateState.codeObservedAt)
+      : Number.NaN;
+    if (!Number.isFinite(observedAt)) {
+      return "speech-time freshness rejected: code observation age unknown";
+    }
+
+    const ageSeconds = Math.max(0, (this.now() - observedAt) / 1000);
+    if (ageSeconds > this.deps.policy.maxCodeStalenessSeconds) {
+      return `speech-time freshness rejected: observation ${ageSeconds.toFixed(1)}s old (max ${this.deps.policy.maxCodeStalenessSeconds}s)`;
+    }
+    return null;
+  }
+
+  /** Persisted on decisions so freshness can be monitored from the event log. */
+  private groundingMetrics(decision: GateDecision): Record<string, number> | null {
+    if (decision.groundedInRevision === undefined) return null;
+    const observedAt = this.candidateState.codeObservedAt
+      ? Date.parse(this.candidateState.codeObservedAt)
+      : Number.NaN;
+    return {
+      codeRevisionLag: this.latestCodeRevision - decision.groundedInRevision,
+      codeObservationAgeMs: Number.isFinite(observedAt)
+        ? Math.max(0, this.now() - observedAt)
+        : -1,
+    };
+  }
+
   // ── The observation path ───────────────────────────────────────────────────
 
   /**
@@ -855,6 +953,7 @@ export class InterviewRuntime {
       const revision = this.latestCodeRevision;
       const code = this.latestCode;
       const runs = this.pendingRuns.splice(0, this.pendingRuns.length);
+      const transcripts = this.pendingTranscripts.splice(0, this.pendingTranscripts.length);
 
       let snapshot: SemanticSnapshot | undefined;
       if (code.length > 0) {
@@ -894,6 +993,32 @@ export class InterviewRuntime {
         for (const run of runs) fold(run);
       }
 
+      for (const transcript of transcripts) {
+        const result = observeTranscript(
+          this.candidateState,
+          this.milestones,
+          this.deps.scenario,
+          transcript,
+        );
+        this.candidateState = result.state;
+        this.milestones = result.milestones;
+        emitted.push(...result.emitted);
+      }
+
+      // A claim can arrive before code is classifiable, or vice versa. Checking
+      // after both queues are folded makes either arrival order equivalent.
+      const mismatch = applyComplexityMismatch(
+        this.candidateState,
+        this.milestones,
+        this.deps.scenario,
+      );
+      this.milestones = mismatch.milestones;
+      emitted.push(...mismatch.emitted);
+      this.candidateState = {
+        ...this.candidateState,
+        milestonesReached: [...this.milestones.reached],
+      };
+
       const pass = this.observationCount++;
 
       if (snapshot) {
@@ -926,7 +1051,13 @@ export class InterviewRuntime {
         "SYSTEM",
         {
           derivedFromRevision: this.candidateState.derivedFromRevision,
+          codeObservedAt: this.candidateState.codeObservedAt ?? null,
           detectedSolutionFamilyId: this.candidateState.detectedSolutionFamilyId,
+          currentApproach: this.candidateState.currentApproach,
+          alternativesMentioned: this.candidateState.alternativesMentioned,
+          claimedTime: this.candidateState.claimedTime,
+          claimedSpace: this.candidateState.claimedSpace,
+          understoodConstraints: this.candidateState.understoodConstraints,
           implementationProgress: this.candidateState.implementationProgress,
           recentCodeActivity: this.candidateState.recentCodeActivity,
           stuckScore: this.candidateState.stuckScore,

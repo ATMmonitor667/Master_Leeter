@@ -17,6 +17,13 @@ export {
   type FunctionSummary,
   type SemanticSnapshot,
 } from "./semantic-snapshot.js";
+export {
+  applyComplexityMismatch,
+  extractComplexityClaims,
+  observeTranscript,
+  type TranscriptObservation,
+  type TranscriptObservationResult,
+} from "./transcript.js";
 
 /**
  * Candidate Observer — code half (M5-1).
@@ -82,6 +89,7 @@ export function observe(input: ObserverInput): ObserverResult {
     // compares it against the latest revision the server has seen — commenting
     // on code that has already changed is a visible product failure.
     next.derivedFromRevision = input.snapshot.revision;
+    next.codeObservedAt = input.now;
 
     if (next.detectedSolutionFamilyId) {
       next.confidence = { ...next.confidence, approach: 0.8 };

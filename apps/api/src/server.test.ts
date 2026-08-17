@@ -131,6 +131,26 @@ describe("POST /v1/interview-sessions/:id/end", () => {
   });
 });
 
+describe("GET /v1/interview-sessions/:id/review", () => {
+  it("is unavailable until the session ends, then returns annotation rows", async () => {
+    const server = app();
+    const created = await server.inject({
+      method: "POST",
+      url: "/v1/interview-sessions",
+      headers: { "idempotency-key": "review-1" },
+      payload: { scenarioRef: scenarioRef("conveyor-rescan@1") },
+    });
+    const { sessionId } = created.json();
+    const active = await server.inject({ method: "GET", url: `/v1/interview-sessions/${sessionId}/review` });
+    expect(active.statusCode).toBe(409);
+
+    await server.inject({ method: "POST", url: `/v1/interview-sessions/${sessionId}/end` });
+    const ended = await server.inject({ method: "GET", url: `/v1/interview-sessions/${sessionId}/review` });
+    expect(ended.statusCode).toBe(200);
+    expect(ended.json()).toMatchObject({ sessionId, entries: [] });
+  });
+});
+
 describe("GET /v1/interview-sessions/:id/report", () => {
   it("produces a report after the session ends", async () => {
     const server = app();

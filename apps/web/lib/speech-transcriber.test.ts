@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   SpeechTranscriber,
+  speechRecognitionAvailable,
   type SpeechRecognitionLike,
   type SpeechRecognitionResultEventLike,
 } from "./speech-transcriber";
@@ -20,6 +21,10 @@ class FakeRecognition implements SpeechRecognitionLike {
 }
 
 describe("SpeechTranscriber", () => {
+  it("is safe to feature-detect during server rendering", () => {
+    expect(speechRecognitionAvailable()).toBe(false);
+  });
+
   it("reports unsupported when SpeechRecognition is missing", () => {
     const onStatus = vi.fn();
     const onError = vi.fn();

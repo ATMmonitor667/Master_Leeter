@@ -51,11 +51,14 @@ type SpeechWindow = Window & {
   webkitSpeechRecognition?: SpeechRecognitionConstructor;
 };
 
-export function speechRecognitionAvailable(win: SpeechWindow = window as SpeechWindow): boolean {
-  return Boolean(win.SpeechRecognition ?? win.webkitSpeechRecognition);
+export function speechRecognitionAvailable(win?: SpeechWindow): boolean {
+  const target =
+    win ?? (typeof window === "undefined" ? undefined : (window as SpeechWindow));
+  return Boolean(target?.SpeechRecognition ?? target?.webkitSpeechRecognition);
 }
 
 function defaultCreateRecognition(): SpeechRecognitionLike | null {
+  if (typeof window === "undefined") return null;
   const win = window as SpeechWindow;
   const Ctor = win.SpeechRecognition ?? win.webkitSpeechRecognition;
   if (!Ctor) return null;

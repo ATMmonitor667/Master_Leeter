@@ -37,19 +37,12 @@ export function DimensionCard({
   const confidence = confidenceLabel(dimension.confidence);
 
   return (
-    <section
-      style={{
-        border: "1px solid var(--border)",
-        borderRadius: 10,
-        padding: 16,
-        background: "var(--panel)",
-      }}
-    >
-      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
-        <h3 style={{ margin: 0, fontSize: 15 }}>
+    <section className="dimension-card">
+      <header className="dimension-header">
+        <h3>
           {DIMENSION_LABELS[dimension.dimension] ?? dimension.dimension}
         </h3>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+        <div className="dimension-score">
           <span style={{ fontFamily: "var(--mono)", fontSize: 18 }}>
             {dimension.score.toFixed(1)}
           </span>
@@ -61,22 +54,13 @@ export function DimensionCard({
       <p style={{ color: "var(--muted)", margin: "10px 0 0", lineHeight: 1.55 }}>{dimension.rationale}</p>
 
       {dimension.evidence.length > 0 ? (
-        <ul style={{ listStyle: "none", padding: 0, margin: "14px 0 0", display: "grid", gap: 8 }}>
+        <ul className="evidence-list">
           {dimension.evidence.map((moment) => (
             <li
               key={`${moment.seq}-${moment.evidenceHash}`}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "48px 1fr",
-                gap: 10,
-                fontSize: 13,
-                padding: "8px 10px",
-                background: "var(--bg)",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-              }}
+              className="evidence-row"
             >
-              <span style={{ fontFamily: "var(--mono)", color: "var(--muted)" }}>
+              <span className="evidence-time">
                 {relativeTime(moment.occurredAt, startedAt)}
               </span>
               <span>

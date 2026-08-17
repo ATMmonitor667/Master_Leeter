@@ -120,17 +120,21 @@ function evaluateTerm(term: string, ctx: TriggerContext): boolean {
     if (!left || !op || !right) throw new UnknownPredicateError(term);
     const l = resolve(left, ctx);
     const r = resolve(right, ctx);
+    const comparable =
+      left === "claimedTime" || left === "claimedSpace" || right.includes("Complexity")
+        ? [normalizeComplexityValue(l), normalizeComplexityValue(r)]
+        : [l, r];
 
     switch (op) {
       case "==":
-        return l === r;
+        return comparable[0] === comparable[1];
       case "!=":
         // A null claim is not a mismatch — it's an absence. Requiring
         // `claimedTime.present` alongside is the author's job, but treating
         // "unknown" as "wrong" would fire complexity probes at candidates who
         // never made a claim.
         if (l === null || r === null) return false;
-        return l !== r;
+        return comparable[0] !== comparable[1];
       case ">=":
         return numeric(l) >= numeric(r);
       case "<=":
@@ -141,6 +145,12 @@ function evaluateTerm(term: string, ctx: TriggerContext): boolean {
   }
 
   throw new UnknownPredicateError(term);
+}
+
+function normalizeComplexityValue(value: string | number | null): string | number | null {
+  return typeof value === "string"
+    ? value.toLowerCase().replace(/\s+/g, "").replace(/\^/g, "")
+    : value;
 }
 
 function resolve(token: string, ctx: TriggerContext): string | number | null {

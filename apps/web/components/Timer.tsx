@@ -29,10 +29,7 @@ export function Timer({ remainingSeconds }: { remainingSeconds: number }) {
   const seconds = local % 60;
 
   return (
-    <div
-      aria-label="Time remaining"
-      style={{ fontFamily: "var(--mono)", fontSize: 15, color: "var(--muted)" }}
-    >
+    <div aria-label="Time remaining" className="timer">
       {minutes}:{String(seconds).padStart(2, "0")}
     </div>
   );

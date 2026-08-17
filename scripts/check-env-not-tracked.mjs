@@ -6,10 +6,14 @@
  *   node scripts/check-env-not-tracked.mjs
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-const TRACKED = execSync("git ls-files", { encoding: "utf8" })
+const TRACKED = execFileSync(
+  "git",
+  ["-c", `safe.directory=${process.cwd().replace(/\\/g, "/")}`, "ls-files"],
+  { encoding: "utf8" },
+)
   .split("\n")
   .filter(Boolean);
 
