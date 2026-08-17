@@ -6,6 +6,7 @@ import {
   type RealtimeTransportHandlers,
   type SpeechBoundary,
   type VoiceCredential,
+  type VoiceToolCall,
 } from "./realtime-voice";
 import { Vad } from "./vad";
 
@@ -36,7 +37,12 @@ interface Harness {
   clock: () => number;
 }
 
-function build(options: { vad?: Vad } = {}): Harness {
+function build(
+  options: {
+    vad?: Vad;
+    callTool?: (call: VoiceToolCall) => Promise<Record<string, unknown>>;
+  } = {},
+): Harness {
   const sent: Array<Record<string, unknown>> = [];
   const boundaries: SpeechBoundary[] = [];
   const audio: Int16Array[] = [];
@@ -55,6 +61,7 @@ function build(options: { vad?: Vad } = {}): Harness {
     credential: CREDENTIAL,
     captureRate: 48_000,
     ...(options.vad ? { vad: options.vad } : {}),
+    ...(options.callTool ? { callTool: options.callTool } : {}),
     now: () => t,
     connect: (h) => {
       handlers = h;
@@ -115,16 +122,16 @@ function sentKinds(sent: Array<Record<string, unknown>>): string[] {
   return sent.flatMap((m) => Object.keys(m));
 }
 
-describe("nothing on this object can make the model speak", () => {
+describe("only an authorization can make the model speak", () => {
   /**
-   * The reason the class exists in this shape.
+   * The narrowed guarantee after M3-5.
    *
-   * Audio is produced when a client sends clientContent with turnComplete.
-   * M3-5 owns that, under gate authorization. The component holding the
-   * microphone must be structurally incapable of it — invariant 1 as class
-   * design rather than as a convention someone has to remember.
+   * Audio is produced by clientContent with turnComplete. Exactly one method
+   * sends it and it takes a server-minted authorization; everything the
+   * microphone drives must remain incapable — invariant 1 as class design
+   * rather than a convention someone has to remember.
    */
-  it("never sends clientContent or turnComplete, whatever it is driven with", () => {
+  it("never sends clientContent from any input-driven path", () => {
     const h = build();
 
     h.speak(400);
@@ -149,6 +156,58 @@ describe("nothing on this object can make the model speak", () => {
     h.quiet(800);
 
     expect(new Set(sentKinds(h.sent))).toEqual(new Set(["setup", "realtimeInput"]));
+  });
+
+  it("speaks when, and only when, handed an authorization", () => {
+    const h = build();
+    h.speak(400);
+    h.quiet(800);
+    expect(JSON.stringify(h.sent)).not.toContain("turnComplete");
+
+    h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "utt-turn-7" });
+
+    const content = h.sent.find((m) => m["clientContent"]) as
+      | { clientContent: { turnComplete: boolean; turns: Array<{ parts: Array<{ text: string }> }> } }
+      | undefined;
+
+    expect(content?.clientContent.turnComplete).toBe(true);
+    // The id is the server's, echoed back. The client cannot mint one.
+    expect(content?.clientContent.turns[0]?.parts[0]?.text).toContain("utt-turn-7");
+  });
+
+  /**
+   * Why requestSpeech is safe to exist at all.
+   *
+   * It carries no wording. A tampered client calling it unprompted produces a
+   * model that asks the tool surface for a probe and is refused server-side — a
+   * wasted round trip, not an invented interview turn.
+   */
+  it("sends no scenario wording when asking the model to speak", () => {
+    const h = build();
+    h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "utt-1" });
+
+    const wire = JSON.stringify(h.sent);
+    expect(wire).toContain("get_probe_wording");
+    expect(wire).not.toMatch(/duplicate|scanner|conveyor/i);
+  });
+
+  it("does nothing when asked to speak before the session is ready", () => {
+    const sent: Array<Record<string, unknown>> = [];
+    let handlers!: RealtimeTransportHandlers;
+    const voice = new RealtimeVoice({
+      credential: CREDENTIAL,
+      captureRate: 48_000,
+      connect: (h) => {
+        handlers = h;
+        return { send: (d) => sent.push(JSON.parse(d)), close: () => {}, connected: true };
+      },
+    });
+
+    voice.connect();
+    handlers.onOpen();
+    voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "utt-1" });
+
+    expect(JSON.stringify(sent)).not.toContain("clientContent");
   });
 
   it("refuses a credential that does not disable automatic activity detection", () => {
@@ -349,5 +408,57 @@ describe("degradation", () => {
 
     expect(h.errors).toHaveLength(1);
     expect(h.errors[0]?.message).toContain("1011");
+  });
+});
+
+describe("tool calls are relayed, never answered here", () => {
+  /**
+   * The five tools read pinned scenario content and check the gate's
+   * authorization. Neither may live in a browser the candidate controls, so the
+   * client forwards the call and returns whatever the server says.
+   */
+  it("forwards a tool call and returns the server's answer", async () => {
+    const relayed: VoiceToolCall[] = [];
+    const h = build({
+      callTool: async (call) => {
+        relayed.push(call);
+        return { ok: true, data: { wording: "why that complexity?" } };
+      },
+    });
+
+    h.receive({ toolCall: { functionCalls: [{ id: "c1", name: "get_probe_wording", args: {} }] } });
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(relayed).toEqual([{ id: "c1", name: "get_probe_wording", args: {} }]);
+
+    const response = h.sent.find((m) => m["toolResponse"]) as
+      | { toolResponse: { functionResponses: Array<{ id: string; response: unknown }> } }
+      | undefined;
+    expect(response?.toolResponse.functionResponses[0]?.id).toBe("c1");
+  });
+
+  it("answers with a refusal when the relay fails, rather than stalling the turn", async () => {
+    const h = build({
+      callTool: async () => {
+        throw new Error("network");
+      },
+    });
+
+    h.receive({ toolCall: { functionCalls: [{ id: "c1", name: "get_probe_wording", args: {} }] } });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // A model left waiting on a function response stalls, and a stalled turn is
+    // indistinguishable from the interviewer choosing to say nothing.
+    expect(JSON.stringify(h.sent.find((m) => m["toolResponse"]))).toContain("RELAY_FAILED");
+  });
+
+  it("never answers a tool call locally when no relay is wired", async () => {
+    const h = build();
+    h.receive({ toolCall: { functionCalls: [{ id: "c1", name: "get_probe_wording", args: {} }] } });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Refusing beats inventing. A client-side answer would bypass every check
+    // the tool surface exists to perform.
+    expect(JSON.stringify(h.sent.find((m) => m["toolResponse"]))).toContain("NO_RELAY");
   });
 });

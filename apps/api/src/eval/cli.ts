@@ -2,25 +2,37 @@ import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadScenarioFile } from "../modules/scenario/loader.js";
+import { checkContentThresholds, runContentEval } from "./content.js";
 import { assertAnnotationsResolve, runEvalSuite } from "./harness.js";
 import { DEFAULT_THRESHOLDS, checkThresholds } from "./metrics.js";
-import { CSV_HEADER, formatCsvRow, formatFailures, formatSuite, formatViolations } from "./report.js";
+import {
+  CSV_HEADER,
+  formatContentEval,
+  formatCsvRow,
+  formatFailures,
+  formatSuite,
+  formatViolations,
+} from "./report.js";
 
 /**
- * `pnpm eval` — the interruption eval harness as a command (M4-4).
+ * `pnpm eval` — the interruption eval (M4-4) plus the content eval (M4-4b) as
+ * one command.
  *
- * Prints the metric table, every violation with the gate's own reason, and exits
- * non-zero on a threshold failure so CI fails the build on regression.
+ * Prints both metric tables, every violation with its own reason, and exits
+ * non-zero if either suite has a threshold failure so CI fails the build on
+ * regression.
  *
- *   pnpm eval                     table + violations
- *   pnpm eval --csv metrics.csv   also append one row for the trend line
+ *   pnpm eval                     both tables + violations
+ *   pnpm eval --csv metrics.csv   also append one row for the trend line (M4-4 only)
  *
- * Every threshold failure is printed before exiting. Dying on the first one hides
- * the rest, and you end up fixing them one commit at a time.
+ * Every threshold failure across both suites is printed before exiting. Dying
+ * on the first one hides the rest, and you end up fixing them one commit at a
+ * time.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCENARIO_PATH = join(here, "../../../../content/scenarios/conveyor-rescan/v1.yaml");
+const CONTENT_ROOT = join(here, "../../../../content/scenarios");
 
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
@@ -33,11 +45,11 @@ async function main(): Promise<number> {
 
   const scenario = (await loadScenarioFile(SCENARIO_PATH)).version;
   const suite = runEvalSuite(scenario);
-  const failures = checkThresholds(suite, DEFAULT_THRESHOLDS);
+  const suiteFailures = checkThresholds(suite, DEFAULT_THRESHOLDS);
 
   process.stdout.write(formatSuite(suite, DEFAULT_THRESHOLDS));
   process.stdout.write(formatViolations(suite));
-  process.stdout.write(formatFailures(failures));
+  process.stdout.write(formatFailures(suiteFailures));
 
   if (csvPath) {
     if (!existsSync(csvPath)) writeFileSync(csvPath, `${CSV_HEADER}\n`, "utf8");
@@ -45,6 +57,16 @@ async function main(): Promise<number> {
     process.stdout.write(`  appended to ${csvPath}\n\n`);
   }
 
+  // M4-4b runs against every scenario in the library, not just the one M4-4
+  // uses for the bot suite — every clarification answer and every hint ceiling
+  // that a real session could hit, not one fixture's worth.
+  const contentSuite = await runContentEval(CONTENT_ROOT);
+  const contentFailures = checkContentThresholds(contentSuite);
+
+  process.stdout.write(formatContentEval(contentSuite));
+  process.stdout.write(formatFailures(contentFailures));
+
+  const failures = [...suiteFailures, ...contentFailures];
   return failures.length === 0 ? 0 : 1;
 }
 

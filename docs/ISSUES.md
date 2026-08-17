@@ -15,13 +15,17 @@ which needs human graders. M4-1 and M4-2 are in — the interviewer now judges t
 words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
 transcript half is unblocked now that the classifier exists.
 
-**M3 (voice) is the whole critical path.** M3-1 is verified against the live API, and M3-2 is
-code complete: the browser can be issued a credential, that credential is what enforces silence
-control, and the client now emits `SPEECH_STARTED` / `SPEECH_STOPPED` — the input M4-2's timing
-half has been waiting for. Five open issues remain.
+**M3 (voice) is code complete.** M3-1 is verified against the live API; M3-2 through M3-7 are
+written, wired and green in CI. The path exists end to end: credential → constrained socket →
+VAD → turn completion → gate → authorization → tool surface → speech.
 
-**Nothing has been spoken into a microphone yet.** That single session is now the whole
-measurement, and every remaining estimate in this file is inference until it happens.
+**Nothing has been spoken into a microphone yet, and that has not changed.** Every claim above
+is a claim about code, not about an interview. The single session remains the whole
+measurement, and every estimate in this file is inference until it happens.
+
+What that session is expected to exercise for the first time: brief delivery on connect,
+probes arriving after think-aloud turns (the re-evaluation fix), the persona's brevity, and
+barge-in cutting real audio.
 
 M3-1 is done on a stronger standard than the rest of this file: it has been run against the
 live API, and the run **failed first time** on a request shape 29 green unit tests could not
@@ -371,15 +375,15 @@ in the event log with plausible `silenceMs` between them.
 - [ ] Run one session with a real microphone and record what happened here.
 - [ ] Confirm barge-in actually cuts model audio (needs M3-5 before there is audio to cut).
 
-### `[ ]` M3-3 · Voice agent tool surface · M
+### `[x]` M3-3 · Voice agent tool surface · M
 **Deps:** M1-2, M1-4.
 Exactly five tools: `get_interview_context`, `get_clarification_fact`, `get_probe_wording`, `get_follow_up`, `record_delivery`.
 **Acceptance:** the backend validates current state and action permission before executing any tool; no arbitrary data access exists.
 
-### `[ ]` M3-4 · Oral brief delivery · M
+### `[x]` M3-4 · Oral brief delivery · M
 **Deps:** M3-3, M1-1. Authored opening script, repeat via reviewed variants, bounded paraphrase preserving canonical facts.
 
-### `[ ]` M3-5 · Wire orchestrator → response creation · M
+### `[x]` M3-5 · Wire orchestrator → response creation · M
 **Deps:** M0-1, M1-3, M3-2.
 Manual response creation only. The gate's authorized action is the sole trigger for speech.
 **Acceptance:** no configuration exists in which the model can speak without gate authorization.
@@ -410,7 +414,7 @@ interviewer.
 that it reaches the model through the credential, never reaches the browser, and addresses
 each habit the first real session flagged. Whether it *sounds* right needs M3-5 and a human.
 
-### `[ ]` M3-7 · Prompt-injection containment test · S
+### `[x]` M3-7 · Prompt-injection containment test · S
 **Deps:** M3-5. Run the M1-6 injection fixtures against the live voice path.
 
 ---
@@ -529,8 +533,31 @@ caveat compounds it: Gemini's turn boundaries are currently our own `activity_en
 echoed back, so the *quality* of `silenceMs` in production is M3-2's problem before it is this
 module's. The thresholds are starting points, not findings — M4-5b tunes them.
 
-### `[ ]` M4-3 · Activity-aware policy · M
+### `[x]` M4-3 · Activity-aware policy · M
 **Deps:** M2-5, M1-3. Code activity in last N seconds, stall duration, `stuckScore` feeding gate inputs.
+
+Two policy fields, both per-mode data rather than code: `interruptQuietSeconds` (MOCK 4) and
+`stallSeconds` (MOCK 90).
+
+**Suppression.** An unsolicited action now also requires the candidate's *hands* to be still.
+A probe landing between two keystrokes is an interruption even when the turn genuinely ended
+— finishing a sentence is not the same as being free. Answers to questions and requested
+hints are exempt: someone who asks mid-edit still asked, and making them wait for an idle
+editor reads as not having heard them.
+
+**Stall pressure.** A quiet editor now contributes to being stuck, on a ramp from
+`stallSeconds` to twice it — gradual, because a hard step makes two near-identical silences
+produce opposite behaviour, which reads as the thing not paying attention.
+
+**The condition that keeps it from becoming an impatience rule:** pressure is 0 until the
+candidate has written something. A quiet editor during APPROACH_EXPLORATION is the stage
+working as intended — they are thinking, usually out loud. Without that requirement the
+long-thinker trajectory earns an unsolicited hint for thinking before typing, which is the
+exact failure the product exists to avoid. "Was working and stopped" counts; "has not
+started" does not.
+
+Before this, unsolicited hints were close to unreachable: `stuckScore` only moved on repeated
+identical failures, so MOCK's 0.7 threshold needed three of them.
 
 ### `[x]` M4-4 · Interruption eval harness · M — **uncompiled, see note**
 **Deps:** M1-6, M4-1. Automated unwanted-interruption and missed-response rates over the bot suite, reported per commit.
@@ -566,8 +593,20 @@ registry was available. Treat as "written and unit-verified", not "green".
 **Also partly delivers the reduced M7-5:** `pnpm eval --csv metrics.csv` appends one row per
 run, which is the trend line the cut dashboard was for.
 
-### `[ ]` M4-4b · Leakage + factuality eval sets · M
+### `[x]` M4-4b · Leakage + factuality eval sets · M
 **Deps:** M1-4, M1-5. Every clarification answer matches a canonical fact; no probe or hint exceeds the mode's permitted disclosure. **Fails the build on regression.**
+
+`src/eval/factuality.ts` replays every authored `askedAs` phrasing through the real
+`getClarificationFact` matcher: the resolved fact key and value must match verbatim, AFTER_PROBE
+facts must be unanswerable before any probe has fired, and a set of off-topic utterances must
+never match anything (no hallucinated answers). `src/eval/leakage.ts` drives `selectProbeWording`
+(only ever authored variants, never invented) and `nextAllowedHintLevel` under all three real mode
+policies pushed well past budget (never exceeds `maxHintLevel`, never exceeds `hintBudget`, never
+resurrects a hint after the gate goes quiet). `src/eval/content.ts` runs both checks over every
+scenario version under `content/scenarios` — not only ACTIVE ones, since a retired version a
+session pinned must stay honest too (invariant 4) — and gates at zero violations either way.
+Folded into `pnpm eval` alongside M4-4, so the existing CI step covers it with no workflow change.
+52 new tests; full suite (595 tests) and monorepo typecheck stay green.
 
 ### `[-]` M4-5 · Human review round · M — **cut, replaced by M4-5b**
 **Deps:** M4-4, M3-*. ≥ 20 real sessions rated by experienced engineers.

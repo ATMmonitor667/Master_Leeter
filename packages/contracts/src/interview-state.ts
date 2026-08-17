@@ -31,6 +31,16 @@ export type InterviewState = z.infer<typeof InterviewStateSchema>;
  */
 export const INTERVIEW_ACTIONS = [
   "STAY_SILENT",
+  /**
+   * Speak the authored oral brief (M3-4).
+   *
+   * The interview's one unconditional utterance: the candidate cannot start
+   * without it, so there is no judgement about whether to say it — only about
+   * when, and about which reviewed wording. It still goes through the gate,
+   * because invariant 1 admits no exceptions and an utterance that bypassed the
+   * gate would be an utterance with no ACTION_DECIDED behind it in the log.
+   */
+  "DELIVER_BRIEF",
   "ACKNOWLEDGE_BRIEFLY",
   "ANSWER_CLARIFICATION",
   "ASK_PROBE",
@@ -51,11 +61,15 @@ export type InterviewAction = z.infer<typeof InterviewActionSchema>;
  * programming error, and the orchestrator throws rather than degrading to it.
  */
 export const ALLOWED_ACTIONS: Record<InterviewState, readonly InterviewAction[]> = {
-  ORAL_PROBLEM_DELIVERY: ["STAY_SILENT", "TRANSITION_STAGE"],
+  ORAL_PROBLEM_DELIVERY: ["STAY_SILENT", "DELIVER_BRIEF", "TRANSITION_STAGE"],
   CLARIFICATION: [
     "STAY_SILENT",
     "ACKNOWLEDGE_BRIEFLY",
     "ANSWER_CLARIFICATION",
+    // "Sorry, can you say that again?" is normal interview behaviour, not an
+    // accommodation, and it must not be answered by paraphrase — the reviewed
+    // repeat variants exist so a second telling cannot leak more than the first.
+    "DELIVER_BRIEF",
     "TRANSITION_STAGE",
   ],
   APPROACH_EXPLORATION: [
@@ -155,6 +169,23 @@ export const InterviewPolicySchema = z.object({
    * alone. Between this and the minimum, the ceiling ramps.
    */
   settledTurnEndSilenceMs: z.number().int().min(0),
+  /**
+   * Code quiet required before the interviewer may START something (M4-3).
+   *
+   * Answers to questions ignore this — someone who asks a question while typing
+   * still asked. It governs the unsolicited actions: a probe landing between two
+   * keystrokes is an interruption even when the turn genuinely ended, and
+   * "they finished a sentence" is not the same as "they are free".
+   */
+  interruptQuietSeconds: z.number().int().min(0),
+  /**
+   * Code quiet after which a candidate who WAS working counts as stalled.
+   *
+   * Only meaningful once something has been written. Silence before any code
+   * exists is thinking — the approach-exploration stage is made of it — and
+   * treating that as a stall turns the hint rule into an impatience rule.
+   */
+  stallSeconds: z.number().int().min(1),
   /** Maximum age, in seconds, of a code revision an interviewer response may reference. */
   maxCodeStalenessSeconds: z.number().int().min(1),
   expectedMinutes: z.number().int().min(1),

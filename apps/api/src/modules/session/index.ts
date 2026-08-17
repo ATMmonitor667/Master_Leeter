@@ -2,7 +2,12 @@ import { InterviewModeSchema, type ServerMessage, type SessionEvent } from "@mas
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.js";
-import { MintLimiter, RealtimeTokenError, type RealtimeTokenMinter } from "../realtime/index.js";
+import {
+  MintLimiter,
+  RealtimeTokenError,
+  executeVoiceTool,
+  type RealtimeTokenMinter,
+} from "../realtime/index.js";
 import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
 import { SessionChannel } from "./channel.js";
@@ -48,6 +53,11 @@ const CreateSessionBody = z.object({
   scenarioRef: z.string().min(1),
   mode: InterviewModeSchema.default("MOCK"),
   language: z.string().default("python"),
+});
+
+const VoiceToolBody = z.object({
+  name: z.string().min(1),
+  args: z.record(z.unknown()).default({}),
 });
 
 const RunBody = z.object({
@@ -234,12 +244,41 @@ export async function registerSessionModule(
           { sessionId, action: decision.action, reason: decision.reason },
           "interviewer authorized to speak",
         );
+
+        /**
+         * M3-5. The client is told THAT the interviewer may speak, never what it
+         * will say.
+         *
+         * The wording is authored scenario content — probe variants, hint text,
+         * a canonical fact — and putting it on this channel would land it in the
+         * browser where a candidate can read ahead. The voice agent fetches it
+         * from the tool surface instead, which checks the same authorization
+         * this message reflects.
+         */
+        const utteranceId = (utterance as { utteranceId?: string } | null)?.utteranceId;
+        pushToSession(sessionId, {
+          kind: "ACTION",
+          action: decision.action,
+          ...(utteranceId ? { utteranceId } : {}),
+        } as ServerMessage);
         void utterance;
 
-        // No audio pipeline yet, so the utterance is "finished" the instant it
-        // is produced. M3-5 replaces this with the realtime response-done
-        // event, at which point barge-in has a real window to interrupt.
-        runtime?.markSpeechFinished();
+        /**
+         * Close the window only when nobody can tell us it closed.
+         *
+         * The authorization is what the voice tool surface checks, so clearing
+         * it here unconditionally — which is what this did — meant the browser
+         * received ACTION, asked the model to speak, the model called
+         * get_probe_wording, and got NOT_AUTHORIZED. Every voice turn died
+         * silently, and the log showed a perfectly good decision behind it.
+         *
+         * With a socket attached the client reports completion (see
+         * /voice-utterance-complete) once the model's audio ends, which is also
+         * when barge-in stops applying. With no socket there is nothing to
+         * report it, and leaving the flag set would make gate rule 1 read every
+         * later turn as a barge-in and mute the interviewer for good.
+         */
+        if (!sessionPushers.has(sessionId)) runtime?.markSpeechFinished();
       }
   }
 
@@ -519,6 +558,124 @@ export async function registerSessionModule(
         message: "Could not obtain a voice credential. Retry shortly.",
       });
     }
+  });
+
+  /**
+   * Voice agent tool relay (M3-5, completing M3-3).
+   *
+   * Gemini Live delivers tool calls to whoever holds the socket, which is the
+   * browser. So the browser relays them here rather than answering them: the
+   * five tools read pinned scenario content and check the gate's authorization,
+   * and neither of those may live in a client the candidate controls.
+   *
+   * The browser therefore sees a tool result in flight. That is a real and
+   * accepted narrowing of invariant 2 — it is transient, never rendered, and the
+   * alternative is holding the Live socket server-side and relaying audio both
+   * ways, which ADR-001 did not choose. What must never happen is the wording
+   * arriving unsolicited on the app channel, and it does not.
+   */
+  /**
+   * The voice session is connected and can be spoken through (M3-4).
+   *
+   * This is what opens the interview. SESSION_STARTED is appended at creation
+   * but was never dispatched to the orchestrator, so `openInterview` — the whole
+   * brief-delivery path — was unreachable: the problem only got delivered if the
+   * candidate happened to speak first, which is backwards, since they are
+   * waiting to hear it.
+   *
+   * It is deliberately driven by the CLIENT being ready rather than by session
+   * creation. A brief delivered before anything could play it is a brief nobody
+   * hears, and the authorization would be spent on silence.
+   *
+   * Replays through the same path: the opening is triggered by ingesting the
+   * logged SESSION_STARTED, so a replay reaches it without this route existing.
+   */
+  app.post("/interview-sessions/:id/voice-ready", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+
+    const started = (await eventLog.read(id)).find((e) => e.type === "SESSION_STARTED");
+    if (!started) return reply.code(409).send({ error: "NO_SESSION_STARTED" });
+
+    // Idempotent by construction: the gate only authorizes the brief while
+    // briefDeliveryCount is 0, so a retried call decides STAY_SILENT.
+    await dispatch(started);
+    return reply.send({ ok: true });
+  });
+
+  /**
+   * The interviewer's audio finished (M3-5).
+   *
+   * Reported by the browser when the model's turn completes. Two things end
+   * here: the authorization the tool surface checks, and the window in which a
+   * candidate speaking counts as barge-in.
+   */
+  app.post("/interview-sessions/:id/voice-utterance-complete", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const runtime = runtimes.get(id);
+    if (!runtime) return reply.code(409).send({ error: "NO_LIVE_SESSION" });
+
+    runtime.markSpeechFinished();
+    return reply.send({ ok: true });
+  });
+
+  app.post("/interview-sessions/:id/voice-tool", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+
+    const body = VoiceToolBody.safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
+    }
+
+    const scenario = opts.library.get(session.scenarioVersionId);
+    const runtime = runtimes.get(id);
+    if (!scenario || !runtime) {
+      // No live orchestrator means no authorization to check against, and an
+      // unchecked tool call is exactly what this surface exists to prevent.
+      return reply.code(409).send({ error: "NO_LIVE_SESSION" });
+    }
+
+    const voice = runtime.voiceContext();
+
+    const result = await executeVoiceTool(
+      { name: body.data.name, args: body.data.args },
+      {
+        scenario: scenario.version,
+        state: voice.state,
+        remainingSeconds: remainingSeconds(session, Date.now()),
+        candidateState: voice.candidateState,
+        probeUseCounts: voice.probeUseCounts,
+        answeredFactKeys: voice.answeredFactKeys,
+        authorized: voice.authorized,
+      },
+      {
+        recordDelivery: async (entry) => {
+          await eventLog.append({
+            sessionId: id,
+            type: "BRIEF_DELIVERED",
+            actor: "INTERVIEWER",
+            scenarioVersionId: session.scenarioVersionId,
+            payload: { ...entry, utteranceId: voice.utteranceId },
+            traceId: session.traceId,
+            idempotencyKey: `delivery:${voice.utteranceId ?? "none"}:${entry.kind}`,
+          });
+        },
+      },
+    );
+
+    if (!result.ok) {
+      app.log.info({ sessionId: id, tool: body.data.name, refusal: result.refusal }, "voice tool refused");
+      // 200 with a refusal, not an HTTP error: the model needs to read this and
+      // carry on, and a 4xx would look like a transport fault to the relay.
+      return reply.send(result);
+    }
+
+    return reply.send(result);
   });
 
   app.post("/interview-sessions/:id/runs", async (req, reply) => {

@@ -135,3 +135,64 @@ describe("healthy", () => {
     expect(await new ModelJudgeRunner({ model: "m", complete: async () => OK }).healthy()).toBe(true);
   });
 });
+
+describe("the default path talks to the right provider", () => {
+  /**
+   * The gap that let this ship broken.
+   *
+   * Every other test in this file injects `complete`, so the real request was
+   * never exercised: it posted to api.openai.com with a Gemini key while
+   * .env.example set JUDGE_MODEL=gemini-3.5-flash. A 401 became
+   * RunnerUnavailableError, which is logged and swallowed, so the symptom was
+   * only ever "Run does nothing".
+   */
+  it("posts to Gemini, not OpenAI", async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      stdout: "ok\n",
+                      stderr: "",
+                      status: "PASSED",
+                      exitCode: 0,
+                      confidence: 0.9,
+                    }),
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const runner = new ModelJudgeRunner({
+      apiKey: "k",
+      model: "gemini-3.5-flash",
+      fetchImpl,
+    });
+
+    const result = await runner.execute(req("print('ok')"));
+
+    expect(urls[0]).toContain("generativelanguage.googleapis.com");
+    expect(urls[0]).not.toContain("openai.com");
+    expect(result.status).toBe("PASSED");
+  });
+
+  it("surfaces a provider failure as runner-unavailable, keeping the interview alive", async () => {
+    const fetchImpl = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch;
+    const runner = new ModelJudgeRunner({ apiKey: "bad", model: "gemini-3.5-flash", fetchImpl });
+
+    await expect(runner.execute(req("print(1)"))).rejects.toThrow(
+      /Code runner unavailable/,
+    );
+  });
+});

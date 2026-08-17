@@ -1,5 +1,10 @@
 import { PlaybackScheduler, type AudioSink, type ScheduledSource } from "./playback";
-import { RealtimeVoice, type SpeechBoundary, type VoiceCredential } from "./realtime-voice";
+import {
+  RealtimeVoice,
+  type SpeechAuthorization,
+  type SpeechBoundary,
+  type VoiceCredential,
+} from "./realtime-voice";
 
 /**
  * Browser shell for the voice path (M3-2).
@@ -169,9 +174,34 @@ export class VoiceSession {
           };
         },
         onSpeechBoundary: (boundary) => this.opts.onSpeechBoundary?.(boundary),
+        // Every tool call goes to the server. The client answers none of them:
+        // the tools read pinned scenario content and check the gate's
+        // authorization, neither of which may live here.
+        callTool: async (call) => {
+          const res = await fetch(
+            `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-tool`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ name: call.name, args: call.args }),
+            },
+          );
+
+          if (!res.ok) return { ok: false, refusal: `RELAY_${res.status}` };
+          return (await res.json()) as Record<string, unknown>;
+        },
         onModelAudio: (pcm) => {
           this.playback?.enqueue(pcm);
           this.setStatus("SPEAKING");
+        },
+        onSpeechComplete: () => {
+          this.setStatus("LISTENING");
+          // Tells the server the authorization window is closed. Fire and
+          // forget: a lost report costs a stale window, not a broken session.
+          void fetch(
+            `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
+            { method: "POST", keepalive: true },
+          ).catch(() => {});
         },
         onBargeIn: () => {
           // Immediate and total. Chunks arrive faster than real time, so a
@@ -180,7 +210,16 @@ export class VoiceSession {
           this.playback?.stop();
           this.setStatus("LISTENING");
         },
-        onReady: () => this.setStatus("LISTENING"),
+        onReady: () => {
+          this.setStatus("LISTENING");
+          // Opens the interview. Until the model can be spoken through there is
+          // nothing to deliver the brief to, so this is the moment — not session
+          // creation, which would spend the authorization on silence.
+          void fetch(
+            `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-ready`,
+            { method: "POST" },
+          ).catch(() => {});
+        },
         onError: (err) => this.fail(err),
       });
 
@@ -190,6 +229,17 @@ export class VoiceSession {
       this.fail(err instanceof Error ? err : new Error(String(err)));
       throw err;
     }
+  }
+
+  /**
+   * The server authorized speech; ask the model to produce it.
+   *
+   * Called from the app channel's ACTION message and nowhere else. The
+   * authorization carries a server-minted utterance id, and no wording — the
+   * model fetches that through the relay above, under the same check.
+   */
+  speak(authorization: SpeechAuthorization): void {
+    this.voice?.requestSpeech(authorization);
   }
 
   setMuted(muted: boolean): void {

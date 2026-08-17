@@ -1,3 +1,4 @@
+import type { ContentEvalSuite } from "./content.js";
 import type { SuiteMetrics, ThresholdFailure, Thresholds } from "./metrics.js";
 import { DEFAULT_THRESHOLDS } from "./metrics.js";
 
@@ -110,6 +111,56 @@ export function formatFailures(failures: readonly ThresholdFailure[]): string {
     lines.push(`    ${f.detail}`);
     lines.push("");
   }
+  return lines.join("\n");
+}
+
+/** Terminal rendering for the content eval (M4-4b). */
+export function formatContentEval(suite: ContentEvalSuite): string {
+  const lines: string[] = [];
+
+  lines.push("");
+  lines.push("Content eval — M4-4b (factuality + leakage)");
+  lines.push("─".repeat(72));
+  lines.push("");
+
+  lines.push(
+    `  ${pad("scenario", 30)}${padLeft("status", 10)}${padLeft("factuality", 12)}${padLeft("leakage", 9)}`,
+  );
+  for (const s of suite.scenarios) {
+    const flag = s.factualityViolations.length > 0 || s.leakageViolations.length > 0 ? " ✗" : "";
+    lines.push(
+      `  ${pad(s.scenarioId + flag, 30)}${padLeft(s.status, 10)}${padLeft(String(s.factualityViolations.length), 12)}${padLeft(String(s.leakageViolations.length), 9)}`,
+    );
+  }
+
+  lines.push("");
+  lines.push(`    factuality violations   ${suite.factualityViolations.length}   (limit 0)`);
+  lines.push(`    leakage violations      ${suite.leakageViolations.length}   (limit 0)`);
+
+  if (suite.factualityViolations.length > 0) {
+    lines.push("");
+    lines.push("  Factuality violations");
+    lines.push("  " + "─".repeat(70));
+    for (const v of suite.factualityViolations) {
+      lines.push("");
+      lines.push(`  ${v.kind}  ${v.scenarioId} / ${v.factKey}`);
+      lines.push(`         utterance: "${v.utterance}"`);
+      lines.push(`         detail:    ${v.detail}`);
+    }
+  }
+
+  if (suite.leakageViolations.length > 0) {
+    lines.push("");
+    lines.push("  Leakage violations");
+    lines.push("  " + "─".repeat(70));
+    for (const v of suite.leakageViolations) {
+      lines.push("");
+      lines.push(`  ${v.kind}  ${v.scenarioId}${v.mode ? ` / ${v.mode}` : ""}`);
+      lines.push(`         detail: ${v.detail}`);
+    }
+  }
+
+  lines.push("");
   return lines.join("\n");
 }
 
