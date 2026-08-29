@@ -2,6 +2,7 @@
 
 import { use, useCallback, useEffect, useState } from "react";
 import { DimensionCard } from "../../../components/DimensionCard";
+import ConstellationField from "../../../components/ui/constellation-field";
 import type { SessionReport } from "../../../lib/report";
 
 /**
@@ -91,7 +92,7 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
   if (state.kind === "error") {
     return (
       <Shell>
-        <div className="report-state" style={{ color: "var(--err)" }}>{state.message}</div>
+        <div className="report-state report-state-error">{state.message}</div>
       </Shell>
     );
   }
@@ -107,7 +108,12 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
       </nav>
 
       <header className="report-hero">
-        <div>
+        {/* Non-interactive on purpose: this sits behind prose. A mesh that
+            chases the cursor under text you are trying to read is decoration
+            fighting the content. */}
+        <ConstellationField className="report-hero-mesh" spacing={86} drift={0.3} />
+
+        <div className="report-hero-copy">
           <div className="eyebrow">Session debrief</div>
           <h1>Your interview, with receipts.</h1>
           <p>
@@ -116,14 +122,21 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
           </p>
         </div>
         <div className="score-orb" aria-label={`Overall score ${report.overall.toFixed(2)}`}>
-          <div><div className="score-value">{report.overall.toFixed(2)}</div><div className="score-label">Overall</div></div>
+          <span className="score-ring" aria-hidden="true" />
+          <div>
+            <div className="score-value">{report.overall.toFixed(2)}</div>
+            <div className="score-label">Overall</div>
+          </div>
         </div>
       </header>
 
       <div className="report-meta">
+        <span className="meta-key">SESSION</span>
+        <span className="meta-mono">{sessionId.slice(0, 8).toUpperCase()}</span>
+        <span className="meta-sep" aria-hidden="true" />
         <span>{report.dimensions.length} rubric dimensions</span>
         <span>{report.probesAsked.length} interviewer probes</span>
-        <span>{report.rubricId} · v{report.rubricVersion}</span>
+        <span className="meta-mono">{report.rubricId} · v{report.rubricVersion}</span>
       </div>
 
       <div className="dimension-grid">
@@ -134,7 +147,7 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
 
       {(report.hintsUsed.length > 0 || report.probesAsked.length > 0) && (
         <Panel title="Interviewer activity">
-          <p style={{ margin: 0, color: "var(--muted)" }}>
+          <p className="panel-line">
             {report.probesAsked.length} probe{report.probesAsked.length === 1 ? "" : "s"} ·{" "}
             {report.hintsUsed.length === 0
               ? "no hints used"
@@ -145,18 +158,16 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
 
       {report.missedOpportunities.length > 0 && (
         <Panel title="Missed opportunities">
-          <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 6 }}>
+          <ul className="missed-list">
             {report.missedOpportunities.map((m) => (
-              <li key={m} style={{ color: "var(--muted)" }}>
-                {m}
-              </li>
+              <li key={m}>{m}</li>
             ))}
           </ul>
         </Panel>
       )}
 
       <Panel title="Practice next">
-        <dl className="drill-grid" style={{ margin: 0 }}>
+        <dl className="drill-grid">
           {(
             [
               ["Communication", report.drills.communication],

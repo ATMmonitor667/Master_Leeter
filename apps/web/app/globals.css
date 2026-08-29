@@ -144,14 +144,45 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 /* Report */
 .report-shell { max-width: 980px; margin: 0 auto; padding: 36px 28px 100px; }
 .report-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 74px; }
-.report-hero { display: grid; grid-template-columns: 1fr auto; gap: 42px; align-items: end; margin-bottom: 36px; }
+.report-hero {
+  position: relative; isolation: isolate;
+  display: grid; grid-template-columns: 1fr auto; gap: 42px; align-items: end;
+  margin-bottom: 36px; padding: 40px 34px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 20px;
+  background: linear-gradient(160deg, rgba(122,162,255,.07), rgba(8,10,15,0) 46%), var(--panel);
+}
+/* The mesh is texture, not content: behind everything, never clickable. */
+.report-hero-mesh { position: absolute; inset: 0; z-index: -1; display: block; pointer-events: none; }
+/* Fades the mesh out under the prose so the text keeps its contrast. */
+.report-hero::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(100deg, var(--panel) 22%, rgba(17,22,32,.72) 52%, transparent 78%);
+}
+.report-hero-copy { position: relative; }
 .report-hero h1 { margin: 14px 0 12px; font-size: clamp(38px,5vw,58px); letter-spacing: -.055em; line-height: 1; }
 .report-hero p { max-width: 660px; margin: 0; color: var(--muted); line-height: 1.65; }
-.score-orb { display: grid; width: 150px; height: 150px; place-items: center; border: 1px solid rgba(122,162,255,.32); border-radius: 50%; background: radial-gradient(circle, rgba(122,162,255,.16), rgba(122,162,255,.03) 62%, transparent 64%); box-shadow: inset 0 0 40px rgba(122,162,255,.08); }
+.score-ring {
+  position: absolute; inset: -14px; border-radius: 50%;
+  border: 1px solid rgba(122,162,255,.22);
+  animation: score-radar 3.4s cubic-bezier(.22,.61,.36,1) infinite;
+}
+@keyframes score-radar {
+  0%   { transform: scale(.82); opacity: 0; }
+  35%  { opacity: .75; }
+  100% { transform: scale(1.12); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .score-ring { animation: none; opacity: .4; transform: scale(1); }
+}
+.score-orb { position: relative; display: grid; width: 150px; height: 150px; place-items: center; border: 1px solid rgba(122,162,255,.32); border-radius: 50%; background: radial-gradient(circle, rgba(122,162,255,.16), rgba(122,162,255,.03) 62%, transparent 64%); box-shadow: inset 0 0 40px rgba(122,162,255,.08); }
 .score-value { font: 750 38px/1 var(--mono); letter-spacing: -.05em; }
 .score-label { margin-top: 6px; color: var(--muted); font: 10px var(--mono); letter-spacing: .12em; text-align: center; text-transform: uppercase; }
 .report-meta { display: flex; gap: 18px; margin-bottom: 18px; padding: 13px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--muted); font-size: 12px; }
-.report-meta span:last-child { margin-left: auto; font-family: var(--mono); }
+.report-meta { align-items: center; flex-wrap: wrap; }
+.meta-key { color: var(--muted); font: 700 10px/1 var(--mono); letter-spacing: .16em; }
+.meta-mono { font-family: var(--mono); color: var(--muted-strong); }
+.meta-sep { flex: 1 1 auto; height: 1px; min-width: 24px; background: linear-gradient(90deg, var(--border), transparent); }
+.report-meta span:last-child { font-family: var(--mono); }
 .dimension-grid { display: grid; gap: 12px; }
 .dimension-card { border: 1px solid var(--border); border-radius: 15px; padding: 20px; background: rgba(17,22,32,.86); }
 .dimension-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
@@ -167,6 +198,10 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .drill dt { color: var(--accent-strong); font: 700 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
 .drill dd { margin: 9px 0 0; color: var(--muted-strong); line-height: 1.55; }
 .report-state { min-height: 70vh; display: grid; place-items: center; color: var(--muted); }
+.report-state-error { color: var(--err); }
+.panel-line { margin: 0; color: var(--muted); }
+.missed-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--muted); }
+.drill-grid { margin: 0; }
 .report-spinner { width: 34px; height: 34px; margin: 0 auto 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.86); } }
