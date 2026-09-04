@@ -42,6 +42,12 @@ export {
   type TransitionInput,
   type TransitionResult,
 } from "./state-machine.js";
+export {
+  planStageTransitions,
+  type PlannedTransition,
+  type StageDriverInput,
+  type StageSignal,
+} from "./stage-driver.js";
 export { POLICIES, canHintNow, policyFor } from "./policy.js";
 export {
   HELD_FLOOR_CEILING,

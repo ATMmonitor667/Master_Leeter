@@ -1,9 +1,21 @@
 # Codex completion audit
 
-Updated: 2026-08-17  
-Branch: `codex` (based on `m3-voice-completion`)
+Updated: 2026-09-04
+Branch: current workspace
 
 ## Implemented on this branch
+
+- **M1-2b — automatic stage advancement.** A deterministic, forward-only stage
+  driver now advances a live interview from brief delivery through clarification,
+  approach, implementation, testing, follow-up, and wrap-up. Every transition is
+  server-authored, persisted, synchronized with the runtime, and pushed to clients.
+- **Candidate-neutral workspace.** The editor no longer leaks assumptions from the
+  conveyor-rescan scenario. Reconnect restores the server-authoritative stage.
+- **2026 cockpit refresh.** The setup page, interview workspace, and evidence report
+  now share an editorial developer-tool visual system with selectable scenario cards,
+  a live stage rail, purposeful voice/run feedback, confirmation flows, responsive
+  panel stacking, reduced-motion behavior, and an accessible hydration-safe captions
+  control.
 
 - **M4-5b — self-review export.** `pnpm review -- <session-id>` writes an
   annotation-ready TSV containing every authorized interviewer turn, the
@@ -26,10 +38,8 @@ Branch: `codex` (based on `m3-voice-completion`)
 - **M5-5 — follow-up selection.** Used branches cannot repeat. Among eligible
   authored branches, selection accounts for candidate approach, alternatives,
   completion, hints, stuck state, and branch challenge weight.
-- **UI overhaul.** Reworked the setup, live workspace, and report into a shared
-  responsive visual system while preserving oral-only delivery and keeping the
-  interviewer transcript out of the interface. Production builds now pin the
-  monorepo tracing root, and caption feature detection is safe under SSR.
+- **UI foundation.** Preserved oral-only delivery and kept the interviewer transcript
+  and full problem statement out of the DOM and client bundle.
 
 ## Acceptance work that still requires a person or external service
 
@@ -64,8 +74,15 @@ necessary before a hosted multi-user production launch:
 ```bash
 pnpm typecheck
 pnpm test
+pnpm sim
 pnpm eval
 pnpm build
+pnpm check:bundle
 pnpm check:sorted
 pnpm check:env
 ```
+
+Verified 2026-09-04: typecheck passed; 761 unit/integration tests passed
+(615 API, 108 web, 38 contracts); 32 simulator tests passed; interruption and
+content evals passed with zero threshold violations; production build and all
+three repository checks passed; desktop and 390 px browser smoke tests passed.

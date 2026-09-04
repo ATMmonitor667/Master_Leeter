@@ -21,9 +21,10 @@ import {
   observe,
   observeTranscript,
 } from "../observer/index.js";
-import { getHint, selectProbeWording } from "../scenario/probes.js";
+import { eligibleFollowUps, getHint, selectProbeWording } from "../scenario/probes.js";
 import { type IntentClassifier, type TurnClassification, ruleBasedClassifier } from "./classifier.js";
 import { decideAction } from "./gate.js";
+import { planStageTransitions, type StageSignal } from "./stage-driver.js";
 import { INITIAL_STATE, applyEvent } from "./state-machine.js";
 import { estimateTurnCompletion, silenceRequiredFor } from "./turn-completion.js";
 
@@ -108,6 +109,12 @@ export interface InterviewRuntimeDeps {
   onAuthorized?: (result: RuntimeResult) => void | Promise<void>;
   /** Injected so tests drive the re-evaluation clock instead of sleeping. */
   schedule?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  /** Keeps the authoritative session row and connected client in lockstep. */
+  onStateTransition?: (transition: {
+    from: InterviewState;
+    to: InterviewState;
+    reason: string;
+  }) => void | Promise<void>;
 }
 
 export class InterviewRuntime {
@@ -282,9 +289,27 @@ export class InterviewRuntime {
         this.latestCodeRevision = revision;
         this.latestCode = text;
         this.lastCodeActivityMs = Date.parse(event.occurredAt) || this.now();
+        if (
+          this.state === "ORAL_PROBLEM_DELIVERY" ||
+          this.state === "CLARIFICATION" ||
+          this.state === "APPROACH_EXPLORATION"
+        ) {
+          await this.advanceStages({ kind: "CODE_STARTED" });
+        }
         this.scheduleObservation();
         return none;
       }
+
+      case "RUN_REQUESTED":
+        if (
+          this.state === "ORAL_PROBLEM_DELIVERY" ||
+          this.state === "CLARIFICATION" ||
+          this.state === "APPROACH_EXPLORATION" ||
+          this.state === "IMPLEMENTATION"
+        ) {
+          await this.advanceStages({ kind: "RUN_REQUESTED" });
+        }
+        return none;
 
       case "RUN_COMPLETED": {
         this.pendingRuns.push(event.payload as unknown as RunResult);
@@ -367,6 +392,63 @@ export class InterviewRuntime {
   // ── The gate path ──────────────────────────────────────────────────────────
 
   /**
+   * Persist and apply every deterministic stage decision before the event that
+   * depends on it reaches the gate. Stage movement never creates speech.
+   */
+  private async advanceStages(signal: StageSignal): Promise<void> {
+    const ctx = this.buildContext(null);
+    const followUpAvailable = eligibleFollowUps(this.deps.scenario, {
+      scenario: this.deps.scenario,
+      candidateState: this.candidateState,
+      state: this.state,
+      remainingMinutes: Math.floor(ctx.remainingSeconds / 60),
+      followUpsUsed: this.followUpsUsed,
+      solvedOptimally: this.solvedOptimally(),
+    }).length > 0;
+
+    const plans = planStageTransitions({
+      state: this.state,
+      signal,
+      briefDelivered: this.briefDeliveryCount > 0,
+      solvedOptimally: this.solvedOptimally(),
+      followUpAvailable,
+      remainingSeconds: ctx.remainingSeconds,
+    });
+
+    for (const plan of plans) {
+      // TRANSITION_STAGE is a system decision, not an utterance. Recording it
+      // makes the driver auditable without sending an ACTION message to voice.
+      await this.append(
+        "ACTION_DECIDED",
+        "SYSTEM",
+        {
+          action: "TRANSITION_STAGE",
+          reason: plan.reason,
+          decidedByRule: true,
+          stageFrom: plan.from,
+          stageTo: plan.to,
+          signal: signal.kind,
+        },
+        `stage-decision:${plan.from}:${plan.to}`,
+      );
+
+      await this.append(
+        "STATE_TRANSITIONED",
+        "SYSTEM",
+        { from: plan.from, to: plan.to, reason: plan.reason, signal: signal.kind },
+        `stage:${plan.from}:${plan.to}`,
+      );
+
+      this.state = applyEvent({
+        state: this.state,
+        eventType: "STATE_TRANSITIONED",
+        requestedState: plan.to,
+      }).state;
+      await this.deps.onStateTransition?.(plan);
+    }
+  }
+
+  /**
    * A finalized candidate turn: the only event type that can produce speech.
    *
    * Note the order — classify, build context, ask the gate, THEN apply
@@ -386,6 +468,19 @@ export class InterviewRuntime {
     // want: the gate should judge the world as it is when it decides, not as it
     // was when the candidate stopped talking.
     const classification = await this.classifier.classify({ transcript, finalized });
+
+    if (
+      this.state === "ORAL_PROBLEM_DELIVERY" ||
+      this.state === "CLARIFICATION" ||
+      this.state === "TEST_AND_DEBUG" ||
+      this.state === "FOLLOW_UP"
+    ) {
+      await this.advanceStages({
+        kind: "CANDIDATE_TURN",
+        intent: classification.intent,
+        transcript,
+      });
+    }
 
     // How long the candidate has been quiet, measured between two logged
     // timestamps. Undefined when no speech-stop preceded this turn — a text-only
@@ -716,11 +811,15 @@ export class InterviewRuntime {
    * matters is that the flag is driven by a signal rather than left permanently
    * false, so the barge-in rule is live the moment audio is.
    */
-  markSpeechFinished(): void {
+  async markSpeechFinished(): Promise<void> {
+    const completedAction = this.authorized?.decision.action;
     this.interviewerCurrentlySpeaking = false;
     // The authorization does not outlive the utterance. A tool call arriving
     // after this is a model trying to take a second turn, and gets refused.
     this.authorized = null;
+    if (completedAction === "DELIVER_BRIEF" && this.state === "ORAL_PROBLEM_DELIVERY") {
+      await this.advanceStages({ kind: "BRIEF_COMPLETED" });
+    }
   }
 
   /**

@@ -39,6 +39,7 @@ export function buildSessionReview(
       (event) =>
         event.type === "ACTION_DECIDED" &&
         text(event.payload["action"]) !== "STAY_SILENT" &&
+        text(event.payload["action"]) !== "TRANSITION_STAGE" &&
         event.payload["freshnessRejected"] !== true,
     )
     .map((event) => {

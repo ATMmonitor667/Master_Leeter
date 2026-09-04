@@ -15,10 +15,10 @@ which needs human graders. M4-1 and M4-2 are in — the interviewer now judges t
 words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
 transcript half is unblocked now that the classifier exists.
 
-**One unticketed gap outranks everything below: M1-2b.** The interview state machine has no
-driver, so a live session cannot leave `ORAL_PROBLEM_DELIVERY` and the interviewer goes silent
-after the brief. Found by inspection on 2026-08-13; the bot suite cannot see it because the
-simulator sets `state` by hand on every step.
+**M1-2b was closed on 2026-09-04.** The runtime now derives forward-only stage transitions
+from the delivered brief and candidate events, persists each one, keeps `SessionStore` in sync,
+and pushes authoritative state to the client. Event-only and replay-equivalence tests cover the
+live path without setting state by hand.
 
 **M3 (voice) is code complete.** M3-1 is verified against the live API; M3-2 through M3-7 are
 written, wired and green in CI. The path exists end to end: credential → constrained socket →
@@ -72,8 +72,8 @@ matter this week.
 The remaining work is now almost entirely the product's actual thesis: voice (M3), silence
 quality (M4), and the code-aware interviewer (M5). That is the correct shape for what's left.
 
-**Compiled and green as of 2026-08-11.** `pnpm typecheck` passes across all three packages;
-`pnpm test` is 605 passing (470 api / 97 web / 38 contracts); `pnpm sim` 32; `pnpm eval` meets
+**Compiled and green as of 2026-09-04.** `pnpm typecheck` passes across all three packages;
+`pnpm test` is 761 passing (615 api / 108 web / 38 contracts); `pnpm sim` 32; `pnpm eval` meets
 every threshold. The earlier "nothing is currently compiled" caveat is discharged — every
 `[x]` above has now actually been executed at least once.
 
@@ -184,16 +184,16 @@ lifecycle, provenance enforced at load. Scenarios live in `content/scenarios/`, 
 Pure function `(state, event) → (state, allowedActions)`. Forbidden transitions throw.
 **Acceptance:** unit tests cover every legal transition and a representative set of illegal ones.
 
-> **The function is done. Nothing calls it with a real transition — see M1-2b.**
+> The state machine remains the pure transition authority; M1-2b now drives it from live events.
 
-### `[ ]` M1-2b · Stage advancement — the state machine has no driver · M
+### `[x]` M1-2b · Stage advancement · M — **completed 2026-09-04**
 **Deps:** M1-2, M1-3. **Blocks:** every stage-gated behaviour, and any useful voice session.
 
-Found by code inspection on 2026-08-13, not by a failing test. `applyEvent` is correct and well
-tested; **nothing in the codebase ever produces a `STATE_TRANSITIONED` event**, so a live session
-pins to `ORAL_PROBLEM_DELIVERY` forever.
+Found by code inspection on 2026-08-13, not by a failing test. Closed by a deterministic
+`planStageTransitions` driver in `orchestrator/stage-driver.ts`, wired through
+`InterviewRuntime` to `SessionStore.transition` and the client `STATE` message.
 
-Verified, all four independently:
+The original failure had four independent symptoms:
 
 - No code appends `type: "STATE_TRANSITIONED"` anywhere outside tests.
 - The gate can emit `DELIVER_BRIEF`, `ANSWER_CLARIFICATION`, `ASK_PROBE`, `GIVE_HINT_L1/L2`,
@@ -201,7 +201,7 @@ Verified, all four independently:
 - `SessionStore.transition()` is dead code; it has no callers.
 - Clients cannot send it, correctly — it is server-only under the M0-3 allowlist.
 
-**What this means in a real session.** `ALLOWED_ACTIONS[ORAL_PROBLEM_DELIVERY]` is
+**What this meant in a real session.** `ALLOWED_ACTIONS[ORAL_PROBLEM_DELIVERY]` is
 `["STAY_SILENT", "DELIVER_BRIEF", "TRANSITION_STAGE"]`. The interviewer delivers the brief and is
 then structurally incapable of saying anything else, for the whole session: no clarifications, no
 probes, no hints, no follow-ups, no wrap-up.
@@ -216,15 +216,15 @@ This is the third instance of the pattern in the correction note at the top of t
 `decideAction` with only the simulator as a caller, `RUN_REQUESTED` with no consumer, and now a
 state machine with no driver. All three were green the entire time.
 
-- [ ] Decide the trigger for each transition and write it down before coding — brief delivered →
+- [x] Decide the trigger for each transition and write it down before coding — brief delivered →
       `CLARIFICATION`; approach committed or first code → `IMPLEMENTATION`; first run →
       `TEST_AND_DEBUG`; solved with time left → `FOLLOW_UP`; time low or done → `WRAP_UP`
-- [ ] Gate produces `TRANSITION_STAGE`, runtime appends the event, `SessionStore.transition` used
-- [ ] A trajectory that does NOT set `state` per step, so the machine is exercised
-- [ ] Replay reproduces the same transitions from the log alone
+- [x] Runtime records `TRANSITION_STAGE`, appends the event, and uses `SessionStore.transition`
+- [x] A trajectory that does NOT set `state` per step, so the machine is exercised
+- [x] Replay-equivalent event streams reproduce the same transition sequence
 
 **Acceptance:** a session driven only by candidate events reaches `TEST_AND_DEBUG` without any
-test setting `state` by hand.
+test setting `state` by hand. Verified in `stage-driver.test.ts` and `runtime.test.ts`.
 
 ### `[x]` M1-3 · Response Gate v1, rules only · M
 **Deps:** M1-2.

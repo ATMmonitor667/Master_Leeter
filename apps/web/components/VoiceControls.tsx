@@ -90,7 +90,7 @@ export function VoiceControls({
             className="secondary-button"
             aria-pressed={muted}
           >
-            {muted ? "Unmute" : "Mute"}
+            <span className="button-icon" aria-hidden="true">{muted ? "◌" : "●"}</span>{muted ? "Unmute" : "Mute"}
           </button>
           <button onClick={onStop} className="ghost-button">
             End voice
@@ -102,7 +102,7 @@ export function VoiceControls({
           disabled={status === "CONNECTING"}
           className="primary-button"
         >
-          {LABEL[status]}
+          <span className="button-icon mic-icon" aria-hidden="true">●</span>{LABEL[status]}
         </button>
       )}
     </div>

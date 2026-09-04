@@ -23,7 +23,7 @@ export function CodeEditor({
 }) {
   return (
     <div className="editor-shell">
-      <PanelLabel>{language} · solution.py</PanelLabel>
+      <PanelLabel><span>{language} · solution.py</span><span className="panel-shortcut">Ctrl ↵ to run</span></PanelLabel>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Editor
           height="100%"
@@ -48,6 +48,9 @@ export function CodeEditor({
             inlineSuggest: { enabled: false },
             snippetSuggestions: "none",
             codeLens: false,
+            smoothScrolling: true,
+            cursorBlinking: "smooth",
+            padding: { top: 14, bottom: 14 },
             // Hover stays on: reading a docstring is not the same as being told
             // which data structure to use.
           }}

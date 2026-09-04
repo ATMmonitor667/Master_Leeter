@@ -70,10 +70,11 @@ export function TestPanel({
               {result.status} · {result.cpuTimeMs}ms · rev {result.codeRevision}
             </span>
           )}
+          {!result && runnerAvailable && <span className="run-shortcut">Ctrl + Enter</span>}
         </div>
 
         <pre className="terminal-output" style={{ color: result?.stderr ? "var(--err)" : undefined }}>
-          {result ? result.stderr || result.stdout || "(no output)" : ""}
+          {result ? result.stderr || result.stdout || "(no output)" : "Run your code to inspect output."}
           {result?.truncated ? "\n… output truncated" : ""}
         </pre>
       </div>

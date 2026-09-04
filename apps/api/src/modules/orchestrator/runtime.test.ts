@@ -524,6 +524,47 @@ describe("staleness guard is live, not theoretical", () => {
 });
 
 describe("state machine is enforced through the runtime", () => {
+  it("reaches test and debug using candidate events only", async () => {
+    const transitions: string[] = [];
+    const runtime = build({
+      onStateTransition: ({ to }) => {
+        transitions.push(to);
+      },
+    });
+
+    await feed(runtime, "SESSION_STARTED", {}, "start");
+    await runtime.markSpeechFinished();
+    await feed(runtime, "CODE_DELTA", { revision: 1, text: "def solve(items):\n    return items" }, "code");
+    await feed(runtime, "RUN_REQUESTED", { revision: 1, input: "[]" }, "run");
+
+    expect(runtime.snapshotState().state).toBe("TEST_AND_DEBUG");
+    expect(transitions).toEqual([
+      "CLARIFICATION",
+      "APPROACH_EXPLORATION",
+      "IMPLEMENTATION",
+      "TEST_AND_DEBUG",
+    ]);
+    expect((await payloadsOf("STATE_TRANSITIONED")).map((payload) => payload["to"])).toEqual(transitions);
+  });
+
+  it("replays the same automatic transition path from the same event-only trajectory", async () => {
+    const run = async () => {
+      log = new InMemoryEventLog();
+      const runtime = build();
+      await feed(runtime, "SESSION_STARTED", {}, "start");
+      await runtime.markSpeechFinished();
+      await feed(runtime, "CODE_DELTA", { revision: 1, text: "def solve(xs):\n    return xs" }, "code");
+      await feed(runtime, "RUN_REQUESTED", { revision: 1, input: "" }, "run");
+      return (await payloadsOf("STATE_TRANSITIONED")).map((payload) => ({
+        from: payload["from"],
+        to: payload["to"],
+        reason: payload["reason"],
+      }));
+    };
+
+    expect(await run()).toEqual(await run());
+  });
+
   it("follows a legal transition", async () => {
     const runtime = build();
     await feed(runtime, "STATE_TRANSITIONED", { to: "CLARIFICATION" }, "s1");

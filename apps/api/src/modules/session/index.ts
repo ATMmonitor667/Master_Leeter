@@ -165,6 +165,11 @@ export async function registerSessionModule(
     const scenario = opts.library.get(session.scenarioVersionId);
     if (!scenario) return null;
 
+    // Updated whenever the stage driver moves. Keeping this live snapshot in
+    // the closure makes the runtime clock start at the first real transition
+    // instead of reading the pre-start session forever.
+    let liveSession = session;
+
     const runtime = new InterviewRuntime({
       sessionId: session.id,
       scenario: scenario.version,
@@ -174,7 +179,7 @@ export async function registerSessionModule(
       scenarioVersionId: session.scenarioVersionId,
       traceId: session.traceId,
       events: eventLog,
-      remainingSeconds: () => remainingSeconds(session, Date.now()),
+      remainingSeconds: () => remainingSeconds(liveSession, Date.now()),
       // Without this the runtime silently falls back to the rule stub, and
       // every session runs on `stub-rules-v1` while CLASSIFIER_MODEL is read by
       // nothing. The failure is invisible in the logs and only shows up as an
@@ -182,6 +187,15 @@ export async function registerSessionModule(
       ...(opts.classifier ? { classifier: opts.classifier } : {}),
       // A decision reached by the re-evaluation timer has no caller awaiting it.
       onAuthorized: (result) => deliver(session.id, result),
+      onStateTransition: async ({ to }) => {
+        liveSession = await store.transition(session.id, to);
+        pushToSession(session.id, {
+          kind: "STATE",
+          state: liveSession.state,
+          remainingSeconds: remainingSeconds(liveSession, Date.now()),
+          interviewerStatus: "LISTENING",
+        });
+      },
     });
 
     runtimes.set(session.id, runtime);
@@ -280,7 +294,7 @@ export async function registerSessionModule(
          * report it, and leaving the flag set would make gate rule 1 read every
          * later turn as a barge-in and mute the interviewer for good.
          */
-        if (!sessionPushers.has(sessionId)) runtime?.markSpeechFinished();
+        if (!sessionPushers.has(sessionId)) void runtime?.markSpeechFinished();
       }
   }
 
@@ -637,7 +651,7 @@ export async function registerSessionModule(
     const runtime = runtimes.get(id);
     if (!runtime) return reply.code(409).send({ error: "NO_LIVE_SESSION" });
 
-    runtime.markSpeechFinished();
+    await runtime.markSpeechFinished();
     return reply.send({ ok: true });
   });
 

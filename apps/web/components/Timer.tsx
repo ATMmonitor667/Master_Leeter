@@ -13,7 +13,15 @@ import { useEffect, useState } from "react";
  * No colour changes, no urgency animation, no gamification. Pressure in a real
  * interview comes from the interview.
  */
-export function Timer({ remainingSeconds }: { remainingSeconds: number }) {
+export function Timer({
+  remainingSeconds,
+  running = true,
+  ready = true,
+}: {
+  remainingSeconds: number;
+  running?: boolean;
+  ready?: boolean;
+}) {
   const [local, setLocal] = useState(remainingSeconds);
 
   useEffect(() => {
@@ -21,16 +29,18 @@ export function Timer({ remainingSeconds }: { remainingSeconds: number }) {
   }, [remainingSeconds]);
 
   useEffect(() => {
+    if (!running) return;
     const id = setInterval(() => setLocal((s) => Math.max(0, s - 1)), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [running]);
 
   const minutes = Math.floor(local / 60);
   const seconds = local % 60;
 
   return (
     <div aria-label="Time remaining" className="timer">
-      {minutes}:{String(seconds).padStart(2, "0")}
+      <span>{ready ? `${minutes}:${String(seconds).padStart(2, "0")}` : "--:--"}</span>
+      <small>remaining</small>
     </div>
   );
 }

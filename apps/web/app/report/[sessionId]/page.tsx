@@ -98,6 +98,9 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
 
   const { report } = state;
   const startedAt = report.dimensions.flatMap((d) => d.evidence).at(0)?.occurredAt ?? report.generatedAt;
+  const ranked = [...report.dimensions].sort((a, b) => b.score - a.score);
+  const strongest = ranked[0];
+  const focus = ranked.at(-1);
 
   return (
     <Shell>
@@ -125,6 +128,24 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
         <span>{report.probesAsked.length} interviewer probes</span>
         <span>{report.rubricId} · v{report.rubricVersion}</span>
       </div>
+
+      <section className="report-highlights" aria-label="Session highlights">
+        <div className="highlight-card positive">
+          <span className="highlight-label">Strongest signal</span>
+          <strong>{strongest?.dimension.replaceAll("_", " ") ?? "Not enough evidence"}</strong>
+          <span>{strongest ? `${strongest.score.toFixed(1)} / 5` : "—"}</span>
+        </div>
+        <div className="highlight-card focus">
+          <span className="highlight-label">Best next focus</span>
+          <strong>{focus?.dimension.replaceAll("_", " ") ?? "Gather more evidence"}</strong>
+          <span>{focus ? `${focus.score.toFixed(1)} / 5` : "—"}</span>
+        </div>
+        <div className="highlight-card neutral">
+          <span className="highlight-label">Interview footprint</span>
+          <strong>{report.probesAsked.length + report.hintsUsed.length} interventions</strong>
+          <span>{report.hintsUsed.length === 0 ? "Solved without hints" : `${report.hintsUsed.length} hints used`}</span>
+        </div>
+      </section>
 
       <div className="dimension-grid">
         {report.dimensions.map((d) => (
