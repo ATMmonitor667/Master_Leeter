@@ -206,7 +206,27 @@ export class GeminiClient {
  * `GEMINI_API_KEY` is preferred, but one Google AI Studio key serves both Live
  * and text, so falling back to `REALTIME_API_KEY` means the common case needs
  * one variable rather than two identical ones.
+ *
+ * ── Why this is not `a ?? b` ───────────────────────────────────────────────
+ *
+ * It was, and it cost the project a silently degraded product. `??` falls back
+ * only on `undefined`, and the committed `.env` ships `GEMINI_API_KEY=` as a
+ * placeholder — an EMPTY STRING, which is defined. So the placeholder shadowed
+ * the real key in `.env.local`, `apiKey` resolved to `""`, and the `!apiKey`
+ * guards downstream did exactly what they should: fell back. The result was a
+ * server that booted clean, reported `classifier: "stub-rules-v1"` and
+ * `runner: "none"`, and warned that variables were "not set" which WERE set —
+ * sending anyone debugging it at the wrong file entirely.
+ *
+ * An unset variable and a variable set to nothing mean the same thing here, and
+ * a placeholder in a shared config file must never beat a real credential.
  */
 export function geminiApiKeyFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  return env["GEMINI_API_KEY"] ?? env["REALTIME_API_KEY"];
+  return set(env["GEMINI_API_KEY"]) ?? set(env["REALTIME_API_KEY"]);
+}
+
+/** A variable set to the empty string is not set. */
+function set(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }

@@ -7,6 +7,7 @@ import type {
   SessionEvent,
 } from "@master-leeter/contracts";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { buildSnapshot } from "../observer/index.js";
 import { InMemoryEventLog } from "../session/event-log.js";
 import { loadScenarioFile } from "../scenario/loader.js";
 import { POLICIES } from "./policy.js";
@@ -502,12 +503,26 @@ describe("the observer pipeline runs off the critical path", () => {
 
 describe("staleness guard is live, not theoretical", () => {
   it("stays silent while the observer is behind and the code is still moving", async () => {
-    const runtime = build();
+    // The observer is held behind ON PURPOSE. This used to work by ingesting a
+    // delta without awaiting it and hoping the snapshot had not landed yet,
+    // which made the test a function of how many microtasks happened to sit on
+    // the path — a single extra `await` anywhere in `ingest` silently turned it
+    // into an assertion about nothing.
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const runtime = build({
+      buildSnapshot: async (code, revision, previous) => {
+        await held;
+        return buildSnapshot(code, revision, previous);
+      },
+    });
     await advanceTo(runtime, "IMPLEMENTATION");
 
-    // Code lands; no observation pass has completed, so the observer is behind.
-    const delta = await record("CODE_DELTA", { revision: 9, text: "def f(): pass" }, "c9");
-    void runtime.ingest(delta);
+    // Code lands; the observation pass cannot complete, so the observer is behind.
+    await feed(runtime, "CODE_DELTA", { revision: 9, text: "def f(): pass" }, "c9");
 
     const { decision } = await feed(
       runtime,
@@ -519,6 +534,7 @@ describe("staleness guard is live, not theoretical", () => {
     expect(decision?.action).toBe("STAY_SILENT");
     expect(decision?.reason).toMatch(/observer behind/i);
 
+    release();
     await runtime.settled();
   });
 });

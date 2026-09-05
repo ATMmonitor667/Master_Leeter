@@ -1,7 +1,20 @@
 Master_Leeter — remaining work
 ================================
 Branch: simplified (model-judged runs, not Judge0)
-Updated: 2026-08-13
+Updated: 2026-08-28
+
+UPDATE 2026-08-28: main now carries the codex work (M4-5b, M5-1..M5-5) plus
+M1-2b, which was NOT in the sequence below and outranked all of it. The
+interview state machine had no driver: nothing produced a STATE_TRANSITIONED
+event, so a live session pinned to ORAL_PROBLEM_DELIVERY and the interviewer
+was structurally silent after the brief — no clarifications, probes, hints or
+follow-ups, for the whole round. It also meant the candidate's clock never
+started, since startedAt is set by SessionStore.transition() and that had no
+callers either. Both fixed; see M1-2b in ISSUES.md for the triggers and the
+decisions behind them.
+
+Everything still open below this line needs a human at a microphone (items 0
+and 4), or follows from a session that has actually been run (item 8).
 
 UPDATE 2026-08-13 (later): this file was written against main. Checked out
 origin/m3-voice-completion instead, which is main + 8 commits and already

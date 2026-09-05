@@ -25,6 +25,7 @@ import { getHint, selectProbeWording } from "../scenario/probes.js";
 import { type IntentClassifier, type TurnClassification, ruleBasedClassifier } from "./classifier.js";
 import { decideAction } from "./gate.js";
 import { INITIAL_STATE, applyEvent } from "./state-machine.js";
+import { type StageSignals, isReasoningIntent, nextStage } from "./stage-advance.js";
 import { estimateTurnCompletion, silenceRequiredFor } from "./turn-completion.js";
 
 /**
@@ -108,6 +109,24 @@ export interface InterviewRuntimeDeps {
   onAuthorized?: (result: RuntimeResult) => void | Promise<void>;
   /** Injected so tests drive the re-evaluation clock instead of sleeping. */
   schedule?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  /**
+   * Builds the semantic snapshot. Injected for the same reason as the clock.
+   *
+   * The staleness guard only fires while the observer is genuinely behind, and
+   * a test that reaches that window by racing the microtask queue is measuring
+   * how many `await`s happen to sit on the path — one more anywhere in `ingest`
+   * flips it. With this the lag is a fact the test states, not an accident.
+   */
+  buildSnapshot?: typeof buildSnapshot;
+  /**
+   * Notified after a stage transition has been committed to the log (M1-2b).
+   *
+   * The orchestrator owns the stage; the session store holds the copy the HTTP
+   * surface and the resume path read, and `transition()` is also what starts the
+   * interview clock. Injected rather than imported so the orchestrator stays a
+   * domain layer that the session module calls into.
+   */
+  onTransition?: (to: InterviewState, reason: string) => void | Promise<void>;
 }
 
 export class InterviewRuntime {
@@ -117,6 +136,18 @@ export class InterviewRuntime {
 
   private readonly probeUseCounts: Record<string, number> = {};
   private readonly followUpsUsed: string[] = [];
+
+  /**
+   * Stage-advancement evidence (M1-2b).
+   *
+   * Counters rather than derived state because the driver has to answer
+   * "has the candidate started testing yet?" without re-reading the log.
+   * `reasoningTurnsInStage` resets on every transition — two think-alouds are
+   * evidence of leaving CLARIFICATION only if they happened IN clarification.
+   */
+  private runsStarted = 0;
+  private reasoningTurnsInStage = 0;
+  private approachCommitted = false;
 
   /** Latest revision the SERVER has seen. May run ahead of the observer. */
   private latestCodeRevision = 0;
@@ -189,12 +220,14 @@ export class InterviewRuntime {
   private briefDeliveryCount = 0;
 
   private readonly classifier: IntentClassifier;
+  private readonly buildSnapshot: typeof buildSnapshot;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
 
   constructor(private readonly deps: InterviewRuntimeDeps) {
     this.now = deps.now ?? (() => Date.now());
     this.classifier = deps.classifier ?? ruleBasedClassifier;
+    this.buildSnapshot = deps.buildSnapshot ?? buildSnapshot;
     this.schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms));
     this.candidateState = emptyCandidateState(new Date(this.now()).toISOString());
     this.lastCodeActivityMs = this.now();
@@ -270,6 +303,20 @@ export class InterviewRuntime {
    * replay will read.
    */
   async ingest(event: SessionEvent): Promise<RuntimeResult> {
+    const result = await this.applyCommitted(event);
+
+    // Stage advancement runs on every committed event (M1-2b). Skipped for the
+    // two event types that ARE stage changes: re-deriving off an explicit
+    // transition would let one instruction cascade into several, and a session
+    // that has ended has nowhere left to advance to.
+    if (event.type !== "STATE_TRANSITIONED" && event.type !== "SESSION_ENDED") {
+      await this.advanceStages();
+    }
+
+    return result;
+  }
+
+  private async applyCommitted(event: SessionEvent): Promise<RuntimeResult> {
     const none: RuntimeResult = { decision: null, utterance: null };
 
     switch (event.type) {
@@ -286,7 +333,18 @@ export class InterviewRuntime {
         return none;
       }
 
+      case "RUN_REQUESTED":
+        // Nothing to observe — the result is what carries evidence — but asking
+        // for a run IS the moment the candidate starts testing, and that is what
+        // moves the stage (M1-2b). Counted here rather than on completion so a
+        // runner outage cannot pin a candidate in IMPLEMENTATION.
+        this.runsStarted += 1;
+        return none;
+
       case "RUN_COMPLETED": {
+        // A result with no request seen — a reconnect, or a replay that starts
+        // mid-session — still proves a run happened.
+        this.runsStarted = Math.max(this.runsStarted, 1);
         this.pendingRuns.push(event.payload as unknown as RunResult);
         this.scheduleObservation();
         return none;
@@ -386,6 +444,17 @@ export class InterviewRuntime {
     // want: the gate should judge the world as it is when it decides, not as it
     // was when the candidate stopped talking.
     const classification = await this.classifier.classify({ transcript, finalized });
+
+    // Stage evidence from the words, folded BEFORE the gate rules on this turn
+    // (M1-2b). Order matters: a candidate who commits to an approach while the
+    // session still sits in CLARIFICATION should have that turn judged in
+    // APPROACH_EXPLORATION, where probing is legal. Folding it afterwards would
+    // cost the interviewer the probe that the commitment itself justified.
+    if (finalized) {
+      if (isReasoningIntent(classification.intent)) this.reasoningTurnsInStage += 1;
+      if (classification.intent === "APPROACH_COMMITMENT") this.approachCommitted = true;
+      await this.advanceStages();
+    }
 
     // How long the candidate has been quiet, measured between two logged
     // timestamps. Undefined when no speech-stop preceded this turn — a text-only
@@ -647,6 +716,75 @@ export class InterviewRuntime {
       clearTimeout(this.reevaluationTimer);
       this.reevaluationTimer = null;
     }
+  }
+
+  // ── The stage-advancement path (M1-2b) ─────────────────────────────────────
+
+  /**
+   * Move the interview forward as far as the evidence justifies.
+   *
+   * A loop rather than a single step, because one event can legitimately clear
+   * more than one stage: a candidate who starts typing while the session is
+   * still in CLARIFICATION has passed through APPROACH_EXPLORATION whether or
+   * not they said anything in it. Each step is appended separately and each is
+   * legal under `ALLOWED_TRANSITIONS`, so the log shows the path taken rather
+   * than a jump nobody can account for.
+   *
+   * Every transition is recorded as a `STATE_TRANSITIONED` event and NOT as an
+   * `ACTION_DECIDED` — see the header of `stage-advance.ts` for why routing this
+   * through the gate would corrupt the interruption metric.
+   */
+  private async advanceStages(): Promise<void> {
+    // Bounded by the length of the stage path. The transition graph is a
+    // forward-only DAG so this cannot cycle, but a bug in a rule should read as
+    // a stalled session rather than as a hung request.
+    for (let step = 0; step < STAGE_ADVANCE_LIMIT; step++) {
+      const advance = nextStage(this.stageSignals());
+      if (!advance) return;
+
+      const from = this.state;
+      // Throws on a forbidden transition rather than degrading, same as the
+      // ingest path. `nextStage` already checked, so reaching the throw means
+      // the driver and the contract disagree — which must be loud.
+      this.state = applyEvent({
+        state: from,
+        eventType: "STATE_TRANSITIONED",
+        requestedState: advance.to,
+      }).state;
+
+      // Evidence of "they stopped asking and started reasoning" belongs to the
+      // stage it happened in.
+      this.reasoningTurnsInStage = 0;
+
+      await this.append(
+        "STATE_TRANSITIONED",
+        "SYSTEM",
+        { from, to: advance.to, reason: advance.reason },
+        // Forward-only transitions mean each stage is entered at most once, so
+        // the target state is a stable key. A runtime rebuilt mid-session
+        // therefore cannot append a second transition into the same stage.
+        `stage:${advance.to}`,
+      );
+
+      await this.deps.onTransition?.(advance.to, advance.reason);
+    }
+  }
+
+  private stageSignals(): StageSignals {
+    return {
+      state: this.state,
+      policy: this.deps.policy,
+      briefDeliveryCount: this.briefDeliveryCount,
+      reasoningTurnsInStage: this.reasoningTurnsInStage,
+      latestCodeRevision: this.latestCodeRevision,
+      // Either the candidate said so, or the transcript observer inferred it.
+      approachCommitted: this.approachCommitted || this.candidateState.currentApproach !== null,
+      runsStarted: this.runsStarted,
+      milestones: this.milestones.reached,
+      remainingSeconds: Math.max(0, Math.round(this.deps.remainingSeconds())),
+      followUpsPresented: this.followUpsUsed.length,
+      followUpsAvailable: this.deps.scenario.followUps.length,
+    };
   }
 
   /**
@@ -957,7 +1095,7 @@ export class InterviewRuntime {
 
       let snapshot: SemanticSnapshot | undefined;
       if (code.length > 0) {
-        snapshot = await buildSnapshot(
+        snapshot = await this.buildSnapshot(
           code,
           revision,
           this.previousObservedCode === null ? undefined : { code: this.previousObservedCode },
@@ -1065,6 +1203,12 @@ export class InterviewRuntime {
         },
         `observation:${pass}`,
       );
+
+      // BASE_TESTS_PASS is what opens the follow-up stage, and it lands here —
+      // one observation pass after the run that earned it. Without this the
+      // transition would wait for whatever the candidate happened to do next,
+      // which on a solved problem is often nothing at all.
+      await this.advanceStages();
     }
   }
 
@@ -1087,6 +1231,14 @@ export class InterviewRuntime {
     });
   }
 }
+
+/**
+ * Most stages one event may clear at once.
+ *
+ * The path from ORAL_PROBLEM_DELIVERY to WRAP_UP is six transitions long; the
+ * limit is a guard against a rule bug, not a tuning parameter.
+ */
+const STAGE_ADVANCE_LIMIT = 8;
 
 function stringOf(v: unknown): string | null {
   return typeof v === "string" ? v : null;

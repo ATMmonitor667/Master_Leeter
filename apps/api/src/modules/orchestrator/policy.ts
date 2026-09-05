@@ -35,6 +35,10 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     interruptQuietSeconds: 3,
     stallSeconds: 60,
     maxCodeStalenessSeconds: 20,
+    // Most generous of the three. A learner benefits from being walked out of
+    // the round, so the closing stage starts earlier and lasts longer.
+    wrapUpSeconds: 180,
+    followUpMinSeconds: 420,
     expectedMinutes: 45,
   },
 
@@ -59,6 +63,10 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     interruptQuietSeconds: 4,
     stallSeconds: 90,
     maxCodeStalenessSeconds: 20,
+    // Two minutes to close and six to open a follow-up, which is roughly what a
+    // real 40-minute round leaves once the candidate has a working solution.
+    wrapUpSeconds: 120,
+    followUpMinSeconds: 360,
     expectedMinutes: 40,
   },
 
@@ -86,6 +94,10 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     interruptQuietSeconds: 6,
     stallSeconds: 150,
     maxCodeStalenessSeconds: 15,
+    // Terser close, and readier to spend the remaining time on a follow-up than
+    // on winding down — pressure training is the point of the mode.
+    wrapUpSeconds: 120,
+    followUpMinSeconds: 300,
     expectedMinutes: 40,
   },
 };

@@ -188,6 +188,24 @@ export const InterviewPolicySchema = z.object({
   stallSeconds: z.number().int().min(1),
   /** Maximum age, in seconds, of a code revision an interviewer response may reference. */
   maxCodeStalenessSeconds: z.number().int().min(1),
+  /**
+   * Time left at which the round starts closing, regardless of progress (M1-2b).
+   *
+   * Stage advancement is otherwise driven by what the candidate does, and a
+   * candidate who is still debugging at the buzzer never does the thing that
+   * would advance them. Without a floor the interview would end from
+   * `IMPLEMENTATION`, having never reached `WRAP_UP` — the one stage whose
+   * purpose is to close.
+   */
+  wrapUpSeconds: z.number().int().min(0),
+  /**
+   * Time a follow-up needs to be worth opening (M1-2b).
+   *
+   * A follow-up branch asked with ninety seconds left is worse than no
+   * follow-up: the candidate cannot answer it properly and the report records a
+   * question they were never given room to address.
+   */
+  followUpMinSeconds: z.number().int().min(0),
   expectedMinutes: z.number().int().min(1),
 });
 export type InterviewPolicy = z.infer<typeof InterviewPolicySchema>;

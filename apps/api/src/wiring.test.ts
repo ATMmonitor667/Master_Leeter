@@ -83,6 +83,45 @@ async function createSession(port: number): Promise<string> {
   return body.sessionId;
 }
 
+/** Sends one client event over the real socket and waits for its ACK. */
+async function send(
+  port: number,
+  sessionId: string,
+  type: string,
+  payload: Record<string, unknown>,
+  clientSeq = 0,
+): Promise<void> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/interview-sessions/${sessionId}/events`);
+
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", () => resolve());
+    socket.once("error", reject);
+  });
+
+  const acked = new Promise<void>((resolve) => {
+    socket.on("message", (raw) => {
+      const msg = JSON.parse(String(raw));
+      if (msg.kind === "ACK") resolve();
+    });
+  });
+
+  socket.send(
+    JSON.stringify({
+      sessionId,
+      clientSeq,
+      idempotencyKey: `ev-${Math.random()}`,
+      type,
+      occurredAt: new Date().toISOString(),
+      payload,
+    }),
+  );
+
+  await acked;
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setTimeout(r, 50));
+  socket.close();
+}
+
 /** Speaks one finalized turn over the real socket and waits for its ACK. */
 async function speak(port: number, sessionId: string, transcript: string): Promise<void> {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/interview-sessions/${sessionId}/events`);
@@ -163,5 +202,90 @@ describe("the classifier reaches the runtime", () => {
     const decided = (await eventsOf(port, sessionId)).filter((e) => e.type === "ACTION_DECIDED");
     expect(decided.length).toBeGreaterThan(0);
     expect(String(decided.at(-1)?.payload["classifierId"])).toMatch(/^stub-/);
+  });
+});
+
+describe("the interview state machine has a driver", () => {
+  /**
+   * The M1-2b wiring gap, tested the only way that would have caught it.
+   *
+   * `applyEvent` was correct and exhaustively unit-tested while NOTHING ever
+   * produced a `STATE_TRANSITIONED` event, so a live session pinned to
+   * ORAL_PROBLEM_DELIVERY — where the action set is
+   * [STAY_SILENT, DELIVER_BRIEF, TRANSITION_STAGE] — and the interviewer was
+   * structurally incapable of saying anything for the rest of the round.
+   *
+   * The simulator could not see it: every scripted step sets `state` by hand.
+   * So this drives the real HTTP surface and a real socket, and nothing here
+   * names a stage except in an assertion.
+   */
+  async function stageOf(port: number, sessionId: string): Promise<string> {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/interview-sessions/${sessionId}`);
+    return ((await res.json()) as { state: string }).state;
+  }
+
+  async function openInterview(port: number, sessionId: string): Promise<void> {
+    await fetch(`http://127.0.0.1:${port}/v1/interview-sessions/${sessionId}/voice-ready`, {
+      method: "POST",
+    });
+  }
+
+  it("leaves ORAL_PROBLEM_DELIVERY once the candidate has heard the problem", async () => {
+    const { port } = await startServer();
+    const sessionId = await createSession(port);
+
+    expect(await stageOf(port, sessionId)).toBe("ORAL_PROBLEM_DELIVERY");
+
+    await openInterview(port, sessionId);
+
+    // The assertion that fails on every commit before this one.
+    expect(
+      await stageOf(port, sessionId),
+      "session never left the opening stage; the state machine has no driver",
+    ).toBe("CLARIFICATION");
+  });
+
+  it("starts the interview clock, which nothing used to start", async () => {
+    // `startedAt` is set by `SessionStore.transition`, and that method had no
+    // callers — so `remainingSeconds` returned the full budget for the entire
+    // interview and the candidate's timer never moved.
+    const { port } = await startServer();
+    const sessionId = await createSession(port);
+    await openInterview(port, sessionId);
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/interview-sessions/${sessionId}`);
+    const { remainingSeconds } = (await res.json()) as { remainingSeconds: number };
+    const budget = library.get("conveyor-rescan@1")!.version.target.expectedMinutes * 60;
+
+    expect(remainingSeconds).toBeLessThan(budget);
+  });
+
+  it("reaches TEST_AND_DEBUG from candidate events alone", async () => {
+    const { port } = await startServer();
+    const sessionId = await createSession(port);
+    await openInterview(port, sessionId);
+
+    const source = ["def f():", "    return 1", ""].join("\n");
+    await send(port, sessionId, "CODE_DELTA", { revision: 1, text: source });
+    expect(await stageOf(port, sessionId)).toBe("IMPLEMENTATION");
+
+    // No runner is configured, and the stage still moves: asking for a run is
+    // the candidate's act of testing, so a runner outage cannot pin them in
+    // IMPLEMENTATION for the rest of the interview.
+    await send(port, sessionId, "RUN_REQUESTED", { revision: 1, input: "" });
+    expect(await stageOf(port, sessionId)).toBe("TEST_AND_DEBUG");
+
+    // Each step is in the append-only log, so a replay sees the same path.
+    const stages = (await eventsOf(port, sessionId))
+      .filter((e) => e.type === "STATE_TRANSITIONED")
+      .map((e) => String(e.payload["to"]));
+    expect(stages).toEqual([
+      "CLARIFICATION",
+      "APPROACH_EXPLORATION",
+      "IMPLEMENTATION",
+      "TEST_AND_DEBUG",
+    ]);
   });
 });

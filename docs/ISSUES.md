@@ -15,10 +15,12 @@ which needs human graders. M4-1 and M4-2 are in — the interviewer now judges t
 words *and* the clock. M5-1 half done — the code-derived half of CandidateState works; the
 transcript half is unblocked now that the classifier exists.
 
-**One unticketed gap outranks everything below: M1-2b.** The interview state machine has no
-driver, so a live session cannot leave `ORAL_PROBLEM_DELIVERY` and the interviewer goes silent
-after the brief. Found by inspection on 2026-08-13; the bot suite cannot see it because the
-simulator sets `state` by hand on every step.
+**M1-2b is closed (2026-08-28).** The state machine has a driver: `stage-advance.ts` proposes
+one legal transition at a time from committed evidence, the runtime appends `STATE_TRANSITIONED`
+and calls `SessionStore.transition`, and a session driven only by candidate events now reaches
+`TEST_AND_DEBUG` with nothing setting `state` by hand. Wiring it also started the interview
+clock, which nothing had ever started — `startedAt` is set by `transition()`, so
+`remainingSeconds` had been returning the full budget for the entire round.
 
 **M3 (voice) is code complete.** M3-1 is verified against the live API; M3-2 through M3-7 are
 written, wired and green in CI. The path exists end to end: credential → constrained socket →
@@ -72,10 +74,10 @@ matter this week.
 The remaining work is now almost entirely the product's actual thesis: voice (M3), silence
 quality (M4), and the code-aware interviewer (M5). That is the correct shape for what's left.
 
-**Compiled and green as of 2026-08-11.** `pnpm typecheck` passes across all three packages;
-`pnpm test` is 605 passing (470 api / 97 web / 38 contracts); `pnpm sim` 32; `pnpm eval` meets
-every threshold. The earlier "nothing is currently compiled" caveat is discharged — every
-`[x]` above has now actually been executed at least once.
+**Compiled and green as of 2026-08-28.** `pnpm typecheck` passes across all three packages;
+`pnpm test` is 770 passing (624 api / 108 web / 38 contracts); `pnpm sim` 32; `pnpm eval` meets
+every threshold; `pnpm build` clean. The earlier "nothing is currently compiled" caveat is
+discharged — every `[x]` above has now actually been executed at least once.
 
 ---
 
@@ -184,9 +186,7 @@ lifecycle, provenance enforced at load. Scenarios live in `content/scenarios/`, 
 Pure function `(state, event) → (state, allowedActions)`. Forbidden transitions throw.
 **Acceptance:** unit tests cover every legal transition and a representative set of illegal ones.
 
-> **The function is done. Nothing calls it with a real transition — see M1-2b.**
-
-### `[ ]` M1-2b · Stage advancement — the state machine has no driver · M
+### `[x]` M1-2b · Stage advancement — the state machine had no driver · M
 **Deps:** M1-2, M1-3. **Blocks:** every stage-gated behaviour, and any useful voice session.
 
 Found by code inspection on 2026-08-13, not by a failing test. `applyEvent` is correct and well
@@ -216,15 +216,73 @@ This is the third instance of the pattern in the correction note at the top of t
 `decideAction` with only the simulator as a caller, `RUN_REQUESTED` with no consumer, and now a
 state machine with no driver. All three were green the entire time.
 
-- [ ] Decide the trigger for each transition and write it down before coding — brief delivered →
-      `CLARIFICATION`; approach committed or first code → `IMPLEMENTATION`; first run →
-      `TEST_AND_DEBUG`; solved with time left → `FOLLOW_UP`; time low or done → `WRAP_UP`
-- [ ] Gate produces `TRANSITION_STAGE`, runtime appends the event, `SessionStore.transition` used
-- [ ] A trajectory that does NOT set `state` per step, so the machine is exercised
-- [ ] Replay reproduces the same transitions from the log alone
+- [x] Triggers decided and written down (below) before coding
+- [x] Transitions appended as `STATE_TRANSITIONED`, `SessionStore.transition` used
+- [x] A trajectory that does NOT set `state` per step, so the machine is exercised
+- [x] Replay reproduces the same transitions from the log alone
 
 **Acceptance:** a session driven only by candidate events reaches `TEST_AND_DEBUG` without any
-test setting `state` by hand.
+test setting `state` by hand. — **met**, `stage-advance.test.ts` and `wiring.test.ts`.
+
+---
+
+**Done 2026-08-28.** `apps/api/src/modules/orchestrator/stage-advance.ts` — a pure
+`nextStage(signals)` returning at most ONE legal step. The runtime loops it after every committed
+event (and after each observation pass, since `BASE_TESTS_PASS` is what opens `FOLLOW_UP`),
+appends each transition, and notifies the session module.
+
+**The triggers, as built:**
+
+| From | To | Trigger |
+|---|---|---|
+| `ORAL_PROBLEM_DELIVERY` | `CLARIFICATION` | brief committed to the log |
+| `CLARIFICATION` | `APPROACH_EXPLORATION` | first code, an approach commitment, or 2 reasoning turns |
+| `APPROACH_EXPLORATION` | `IMPLEMENTATION` | first code revision |
+| `IMPLEMENTATION` | `TEST_AND_DEBUG` | first `RUN_REQUESTED` |
+| `TEST_AND_DEBUG` | `FOLLOW_UP` | `BASE_TESTS_PASS` + an unused branch + `followUpMinSeconds` left |
+| `FOLLOW_UP` | `WRAP_UP` | every authored branch presented |
+| any | one step toward `WRAP_UP` | `remainingSeconds ≤ policy.wrapUpSeconds` |
+
+`WRAP_UP → EVALUATION` stays on `SESSION_ENDED` alone: `WRAP_UP` does not list
+`TRANSITION_STAGE`, and ending a round is an act, not a consequence of the clock.
+
+**Decisions worth knowing, because they are not the obvious reading of the ticket.**
+
+*The gate does NOT produce `TRANSITION_STAGE`.* The checklist above said it should, and building
+it that way is wrong. The gate answers one question per turn — *should the interviewer speak
+right now* — so spending that answer on a stage change means a candidate who asks a question at
+the moment the stage moves gets silence. Worse, every consumer of `ACTION_DECIDED` treats a
+non-`STAY_SILENT` action as an interviewer utterance (`review.ts`, the interruption metric), so
+routing transitions through it would inflate the one number the product is measured on.
+Advancement is a separate pass that still honours the action table:
+`isActionAllowed(state, "TRANSITION_STAGE")` gates every move.
+
+*Transitions cascade.* A candidate who starts typing during `CLARIFICATION` has passed through
+`APPROACH_EXPLORATION` whether or not they spoke in it, so one event can clear several stages.
+Each step is appended separately and each is legal, so the log shows the path rather than a jump.
+
+*Advancement runs before the gate on the same turn.* An approach commitment arriving in
+`CLARIFICATION` should be judged in `APPROACH_EXPLORATION`, where probing is legal — folding it
+afterwards costs the interviewer the probe that the commitment itself justified.
+
+**Two things this fixed on the way past.**
+
+`SessionStore.transition()` sets `startedAt`, and had no callers — so `remainingSeconds` returned
+the full budget for the entire interview and **the candidate's clock never started**. It does
+now, from the moment they hear the problem.
+
+`runtime.test.ts`'s staleness test reached its window by racing the microtask queue (ingest a
+delta without awaiting it and hope the snapshot has not landed). One extra `await` anywhere on
+the path silently turned it into an assertion about nothing. `buildSnapshot` is now injectable,
+the way the clock and the classifier already were, so the lag is a fact the test states.
+
+**Known consequence, not yet ticketed.** `DELIVER_BRIEF` is permitted only in
+`ORAL_PROBLEM_DELIVERY` and `CLARIFICATION`. Now that sessions actually leave `CLARIFICATION`,
+"sorry, can you say that again?" asked during implementation degrades to silence. The reviewed
+repeat variants exist precisely so a second telling cannot leak more than the first, so the fix
+is probably to add `DELIVER_BRIEF` to the later stages' action sets — but that edits the action
+table, which `CLAUDE.md` says needs explicit review. Left as a decision rather than made
+quietly.
 
 ### `[x]` M1-3 · Response Gate v1, rules only · M
 **Deps:** M1-2.

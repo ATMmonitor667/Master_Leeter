@@ -44,6 +44,13 @@ export {
 } from "./state-machine.js";
 export { POLICIES, canHintNow, policyFor } from "./policy.js";
 export {
+  REASONING_TURNS_TO_LEAVE_CLARIFICATION,
+  isReasoningIntent,
+  nextStage,
+  type StageAdvance,
+  type StageSignals,
+} from "./stage-advance.js";
+export {
   HELD_FLOOR_CEILING,
   estimateTurnCompletion,
   silenceCeiling,

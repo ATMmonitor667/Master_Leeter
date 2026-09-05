@@ -16,7 +16,12 @@ import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } f
 import { reconstruct } from "./resume.js";
 import { buildSessionReview } from "./review.js";
 import { enqueueRun, handleRunRequestedEvent, type RunContext } from "./runs.js";
-import { InMemorySessionStore, SessionNotFoundError, remainingSeconds } from "./session-store.js";
+import {
+  InMemorySessionStore,
+  type InterviewSession,
+  SessionNotFoundError,
+  remainingSeconds,
+} from "./session-store.js";
 import { registerEventsSocket } from "./ws.js";
 
 /**
@@ -155,6 +160,16 @@ export async function registerSessionModule(
    */
   const runtimes = new Map<string, InterviewRuntime>();
 
+  /**
+   * The latest persisted session behind each live runtime.
+   *
+   * `store.transition` and `store.addPause` return NEW objects, so a runtime
+   * closing over the one it was built from reports a clock frozen at creation.
+   * Since `startedAt` is set by the first transition, that meant "full time
+   * remaining" for the whole interview — and the gate's wrap-up rule reads it.
+   */
+  const liveSessions = new Map<string, InterviewSession>();
+
   async function runtimeFor(sessionId: string): Promise<InterviewRuntime | null> {
     const existing = runtimes.get(sessionId);
     if (existing) return existing;
@@ -165,6 +180,8 @@ export async function registerSessionModule(
     const scenario = opts.library.get(session.scenarioVersionId);
     if (!scenario) return null;
 
+    liveSessions.set(session.id, session);
+
     const runtime = new InterviewRuntime({
       sessionId: session.id,
       scenario: scenario.version,
@@ -174,7 +191,7 @@ export async function registerSessionModule(
       scenarioVersionId: session.scenarioVersionId,
       traceId: session.traceId,
       events: eventLog,
-      remainingSeconds: () => remainingSeconds(session, Date.now()),
+      remainingSeconds: () => remainingSeconds(liveSessions.get(session.id) ?? session, Date.now()),
       // Without this the runtime silently falls back to the rule stub, and
       // every session runs on `stub-rules-v1` while CLASSIFIER_MODEL is read by
       // nothing. The failure is invisible in the logs and only shows up as an
@@ -182,6 +199,26 @@ export async function registerSessionModule(
       ...(opts.classifier ? { classifier: opts.classifier } : {}),
       // A decision reached by the re-evaluation timer has no caller awaiting it.
       onAuthorized: (result) => deliver(session.id, result),
+      /**
+       * Persist the stage the orchestrator just moved to (M1-2b).
+       *
+       * Two things depend on this and neither is cosmetic. The HTTP surface and
+       * the resume path read `session.state` from the store, so without it a
+       * reconnecting candidate is told the round is still in
+       * ORAL_PROBLEM_DELIVERY. And `transition()` is what sets `startedAt` —
+       * the interview clock literally does not start until the candidate has
+       * heard the problem, which is both correct and, until now, unreachable.
+       */
+      onTransition: async (to) => {
+        const updated = await store.transition(session.id, to);
+        liveSessions.set(session.id, updated);
+        pushToSession(session.id, {
+          kind: "STATE",
+          state: to,
+          remainingSeconds: remainingSeconds(updated, Date.now()),
+          interviewerStatus: "LISTENING",
+        });
+      },
     });
 
     runtimes.set(session.id, runtime);
@@ -430,6 +467,7 @@ export async function registerSessionModule(
       if (runtime) {
         await runtime.settled();
         runtimes.delete(session.id);
+        liveSessions.delete(session.id);
       }
       channel.forget(session.id);
       mintLimiter.forget(session.id);
@@ -470,7 +508,10 @@ export async function registerSessionModule(
     if (credited.creditedSeconds > 0) {
       // Credit the clock before reporting remaining time, so the candidate
       // never sees the minutes they lost to a drop.
-      await store.addPause(id, credited.creditedSeconds);
+      const creditedSession = await store.addPause(id, credited.creditedSeconds);
+      // The runtime's clock has to see the credit too, or the wrap-up rule
+      // counts minutes the candidate did not spend.
+      if (liveSessions.has(id)) liveSessions.set(id, creditedSession);
       await eventLog.append({
         sessionId: id,
         type: "TIMER_RESUMED",

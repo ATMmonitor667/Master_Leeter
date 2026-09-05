@@ -1,5 +1,10 @@
 import { TURN_INTENTS, type TurnIntent } from "@master-leeter/contracts";
-import { GeminiClient, type GeminiSchema, GeminiError } from "../../lib/gemini.js";
+import {
+  GeminiClient,
+  type GeminiSchema,
+  GeminiError,
+  geminiApiKeyFromEnv,
+} from "../../lib/gemini.js";
 import {
   MID_THOUGHT_CEILING,
   RuleBasedClassifier,
@@ -331,7 +336,10 @@ function clamp01(v: number): number {
  */
 export function classifierFromEnv(env: NodeJS.ProcessEnv = process.env): IntentClassifier {
   const model = env["CLASSIFIER_MODEL"];
-  const apiKey = env["GEMINI_API_KEY"] ?? env["REALTIME_API_KEY"];
+  // Shared resolution, deliberately. This line used to inline the `??` and
+  // therefore carried its own copy of the empty-placeholder bug documented on
+  // `geminiApiKeyFromEnv` — two sites, one silent downgrade each.
+  const apiKey = geminiApiKeyFromEnv(env);
   if (!model || !apiKey) return ruleBasedClassifier;
 
   return new GeminiClassifier({

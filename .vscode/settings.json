@@ -31,5 +31,6 @@
     "**/*.e2e.*",
     "**/index.ts",
     "**/index.js"
-  ]
+  ],
+  "python.languageServer": "None"
 }

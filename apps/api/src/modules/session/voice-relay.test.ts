@@ -127,9 +127,16 @@ describe("the voice agent can reach the tool surface", () => {
 
     expect(body.ok).toBe(false);
     // Either guard is a correct answer, and which one fires depends on how far
-    // the interview has got. A fresh session sits in ORAL_PROBLEM_DELIVERY,
-    // where the stage forbids probing outright — so the belt-and-braces check
-    // lands before the gate check ever runs.
+    // the interview has got. This session never called /voice-ready, so the
+    // brief was never delivered and it is still in ORAL_PROBLEM_DELIVERY, where
+    // the stage forbids probing outright — the belt-and-braces check lands
+    // before the gate check ever runs.
+    //
+    // Worth stating precisely, because this comment used to read as though a
+    // session simply STAYS in the opening stage. It did, and that was M1-2b:
+    // the state machine had no driver. It advances now (see
+    // `stage-advance.ts`), and what pins this particular session is the missing
+    // opening, not a missing transition.
     expect(["STAGE_FORBIDS", "NOT_AUTHORIZED"]).toContain(body.refusal);
   });
 

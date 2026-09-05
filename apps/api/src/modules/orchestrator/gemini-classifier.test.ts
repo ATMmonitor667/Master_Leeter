@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { GeminiClassifier, buildClassifierPrompt } from "./gemini-classifier.js";
+import { geminiApiKeyFromEnv } from "../../lib/gemini.js";
+import {
+  GeminiClassifier,
+  buildClassifierPrompt,
+  classifierFromEnv,
+} from "./gemini-classifier.js";
 
 /**
  * M4-1 — model classifier.
@@ -295,5 +300,45 @@ describe("GeminiClassifier — caching", () => {
 
     expect(calls).toHaveLength(2);
     expect(second.classifierId).toBe("gemini:gemini-3.5-flash-lite@v1");
+  });
+});
+
+describe("configuration resolves the key the operator actually set", () => {
+  /**
+   * The regression this exists for was found by reading a boot log, not by a
+   * failing test, and it had been silently degrading the product.
+   *
+   * The committed `.env` ships `GEMINI_API_KEY=` as a placeholder. `??` falls
+   * back only on `undefined`, so the empty placeholder beat the real key in
+   * `.env.local` and the server booted with the RULE STUB and no code runner —
+   * while warning that variables were "not set" which were set.
+   */
+  it("falls back to REALTIME_API_KEY past an empty GEMINI_API_KEY placeholder", () => {
+    const classifier = classifierFromEnv({
+      CLASSIFIER_MODEL: "gemini-3.5-flash-lite",
+      GEMINI_API_KEY: "",
+      REALTIME_API_KEY: "a-real-key",
+    } as NodeJS.ProcessEnv);
+
+    expect(classifier.id, "an empty placeholder shadowed the real key").not.toMatch(/^stub-/);
+  });
+
+  it("treats a whitespace-only key as unset rather than sending it", () => {
+    const classifier = classifierFromEnv({
+      CLASSIFIER_MODEL: "gemini-3.5-flash-lite",
+      GEMINI_API_KEY: "   ",
+    } as NodeJS.ProcessEnv);
+
+    expect(classifier.id).toMatch(/^stub-/);
+  });
+
+  it("still prefers GEMINI_API_KEY when it is genuinely set", () => {
+    expect(
+      geminiApiKeyFromEnv({ GEMINI_API_KEY: "text-key", REALTIME_API_KEY: "voice-key" } as NodeJS.ProcessEnv),
+    ).toBe("text-key");
+  });
+
+  it("degrades to the stub when nothing is configured at all", () => {
+    expect(classifierFromEnv({} as NodeJS.ProcessEnv).id).toMatch(/^stub-/);
   });
 });
