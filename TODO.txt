@@ -1,0 +1,69 @@
+MASTER LEETER — COMPLETION TODO
+Updated: 2026-09-04
+
+Product direction
+-----------------
+Build a focused 35–45 minute interview cockpit, not a chatbot or a generic
+LeetCode clone. The interviewer owns the audio channel, the candidate owns the
+editor, and the interface should make connection, voice, time, and interview
+stage legible without exposing the problem statement or the interviewer's
+internal reasoning.
+
+Visual direction
+----------------
+Use contemporary developer-tool and live-coding dashboard patterns as
+inspiration: deep neutral surfaces, a strong editorial landing page, modular
+workspace panels, restrained blue/coral accents, clear state pills, soft depth,
+and short functional transitions. Preserve the product invariants: no written
+problem, no interviewer transcript, no AI autocomplete, and no decorative
+motion that creates extra pressure during the interview.
+
+Implementation order
+--------------------
+
+[x] 1. Establish a green baseline and record human-only acceptance boundaries.
+    - Run typecheck/tests/evals/build in CI mode so pnpm can repair dependencies.
+    - Treat real microphone, speaker, and provider-quota checks as manual
+      acceptance; source code cannot honestly certify physical audio hardware.
+
+[x] 2. Implement the missing automatic interview stage driver (M1-2b).
+    - Persist every transition as a server-authored STATE_TRANSITIONED event.
+    - Keep InterviewRuntime and SessionStore synchronized through an injected
+      transition callback.
+    - Advance: delivered brief -> clarification; substantive reasoning ->
+      approach exploration; first code -> implementation; first run -> test and
+      debug; solved/done with time -> follow-up; low time or done -> wrap-up.
+    - Push authoritative stage updates to the client.
+    - Add event-only trajectory and replay tests; no test may set runtime state.
+
+[x] 3. Remove scenario-specific assumptions from the candidate workspace.
+    - Replace the hard-coded conveyor-rescan function with a neutral Python
+      scratch file that is valid for every scenario.
+    - Restore and display the authoritative stage after reconnect.
+
+[x] 4. Rebuild the UI into a polished, responsive interview cockpit.
+    - Refine landing/setup hierarchy, mode selection, scenario cards, loading,
+      error, and empty states.
+    - Make the live workspace feel responsive and alive with purposeful status,
+      voice, stage, run, and panel feedback while keeping the editor primary.
+    - Improve mobile/tablet behavior, focus states, reduced-motion behavior,
+      typography, spacing, and contrast.
+    - Upgrade the evidence report hierarchy without hiding evidence.
+
+[x] 5. Verify the completed engineering scope end to end.
+    - Run typecheck, unit/integration tests, simulator, eval harness, production
+      build, repository checks, and local browser smoke tests.
+    - Update this file and docs/ISSUES.md with the exact completed/manual status.
+
+Completion record
+-----------------
+Engineering scope completed 2026-09-04.
+
+- Typecheck, 761 unit/integration tests, 32 simulator tests, both evaluation
+  gates, production build, and all repository checks pass.
+- Desktop and 390 px mobile browser smoke tests pass; the candidate workspace
+  does not horizontally overflow and the brief-stage timer remains at 40:00.
+- MANUAL ACCEPTANCE REMAINS: connect real microphone/speaker hardware, configure
+  provider credentials and quota, then complete and review one 20–40 minute
+  voice interview. These checks require a person and external services and are
+  intentionally not represented as source-code completion.

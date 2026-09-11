@@ -53,6 +53,8 @@ export function DimensionCard({
 
       <p style={{ color: "var(--muted)", margin: "10px 0 0", lineHeight: 1.55 }}>{dimension.rationale}</p>
 
+      <div className="dimension-meter" aria-hidden="true"><span style={{ width: `${Math.max(0, Math.min(100, dimension.score * 20))}%` }} /></div>
+
       {dimension.evidence.length > 0 ? (
         <ul className="evidence-list">
           {dimension.evidence.map((moment) => (

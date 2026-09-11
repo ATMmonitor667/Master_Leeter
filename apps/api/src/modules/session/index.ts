@@ -180,6 +180,7 @@ export async function registerSessionModule(
     const scenario = opts.library.get(session.scenarioVersionId);
     if (!scenario) return null;
 
+    let liveSession = session;
     liveSessions.set(session.id, session);
 
     const runtime = new InterviewRuntime({
@@ -191,7 +192,7 @@ export async function registerSessionModule(
       scenarioVersionId: session.scenarioVersionId,
       traceId: session.traceId,
       events: eventLog,
-      remainingSeconds: () => remainingSeconds(liveSessions.get(session.id) ?? session, Date.now()),
+      remainingSeconds: () => remainingSeconds(liveSessions.get(session.id) ?? liveSession ?? session, Date.now()),
       // Without this the runtime silently falls back to the rule stub, and
       // every session runs on `stub-rules-v1` while CLASSIFIER_MODEL is read by
       // nothing. The failure is invisible in the logs and only shows up as an
@@ -199,23 +200,17 @@ export async function registerSessionModule(
       ...(opts.classifier ? { classifier: opts.classifier } : {}),
       // A decision reached by the re-evaluation timer has no caller awaiting it.
       onAuthorized: (result) => deliver(session.id, result),
-      /**
-       * Persist the stage the orchestrator just moved to (M1-2b).
-       *
-       * Two things depend on this and neither is cosmetic. The HTTP surface and
-       * the resume path read `session.state` from the store, so without it a
-       * reconnecting candidate is told the round is still in
-       * ORAL_PROBLEM_DELIVERY. And `transition()` is what sets `startedAt` —
-       * the interview clock literally does not start until the candidate has
-       * heard the problem, which is both correct and, until now, unreachable.
-       */
       onTransition: async (to) => {
         const updated = await store.transition(session.id, to);
+        liveSession = updated;
         liveSessions.set(session.id, updated);
         pushToSession(session.id, {
           kind: "STATE",
-          state: to,
+          state: updated.state,
           remainingSeconds: remainingSeconds(updated, Date.now()),
+          interviewerStatus: "LISTENING",
+        });
+      },
           interviewerStatus: "LISTENING",
         });
       },
@@ -317,7 +312,7 @@ export async function registerSessionModule(
          * report it, and leaving the flag set would make gate rule 1 read every
          * later turn as a barge-in and mute the interviewer for good.
          */
-        if (!sessionPushers.has(sessionId)) runtime?.markSpeechFinished();
+        if (!sessionPushers.has(sessionId)) void runtime?.markSpeechFinished();
       }
   }
 
@@ -678,7 +673,7 @@ export async function registerSessionModule(
     const runtime = runtimes.get(id);
     if (!runtime) return reply.code(409).send({ error: "NO_LIVE_SESSION" });
 
-    runtime.markSpeechFinished();
+    await runtime.markSpeechFinished();
     return reply.send({ ok: true });
   });
 

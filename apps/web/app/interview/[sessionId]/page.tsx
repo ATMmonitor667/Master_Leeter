@@ -1,11 +1,12 @@
 "use client";
 
-import type { RunResult, ServerMessage } from "@master-leeter/contracts";
+import type { InterviewState, RunResult, ServerMessage } from "@master-leeter/contracts";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "../../../components/CodeEditor";
 import { InterviewerStatus, type InterviewerState } from "../../../components/InterviewerStatus";
 import { Notepad } from "../../../components/Notepad";
 import { SpeechCaption } from "../../../components/SpeechCaption";
+import { StageProgress, STAGE_LABELS } from "../../../components/StageProgress";
 import { TestPanel } from "../../../components/TestPanel";
 import { Timer } from "../../../components/Timer";
 import { VoiceControls } from "../../../components/VoiceControls";
@@ -29,9 +30,9 @@ import { VoiceSession, type VoiceStatus } from "../../../lib/voice-session";
  * and the time. That is what a real interview gives you.
  */
 
-const STARTER = `def first_rescan(readings):
-    # Your solution here.
-    pass
+const STARTER = `# Write your Python solution here.
+# Talk through your assumptions before you begin.
+
 `;
 
 export default function InterviewPage({ params }: { params: Promise<{ sessionId: string }> }) {
@@ -41,12 +42,14 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   const [notes, setNotes] = useState("");
   const [testInput, setTestInput] = useState("");
   const [remaining, setRemaining] = useState(0);
+  const [stage, setStage] = useState<InterviewState>("ORAL_PROBLEM_DELIVERY");
   const [interviewer, setInterviewer] = useState<InterviewerState>("LISTENING");
   const [connected, setConnected] = useState(false);
   const [running, setRunning] = useState(false);
   const [runnerAvailable, setRunnerAvailable] = useState(true);
   const [result, setResult] = useState<RunResult | null>(null);
   const [ending, setEnding] = useState(false);
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
   const [restored, setRestored] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("IDLE");
   const [voiceMuted, setVoiceMuted] = useState(false);
@@ -59,6 +62,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     switch (msg.kind) {
       case "STATE":
         setRemaining(msg.remainingSeconds);
+        setStage(msg.state);
         setInterviewer(msg.interviewerStatus);
         break;
       case "RUN_RESULT":
@@ -97,6 +101,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         if (data.code) setCode(data.code);
         if (data.notes) setNotes(data.notes);
         if (typeof data.remainingSeconds === "number") setRemaining(data.remainingSeconds);
+        if (typeof data.state === "string") setStage(data.state as InterviewState);
         setRestored(true);
       })
       .catch(() => setRestored(true));
@@ -213,6 +218,17 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     clientRef.current?.requestRun(testInput);
   }, [testInput]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        if (!running && runnerAvailable) onRun();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onRun, runnerAvailable, running]);
+
   const onSpeechFinal = useCallback((transcript: string) => {
     clientRef.current?.speechFinal(transcript);
   }, []);
@@ -240,7 +256,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
             <span className="status-dot" />{connected ? "Connected" : "Reconnecting"}
           </span>
         </div>
-        <div className="workspace-stage">Live interview · Python</div>
+        <StageProgress stage={stage} />
         <div className="workspace-header-right">
           <VoiceControls
             status={voiceStatus}
@@ -251,10 +267,14 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
             onToggleMute={onToggleMute}
           />
           <InterviewerStatus state={voiceStatus === "SPEAKING" ? "SPEAKING" : interviewer} />
-          <Timer remainingSeconds={remaining} />
+          <Timer
+            remainingSeconds={remaining}
+            running={connected && stage !== "ORAL_PROBLEM_DELIVERY"}
+            ready={restored}
+          />
           {/* Deliberately plain. Ending an interview is a decision, not a
               call to action, and a prominent button invites misclicks. */}
-          <button onClick={onEnd} disabled={ending} className="ghost-button end-button">
+          <button onClick={() => setConfirmingEnd(true)} disabled={ending} className="ghost-button end-button">
             {ending ? "Ending…" : "End interview"}
           </button>
         </div>
@@ -272,12 +292,21 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       onVoiceStart,
       onVoiceStop,
       onToggleMute,
+      stage,
     ],
   );
 
   return (
-    <main className="workspace">
+    <main className={`workspace voice-${voiceStatus.toLowerCase()}`}>
       {header}
+
+      {(voiceStatus === "IDLE" || voiceStatus === "FAILED") && (
+        <div className="voice-onboarding" role="status">
+          <span className="voice-onboarding-icon" aria-hidden="true">⌁</span>
+          <span><strong>{voiceStatus === "FAILED" ? "Voice needs another try" : "Your interview is waiting"}</strong><small>{voiceStatus === "FAILED" ? "Check your microphone and reconnect when ready." : "Start voice to hear the problem. Your timer starts after the brief."}</small></span>
+          <span className="voice-onboarding-stage">01 · {STAGE_LABELS[stage]}</span>
+        </div>
+      )}
 
       <div
         className={`workspace-grid${restored ? "" : " workspace-loading"}`}
@@ -305,6 +334,20 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
           </div>
         </aside>
       </div>
+
+      {confirmingEnd && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setConfirmingEnd(false)}>
+          <section className="end-dialog" role="dialog" aria-modal="true" aria-labelledby="end-title" onMouseDown={(event) => event.stopPropagation()}>
+            <span className="dialog-kicker">End this session?</span>
+            <h2 id="end-title">Your report will use everything captured so far.</h2>
+            <p>You can&apos;t return to the live interview after ending it. Your latest code and notes will be saved first.</p>
+            <div className="dialog-actions">
+              <button className="secondary-button" onClick={() => setConfirmingEnd(false)}>Keep interviewing</button>
+              <button className="danger-button" onClick={onEnd} disabled={ending}>{ending ? "Ending…" : "End and view report"}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

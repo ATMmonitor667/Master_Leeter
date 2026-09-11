@@ -22,14 +22,23 @@ export interface SpeechCaptionProps {
  * the interviewer's words would turn listening back into reading.
  */
 export function SpeechCaption({ onFinal }: SpeechCaptionProps) {
-  const [supported] = useState(() => speechRecognitionAvailable());
-  const [status, setStatus] = useState<SpeechTranscriberStatus>(supported ? "IDLE" : "UNSUPPORTED");
+  // Browser capability detection must happen after hydration. Running it in a
+  // state initializer makes the server render "unsupported" while the first
+  // browser render can say "supported", which causes a hydration mismatch.
+  const [supported, setSupported] = useState<boolean | null>(null);
+  const [status, setStatus] = useState<SpeechTranscriberStatus>("UNSUPPORTED");
   const [interim, setInterim] = useState("");
   const [lines, setLines] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const transcriberRef = useRef<SpeechTranscriber | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const available = speechRecognitionAvailable();
+    setSupported(available);
+    setStatus(available ? "IDLE" : "UNSUPPORTED");
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -78,9 +87,9 @@ export function SpeechCaption({ onFinal }: SpeechCaptionProps) {
         <button
           type="button"
           onClick={onToggle}
-          disabled={!supported}
+          disabled={supported !== true}
           className="ghost-button"
-          style={{ marginRight: 6, opacity: supported ? 1 : 0.5 }}
+          style={{ marginRight: 6, opacity: supported === true ? 1 : 0.5 }}
         >
           {listening ? "Stop" : "Start"}
         </button>
@@ -92,7 +101,13 @@ export function SpeechCaption({ onFinal }: SpeechCaptionProps) {
         aria-relevant="additions text"
         className="caption-body"
       >
-        {!supported && (
+        {supported === null && (
+          <p style={{ margin: 0, color: "var(--muted)", fontSize: 12 }}>
+            Checking caption support…
+          </p>
+        )}
+
+        {supported === false && (
           <p style={{ margin: 0, color: "var(--muted)", fontSize: 12 }}>
             Speech recognition is not available in this browser. Try Chrome or Edge.
           </p>

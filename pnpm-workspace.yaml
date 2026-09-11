@@ -1,3 +1,13 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+  tree-sitter-python: true
+
+# The desktop runtime can provide a newer pnpm than packageManager declares.
+# Dependencies are installed explicitly; commands should not destroy and
+# recreate node_modules merely because pnpm's own version changed.
+verifyDepsBeforeRun: false

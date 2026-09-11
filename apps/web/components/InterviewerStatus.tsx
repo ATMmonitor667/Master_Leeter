@@ -1,5 +1,7 @@
 "use client";
 
+import type { CSSProperties } from "react";
+
 export type InterviewerState = "LISTENING" | "WAITING" | "SPEAKING";
 
 const COPY: Record<InterviewerState, { label: string; color: string }> = {
@@ -28,18 +30,10 @@ export function InterviewerStatus({ state }: { state: InterviewerState }) {
       aria-label={`Interviewer ${label}`}
       className="interviewer-status"
     >
-      <span
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: color,
-          // Only the speaking state animates. A pulsing dot while the candidate
-          // is thinking reads as impatience.
-          animation: state === "SPEAKING" ? "pulse 1.2s ease-in-out infinite" : undefined,
-        }}
-      />
-      <span>{label}</span>
+      <span className={`interviewer-orb ${state.toLowerCase()}`} style={{ "--state-color": color } as CSSProperties}>
+        <i /><i /><i />
+      </span>
+      <span><small>Interviewer</small>{label}</span>
     </div>
   );
 }
