@@ -35,10 +35,17 @@ describe("Supabase identity verification", () => {
     }
   });
   it("cannot enable development identity in production or start with missing keys", () => {
-    expect(authenticatorFromEnv({})).toBeUndefined();
-    for (const env of [{ NODE_ENV: "production", AUTH_MODE: "development" }, { NODE_ENV: "production" }, { AUTH_MODE: "typo" }]) {
+    expect(authenticatorFromEnv({ NODE_ENV: "development", AUTH_MODE: "development", ALLOW_INSECURE_DEV: "1" })).toBeUndefined();
+    for (const env of [{}, { NODE_ENV: "staging" }, { AUTH_MODE: "development" },
+      { NODE_ENV: "development", AUTH_MODE: "development" },
+      { NODE_ENV: "production", AUTH_MODE: "development", ALLOW_INSECURE_DEV: "1" },
+      { NODE_ENV: "staging", AUTH_MODE: "development", ALLOW_INSECURE_DEV: "1" },
+      { NODE_ENV: "production" }, { AUTH_MODE: "typo" }]) {
       expect(() => authenticatorFromEnv(env)).toThrow("AUTH_CONFIGURATION");
     }
+  });
+  it("defaults to verified identity even without NODE_ENV", () => {
+    expect(authenticatorFromEnv({ SUPABASE_URL: "https://example.supabase.co", SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test" })).toBeInstanceOf(SupabaseAuthenticator);
   });
 });
 

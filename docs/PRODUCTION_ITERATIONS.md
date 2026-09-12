@@ -63,6 +63,21 @@ readiness claim is implied by completion of this foundation.
 
 ## I02 — Identity, ownership and durable sessions
 
+I02a is committed as dc5a1a7 on codex-production-02-auth-storage. Follow-up
+hardening makes authentication secure by default in every environment, requires
+explicit local bypass flags, logs the selected mode, and adds bounded reconnect
+backoff with terminal authentication/session failures. See SUPABASE_AUTH.md.
+This checkpoint does not implement durable storage. I02b still needs coordinated
+session/event/report persistence, distributed tickets, replay and ownership.
+Review CODE_REVIEW_2026-09-12.txt findings against the implementation before
+closing them; that review was static and some findings require reproduction.
+
+2026-09-12 hardening checkpoint: also restored push CI for the renamed
+codex-production-* branches and removed internal session-creation error text
+from responses. Verified 42 targeted API tests, 33 browser transport/client tests,
+workspace typecheck and git diff --check. No live Supabase or deployment test
+was performed. Review findings about distributed state remain open.
+
 Delivery split: I02a implements email-code sign-in, verified API identity,
 HTTP/voice/report ownership, single-use socket tickets, frame session binding,
 token refresh, origin checks and private export filtering. See

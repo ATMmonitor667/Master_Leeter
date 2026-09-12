@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, production, 'codex/production-*']
+    branches: [main, production, 'codex/production-*', 'codex-production-*']
   pull_request:
 
 jobs:

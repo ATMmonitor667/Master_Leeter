@@ -74,6 +74,18 @@ describe("POST /v1/interview-sessions", () => {
     expect(res.json()).toMatchObject({ state: "ORAL_PROBLEM_DELIVERY", mode: "MOCK" });
   });
 
+  it("does not disclose unexpected provider errors", async () => {
+    const server = buildServer({ library, questionBank: {
+      kind: "supabase", listActive: async () => [],
+      get: async () => { throw new Error("private database credentials"); },
+    } });
+    try {
+      const response = await create(server, "unexpected-provider-error");
+      expect(response.json().error).toBe("CANNOT_CREATE");
+      expect(response.body).not.toContain("private database credentials");
+    } finally { await server.close(); }
+  });
+
   it("requires an idempotency key", async () => {
     const res = await app().inject({
       method: "POST",

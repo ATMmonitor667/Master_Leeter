@@ -158,6 +158,7 @@ export async function start(): Promise<void> {
     {
       scenarios: [...library.keys()],
       questionBank: questionBank.kind,
+      authentication: authenticator ? "supabase" : "insecure-local-development",
       runner: runner ? "model-judge" : "none",
       classifier: classifier.id,
       realtime: realtimeTokenMinter ? realtimeTokenMinter.id : "none",

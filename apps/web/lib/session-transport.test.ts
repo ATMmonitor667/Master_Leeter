@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
-vi.mock("./auth", () => ({ apiFetch }));
+vi.mock("./auth", () => ({ apiFetch, SignInRequired: class SignInRequired extends Error {} }));
+import { SignInRequired } from "./auth";
 import { connectSessionTransport } from "./session-transport";
 
 class FakeSocket {
@@ -21,6 +22,21 @@ beforeEach(() => { vi.clearAllMocks(); FakeSocket.created = []; vi.stubGlobal("W
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("authenticated editor connections", () => {
+  it("stops retrying when sign-in has expired", async () => {
+    apiFetch.mockRejectedValue(new SignInRequired());
+    const h = handlers();
+    connectSessionTransport("room", h);
+    await drain();
+    expect(h.onClose).toHaveBeenCalledWith(false);
+    expect(FakeSocket.created).toHaveLength(0);
+  });
+  it.each([401, 403, 404, 409])("does not retry terminal HTTP %s", async (status) => {
+    apiFetch.mockResolvedValue(new Response(null, { status }));
+    const h = handlers();
+    connectSessionTransport("room", h);
+    await drain();
+    expect(h.onClose).toHaveBeenCalledWith(false);
+  });
   it("obtains a fresh ticket for every reconnect and exposes readiness to the outbox", async () => {
     apiFetch.mockImplementation(async () => new Response(JSON.stringify({ ticket: `ticket-${apiFetch.mock.calls.length}` })));
     const h = handlers();

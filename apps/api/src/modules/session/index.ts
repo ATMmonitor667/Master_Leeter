@@ -419,7 +419,8 @@ export async function registerSessionModule(
         app.log.warn({ code: err.code }, "question bank could not supply a validated question");
         return reply.code(503).send({ error: "QUESTION_BANK_UNAVAILABLE", message: "Interview questions are temporarily unavailable. Please retry shortly." });
       }
-      return reply.code(409).send({ error: "CANNOT_CREATE", message: (err as Error).message });
+      req.log.error({ code: "CANNOT_CREATE" }, "interview creation failed");
+      return reply.code(409).send({ error: "CANNOT_CREATE", message: "Unable to create interview. Please retry." });
     }
   });
 

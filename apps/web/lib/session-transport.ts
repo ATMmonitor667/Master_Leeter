@@ -1,4 +1,4 @@
-import { apiFetch } from "./auth";
+import { apiFetch, SignInRequired } from "./auth";
 import type { Transport, TransportHandlers } from "./session-client";
 
 /** Obtain a new one-use ticket for every connection, including retries. */
@@ -6,15 +6,22 @@ export function connectSessionTransport(sessionId: string, handlers: TransportHa
   let socket: WebSocket | null = null;
   let closed = false;
   let reportedClose = false;
-  const reportClose = () => {
+  const reportClose = (retryable = true) => {
     if (reportedClose || closed) return;
     reportedClose = true;
-    handlers.onClose();
+    handlers.onClose(retryable);
   };
   void (async () => {
     try {
       const response = await apiFetch(`/v1/interview-sessions/${sessionId}/socket-ticket`, { method: "POST" });
-      if (!response.ok) throw new Error("Could not connect to this interview. Please retry or sign in again.");
+      if (!response.ok) {
+        if ([401, 403, 404, 409].includes(response.status)) {
+          if (!closed) onError?.("This interview is unavailable. Return home or sign in again to continue.");
+          reportClose(false);
+          return;
+        }
+        throw new Error("Could not connect to this interview. Retrying…");
+      }
       const body: unknown = await response.json();
       if (closed) return;
       if (!body || typeof body !== "object" || !("ticket" in body) || typeof body.ticket !== "string") throw new Error("Invalid connection response");
@@ -31,7 +38,7 @@ export function connectSessionTransport(sessionId: string, handlers: TransportHa
       };
     } catch (error) {
       if (!closed) onError?.((error as Error).message);
-      reportClose();
+      reportClose(!(error instanceof SignInRequired));
     }
   })();
   return {

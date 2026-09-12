@@ -302,6 +302,33 @@ describe("surviving a dropped connection", () => {
 });
 
 describe("robustness", () => {
+  it("backs off, cancels retries on teardown, and stops on terminal failures", () => {
+    let handlers!: TransportHandlers;
+    let pending: (() => void) | null = null;
+    const delays: number[] = [];
+    const client = new SessionClient({
+      sessionId: SESSION, reconnectDelayMs: 1500, random: () => 1,
+      setTimer: (fn, ms) => { pending = fn; delays.push(ms); return 1; },
+      clearTimer: () => { pending = null; },
+      connect: (h) => { handlers = h; return new FakeTransport(h); },
+    });
+    client.connect();
+    for (let n = 0; n < 7; n++) {
+      handlers.onClose();
+      const retry = pending!;
+      pending = null;
+      retry();
+    }
+    expect(delays).toEqual([1500, 3000, 6000, 12000, 24000, 30000, 30000]);
+    handlers.onOpen();
+    handlers.onClose();
+    expect(delays.at(-1)).toBe(1500);
+    client.disconnect();
+    expect(pending).toBeNull();
+    client.connect();
+    handlers.onClose(false);
+    expect(pending).toBeNull();
+  });
   it("ignores malformed server messages instead of crashing", () => {
     const h = build();
     expect(() => h.transport.handlers.onMessage("not json")).not.toThrow();

@@ -51,8 +51,9 @@ export class SupabaseAuthenticator implements Authenticator {
 }
 
 export function authenticatorFromEnv(env: NodeJS.ProcessEnv): Authenticator | undefined {
-  const mode = env["AUTH_MODE"] ?? (env["NODE_ENV"] === "production" ? "supabase" : "development");
-  if (mode === "development" && env["NODE_ENV"] !== "production") return undefined;
+  const mode = env["AUTH_MODE"] ?? "supabase";
+  if (mode === "development" && env["ALLOW_INSECURE_DEV"] === "1" &&
+      ["development", "test"].includes(env["NODE_ENV"] ?? "")) return undefined;
   if (mode !== "supabase" || !env["SUPABASE_URL"] || !env["SUPABASE_PUBLISHABLE_KEY"]) throw new AuthError("AUTH_CONFIGURATION");
   return new SupabaseAuthenticator({ url: env["SUPABASE_URL"], publicKey: env["SUPABASE_PUBLISHABLE_KEY"] });
 }

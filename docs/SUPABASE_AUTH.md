@@ -101,6 +101,13 @@ Do not claim immediate global revocation of every existing provider credential.
 Account deletion here removes practice data/consents, not the Supabase Auth user.
 Full account erasure and worker cancellation belong to the durable lifecycle pass.
 
-Offline local development can use AUTH_MODE=development with
-NEXT_PUBLIC_AUTH_MODE=development; that mode intentionally preserves test
-fixtures and placeholder identity. It is refused by production API startup.
+Offline local development requires AUTH_MODE=development, NODE_ENV=development
+and ALLOW_INSECURE_DEV=1, with NEXT_PUBLIC_AUTH_MODE=development in the browser.
+Only NODE_ENV=development or test permits this explicit bypass. Missing or
+staging NODE_ENV never disables authentication; the default is Supabase.
+
+Current hosting constraint: one API process only. Tickets and interview state
+are process-local; do not enable multiple replicas or claim restart recovery.
+Durable storage, distributed tickets and session ownership remain I02b work.
+Browser reconnects use exponential backoff capped at 30 seconds with jitter;
+expired sign-in and terminal ticket errors stop retries and show an error.
