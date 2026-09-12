@@ -63,7 +63,8 @@ export class InMemorySessionStore implements SessionStore {
   constructor(private readonly now: () => string = () => new Date().toISOString()) {}
 
   async create(req: CreateSessionRequest): Promise<InterviewSession> {
-    const existingId = this.byIdempotencyKey.get(req.idempotencyKey);
+    const key = JSON.stringify([req.userId, req.idempotencyKey]);
+    const existingId = this.byIdempotencyKey.get(key);
     if (existingId) {
       const existing = this.sessions.get(existingId);
       if (existing) return existing;
@@ -98,8 +99,14 @@ export class InMemorySessionStore implements SessionStore {
     };
 
     this.sessions.set(session.id, session);
-    this.byIdempotencyKey.set(req.idempotencyKey, session.id);
+    this.byIdempotencyKey.set(key, session.id);
     return session;
+  }
+
+  /** Retry must succeed even when the bank is offline or the question was retired. */
+  async findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null> {
+    const id = this.byIdempotencyKey.get(JSON.stringify([userId, key]));
+    return id ? this.sessions.get(id) ?? null : null;
   }
 
   async get(id: string): Promise<InterviewSession | null> {

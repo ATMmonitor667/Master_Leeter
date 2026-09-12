@@ -12,6 +12,7 @@ import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/inde
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
+import { type QuestionBank, QuestionBankError, questionBankFromEnv, questionBankSource } from "./modules/scenario/question-bank.js";
 import { InMemoryEventLog, InMemorySessionStore, registerSessionModule } from "./modules/session/index.js";
 
 /**
@@ -33,6 +34,7 @@ export const CONTENT_ROOT = join(here, "../../../content/scenarios");
 
 export interface ServerOptions {
   library: Map<string, LoadedScenario>;
+  questionBank?: QuestionBank;
   logger?: boolean;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
@@ -73,6 +75,7 @@ export function buildServer(opts: ServerOptions) {
   void app.register(registerSessionModule, {
     prefix: "/v1",
     library: opts.library,
+    ...(opts.questionBank ? { questionBank: opts.questionBank } : {}),
     store,
     eventLog,
     evaluationQueue,
@@ -80,7 +83,7 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.classifier ? { classifier: opts.classifier } : {}),
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
   });
-  void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library });
+  void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
   void app.register(registerPrivacyModule, {
     prefix: "/v1",
@@ -99,7 +102,13 @@ export async function start(): Promise<void> {
 
   // Scenarios load at boot and fail loudly. A content bug should stop a deploy,
   // not surface mid-interview as an interviewer that cannot answer questions.
-  const library = await loadScenarioLibrary(CONTENT_ROOT);
+  const library = questionBankSource(process.env) === "files"
+    ? await loadScenarioLibrary(CONTENT_ROOT)
+    : new Map<string, LoadedScenario>();
+  const questionBank = questionBankFromEnv(process.env, library);
+  const activeQuestions = await questionBank.listActive();
+  if (activeQuestions.length === 0) throw new QuestionBankError("INVALID_CONTENT");
+  for (const question of activeQuestions) library.set(question.version.id, question);
 
   // The judge is optional at boot. Without it the interview runs, minus
   // execution — far better than refusing to start (M2-4).
@@ -123,6 +132,7 @@ export async function start(): Promise<void> {
 
   const app = buildServer({
     library,
+    questionBank,
     logger: true,
     ...(runner ? { runner } : {}),
     classifier,
@@ -136,6 +146,7 @@ export async function start(): Promise<void> {
   app.log.info(
     {
       scenarios: [...library.keys()],
+      questionBank: questionBank.kind,
       runner: runner ? "model-judge" : "none",
       classifier: classifier.id,
       realtime: realtimeTokenMinter ? realtimeTokenMinter.id : "none",

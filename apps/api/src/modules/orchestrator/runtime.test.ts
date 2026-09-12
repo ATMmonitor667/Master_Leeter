@@ -543,7 +543,7 @@ describe("state machine is enforced through the runtime", () => {
   it("reaches test and debug using candidate events only", async () => {
     const transitions: string[] = [];
     const runtime = build({
-      onStateTransition: ({ to }) => {
+      onTransition: (to) => {
         transitions.push(to);
       },
     });

@@ -13,6 +13,7 @@
     "sim": "pnpm --filter @master-leeter/api exec vitest run src/sim",
     "eval": "pnpm --filter @master-leeter/api exec tsx src/eval/cli.ts",
     "review": "pnpm --filter @master-leeter/api exec tsx scripts/session-review.ts",
+    "questions:import": "pnpm --filter @master-leeter/api exec tsx scripts/question-bank-import.ts",
     "eval:test": "pnpm --filter @master-leeter/api exec vitest run src/eval",
     "dev:api": "pnpm --filter @master-leeter/api dev",
     "dev:web": "pnpm --filter @master-leeter/web dev",

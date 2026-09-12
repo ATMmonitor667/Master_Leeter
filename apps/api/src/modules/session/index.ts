@@ -9,7 +9,8 @@ import {
   type RealtimeTokenMinter,
 } from "../realtime/index.js";
 import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
-import { type LoadedScenario, resolveScenario } from "../scenario/loader.js";
+import { type LoadedScenario } from "../scenario/loader.js";
+import { type QuestionBank, FileQuestionBank, QuestionBankError, chooseQuestion } from "../scenario/question-bank.js";
 import { SessionChannel } from "./channel.js";
 import { InMemoryEventLog } from "./event-log.js";
 import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
@@ -57,7 +58,7 @@ export { handleConnection, registerEventsSocket, type SocketLike } from "./ws.js
 
 const CreateSessionBody = z.object({
   /** Opaque public ref from GET /scenarios. Internal ids are also accepted. */
-  scenarioRef: z.string().min(1),
+  scenarioRef: z.string().min(1).max(200).optional(),
   mode: InterviewModeSchema.default("MOCK"),
   language: z.string().default("python"),
 });
@@ -75,6 +76,7 @@ const RunBody = z.object({
 
 export interface SessionModuleOptions {
   library: Map<string, LoadedScenario>;
+  questionBank?: QuestionBank;
   store?: InMemorySessionStore;
   eventLog?: InMemoryEventLog;
   /** Absent until a judge model is configured. The interview works without it. */
@@ -108,6 +110,7 @@ export async function registerSessionModule(
   const store = opts.store ?? new InMemorySessionStore();
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const channel = new SessionChannel({ sessions: store, eventLog });
+  const questionBank = opts.questionBank ?? new FileQuestionBank(opts.library);
 
   /**
    * runId -> the session context needed to attribute the result on the way back.
@@ -208,9 +211,6 @@ export async function registerSessionModule(
           kind: "STATE",
           state: updated.state,
           remainingSeconds: remainingSeconds(updated, Date.now()),
-          interviewerStatus: "LISTENING",
-        });
-      },
           interviewerStatus: "LISTENING",
         });
       },
@@ -367,22 +367,33 @@ export async function registerSessionModule(
       return reply.code(400).send({ error: "MISSING_IDEMPOTENCY_KEY" });
     }
 
-    const scenario = resolveScenario(opts.library, body.data.scenarioRef);
-    if (!scenario) {
-      return reply.code(404).send({ error: "UNKNOWN_SCENARIO" });
-    }
-
     // M2-8: userId comes from the auth context once a provider is chosen.
     const userId = (req.headers["x-user-id"] as string) ?? "anonymous";
 
     try {
-      const session = await store.create({
-        userId,
-        scenario,
-        mode: body.data.mode,
-        language: body.data.language,
-        idempotencyKey,
-      });
+      let session = await store.findByIdempotencyKey(userId, idempotencyKey);
+      if (!session) {
+        const scenario = body.data.scenarioRef
+          ? await questionBank.get(body.data.scenarioRef)
+          : chooseQuestion(await questionBank.listActive());
+        if (!scenario) {
+          return reply.code(body.data.scenarioRef ? 404 : 503).send({ error: body.data.scenarioRef ? "UNKNOWN_SCENARIO" : "QUESTION_BANK_EMPTY" });
+        }
+        if (scenario.version.status !== "ACTIVE") {
+          return reply.code(409).send({ error: "SCENARIO_NOT_ACTIVE" });
+        }
+        // Runtime/tools use this immutable pin, never a later database fetch.
+        const pinned = opts.library.get(scenario.version.id);
+        if (pinned && pinned.contentHash !== scenario.contentHash) throw new QuestionBankError("VERSION_CONFLICT");
+        opts.library.set(scenario.version.id, pinned ?? scenario);
+        session = await store.create({
+          userId,
+          scenario,
+          mode: body.data.mode,
+          language: body.data.language,
+          idempotencyKey,
+        });
+      }
 
       await eventLog.append({
         sessionId: session.id,
@@ -404,6 +415,10 @@ export async function registerSessionModule(
         language: session.language,
       });
     } catch (err) {
+      if (err instanceof QuestionBankError) {
+        app.log.warn({ code: err.code }, "question bank could not supply a validated question");
+        return reply.code(503).send({ error: "QUESTION_BANK_UNAVAILABLE", message: "Interview questions are temporarily unavailable. Please retry shortly." });
+      }
       return reply.code(409).send({ error: "CANNOT_CREATE", message: (err as Error).message });
     }
   });
