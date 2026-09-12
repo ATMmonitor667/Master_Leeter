@@ -249,6 +249,7 @@ describe("privacy routes", () => {
   it("deletes a session and returns a receipt", async () => {
     const server = app();
     const id = await session(server);
+    await server.inject({ method: "POST", url: `/v1/interview-sessions/${id}/end`, headers: { "x-user-id": USER } });
 
     const res = await server.inject({
       method: "DELETE",

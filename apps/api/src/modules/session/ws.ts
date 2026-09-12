@@ -1,5 +1,5 @@
 import type { SessionEvent, ServerMessage } from "@master-leeter/contracts";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { SessionChannel } from "./channel.js";
 
 /**
@@ -22,6 +22,7 @@ import type { SessionChannel } from "./channel.js";
  * type augmentation of Fastify's route generics.
  */
 export interface SocketLike {
+  close?(code?: number, reason?: string): void;
   send(data: string): void;
   on(event: "message", listener: (data: { toString(): string }) => void): void;
   on(event: "close", listener: () => void): void;
@@ -29,6 +30,7 @@ export interface SocketLike {
 }
 
 export interface EventsSocketDeps {
+  expiresAt?: number;
   channel: SessionChannel;
   /** Called with each committed event so the orchestrator can apply it. */
   dispatch: (event: SessionEvent) => Promise<void>;
@@ -45,7 +47,17 @@ export interface EventsSocketDeps {
  * it to a route.
  */
 export function handleConnection(socket: SocketLike, sessionId: string, deps: EventsSocketDeps): void {
+  let closed = false;
+  let pending = 0;
+  let chain = Promise.resolve();
+  const expired = () => deps.expiresAt !== undefined && Date.now() >= deps.expiresAt;
+  const expiryTimer = deps.expiresAt === undefined ? undefined : setTimeout(() => {
+    closed = true;
+    socket.close?.(4001, "Authentication expired; reconnect");
+  }, Math.max(0, Math.min(deps.expiresAt - Date.now(), 55 * 60_000)));
+  expiryTimer?.unref();
   const write = (messages: ServerMessage[]): void => {
+    if (closed) return;
     for (const message of messages) socket.send(JSON.stringify(message));
   };
 
@@ -67,8 +79,8 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
     .then((result) => write(result.messages.filter((m) => m.kind === "STATE")))
     .catch((err: unknown) => deps.log?.warn({ sessionId, err }, "initial state push failed"));
 
-  socket.on("message", (raw) => {
-    void (async () => {
+  const processFrame = async (raw: { toString(): string }): Promise<void> => {
+      if (closed || expired()) return;
       let parsed: unknown;
       try {
         parsed = JSON.parse(raw.toString());
@@ -80,6 +92,11 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
         return;
       }
 
+      // Socket identity is authoritative; never let a frame name another room.
+      if (typeof parsed === "object" && parsed !== null && "sessionId" in parsed && parsed.sessionId !== sessionId) {
+        write([{ kind: "ERROR", code: "SESSION_MISMATCH", message: "Event does not belong to this connection" }]);
+        return;
+      }
       try {
         const result = await deps.channel.handleClientEvent(parsed);
         write(result.messages);
@@ -92,10 +109,19 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
         deps.log?.error({ sessionId, err }, "session channel failed");
         write([{ kind: "ERROR", code: "INTERNAL", message: "event could not be processed" }]);
       }
-    })();
+  };
+  socket.on("message", (raw) => {
+    if (closed) return;
+    if (++pending > 64) { closed = true; socket.close?.(1008, "Too many pending events"); return; }
+    // Ordered frames must stay ordered across asynchronous database/AI work.
+    chain = chain.then(() => processFrame(raw)).catch(() => {
+      write([{ kind: "ERROR", code: "INTERNAL", message: "Event could not be processed" }]);
+    }).finally(() => { pending--; });
   });
 
   socket.on("close", () => {
+    closed = true;
+    if (expiryTimer) clearTimeout(expiryTimer);
     detach?.();
     // Clear the sequence watermark so a reconnecting client resuming from its
     // own last-acked seq is not mistaken for one with a gap.
@@ -119,7 +145,7 @@ type WebSocketRoutes = {
   get(
     path: string,
     opts: { websocket: true },
-    handler: (socket: SocketLike, req: { params: { id: string } }) => void,
+    handler: (socket: SocketLike, req: FastifyRequest<{ Params: { id: string } }>) => void,
   ): void;
 };
 
@@ -144,10 +170,10 @@ export async function registerEventsSocket(
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await app.register(plugin.default as any);
+  await app.register(plugin.default as any, { options: { maxPayload: 256_000, perMessageDeflate: false } });
 
   const routes = app as unknown as WebSocketRoutes;
   routes.get("/interview-sessions/:id/events", { websocket: true }, (socket, req) => {
-    handleConnection(socket, req.params.id, { ...deps, log: app.log });
+    handleConnection(socket, req.params.id, { ...deps, log: app.log, ...(req.principal ? { expiresAt: req.principal.expiresAt } : {}) });
   });
 }

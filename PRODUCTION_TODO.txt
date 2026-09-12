@@ -8,6 +8,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [x] I01 Private Supabase bank migration, adapter, importer and session wiring.
 [ ] I01-CLOUD Owner applies development migration/import and verifies permissions.
 [ ] I02 Authentication, ownership, durable sessions/events and private-data lifecycle.
+[x] I02a Supabase email-code sign-in, verified ownership and session-bound sockets.
+[ ] I02a-CLOUD Real sign-in/email/token-expiry acceptance with development project.
+[ ] I02b Durable storage, atomic lifecycle, replay and cross-process recovery.
 [ ] I03 Resume analysis, equivalent question rewrites, tones and 45-minute setup.
 [ ] I04 Minimal live codepad/notes, automatic transcription and resilient completion.
 [ ] I05 Separate 0-100 solution/transcript AI graders and evidence-based reports.

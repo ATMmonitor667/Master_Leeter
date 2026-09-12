@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { userIdFor } from "../auth/index.js";
 import type { EvaluationQueue } from "../report/index.js";
 import type { EventLog } from "../session/event-log.js";
 import type { SessionStore } from "../session/session-store.js";
@@ -99,11 +100,7 @@ export async function registerPrivacyModule(
     new AudioStore(),
   ];
 
-  // M2-8: replaced by the authenticated principal once a provider is chosen.
-  // Deliberately one function, so there is a single place to fix rather than
-  // seven route handlers reading a header.
-  const principal = (req: { headers: Record<string, unknown> }): string =>
-    (req.headers["x-user-id"] as string) ?? "anonymous";
+  const principal = userIdFor;
 
   app.get("/privacy/consent", async (req, reply) => {
     const userId = principal(req);
@@ -153,11 +150,14 @@ export async function registerPrivacyModule(
     }
 
     const request: DeletionRequest = {
+      // Active deletion is refused until finalization drains live observations.
       scope: "SESSION",
       userId,
       sessionId: id,
       requestedAt: new Date().toISOString(),
     };
+
+    if (!session.endedAt) return reply.code(409).send({ error: "END_SESSION_BEFORE_DELETION" });
 
     const receipt = await executeDeletion(request, {
       eventLog: opts.eventLog,
@@ -173,6 +173,9 @@ export async function registerPrivacyModule(
   app.delete("/privacy/account", async (req, reply) => {
     const userId = principal(req);
     const sessionIds = (await opts.sessions.idsForUser?.(userId)) ?? [];
+    for (const id of sessionIds) {
+      if (!(await opts.sessions.get(id))?.endedAt) return reply.code(409).send({ error: "END_SESSION_BEFORE_DELETION" });
+    }
 
     const receipt = await executeDeletion(
       { scope: "ACCOUNT", userId, requestedAt: new Date().toISOString() },
@@ -214,7 +217,7 @@ export async function registerPrivacyModule(
         occurredAt: e.occurredAt,
         type: e.type,
         actor: e.actor,
-        payload: e.payload,
+        payload: e.actor === "CANDIDATE" ? e.payload : {},
       })),
     });
   });

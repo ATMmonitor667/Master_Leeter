@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets } from "./modules/auth/index.js";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { loadEnv } from "./env.js";
 import { geminiApiKeyFromEnv } from "./lib/gemini.js";
@@ -36,6 +37,9 @@ export interface ServerOptions {
   library: Map<string, LoadedScenario>;
   questionBank?: QuestionBank;
   logger?: boolean;
+  authenticator?: Authenticator;
+  webOrigin?: string;
+  eventLog?: InMemoryEventLog;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -52,17 +56,22 @@ export interface ServerOptions {
 }
 
 export function buildServer(opts: ServerOptions) {
-  const app = Fastify({ logger: opts.logger ?? false });
+  const app = Fastify({ logger: opts.logger ? {
+    redact: ["req.headers.authorization", "req.headers.apikey", "req.headers.cookie"],
+    // Tickets are single-use but still credentials: omit URL queries from logs.
+    serializers: { req: (req) => ({ method: req.method, url: req.url.split("?")[0] ?? "", id: req.id, hostname: req.hostname, remoteAddress: req.ip, remotePort: req.socket.remotePort ?? 0 }) },
+  } : false });
 
-  const webOrigin = process.env["WEB_ORIGIN"] ?? "http://localhost:3000";
+  const webOrigin = opts.webOrigin ?? process.env["WEB_ORIGIN"] ?? "http://localhost:3000";
   void app.register(cors, {
-    origin: [webOrigin, "http://localhost:3000", "http://localhost:3001"],
+    origin: opts.authenticator ? [webOrigin] : [webOrigin, "http://localhost:3000", "http://localhost:3001"],
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["content-type", "idempotency-key"],
+    allowedHeaders: ["content-type", "idempotency-key", "authorization"],
   });
 
-  const eventLog = new InMemoryEventLog();
+  const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const store = new InMemorySessionStore();
+  registerAccessControl(app, { sessions: store, webOrigin, tickets: new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
   const evaluationQueue = new EvaluationQueue(eventLog);
 
   // Decorated on the root instance, not inside the plugins: Fastify
@@ -99,6 +108,7 @@ export async function start(): Promise<void> {
   // Before anything reads process.env. Called here rather than at import time
   // so importing this module from a test does not pull in a personal .env.local.
   const env = loadEnv();
+  const authenticator = authenticatorFromEnv(process.env);
 
   // Scenarios load at boot and fail loudly. A content bug should stop a deploy,
   // not surface mid-interview as an interviewer that cannot answer questions.
@@ -134,6 +144,7 @@ export async function start(): Promise<void> {
     library,
     questionBank,
     logger: true,
+    ...(authenticator ? { authenticator } : {}),
     ...(runner ? { runner } : {}),
     classifier,
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),

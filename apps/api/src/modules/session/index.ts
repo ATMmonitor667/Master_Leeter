@@ -1,6 +1,7 @@
 import { InterviewModeSchema, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { userIdFor } from "../auth/index.js";
 import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.js";
 import {
   MintLimiter,
@@ -367,8 +368,7 @@ export async function registerSessionModule(
       return reply.code(400).send({ error: "MISSING_IDEMPOTENCY_KEY" });
     }
 
-    // M2-8: userId comes from the auth context once a provider is chosen.
-    const userId = (req.headers["x-user-id"] as string) ?? "anonymous";
+    const userId = userIdFor(req);
 
     try {
       let session = await store.findByIdempotencyKey(userId, idempotencyKey);

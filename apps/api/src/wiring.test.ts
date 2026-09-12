@@ -6,6 +6,7 @@ import { CONTENT_ROOT, buildServer } from "./index.js";
 import type { IntentClassifier } from "./modules/orchestrator/index.js";
 import { loadScenarioLibrary, scenarioRef } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
+import { InMemoryEventLog } from "./modules/session/event-log.js";
 
 /**
  * Wiring tests.
@@ -30,6 +31,7 @@ let library: Map<string, LoadedScenario>;
 
 /** Declared, not inferred — inferring it from `startServer` is circular. */
 interface ServerHandle {
+  eventLog: InMemoryEventLog;
   app: ReturnType<typeof buildServer>;
   port: number;
 }
@@ -65,10 +67,11 @@ function spyClassifier(): IntentClassifier & { calls: string[] } {
 }
 
 async function startServer(classifier?: IntentClassifier): Promise<ServerHandle> {
-  const app = buildServer({ library, ...(classifier ? { classifier } : {}) });
+  const eventLog = new InMemoryEventLog();
+  const app = buildServer({ library, eventLog, ...(classifier ? { classifier } : {}) });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const { port } = app.server.address() as AddressInfo;
-  const handle: ServerHandle = { app, port };
+  const handle: ServerHandle = { app, port, eventLog };
   servers.push(handle);
   return handle;
 }
@@ -157,12 +160,10 @@ async function speak(port: number, sessionId: string, transcript: string): Promi
   socket.close();
 }
 
-async function eventsOf(port: number, sessionId: string) {
-  const res = await fetch(`http://127.0.0.1:${port}/v1/privacy/sessions/${sessionId}/export`);
-  const body = (await res.json()) as {
-    events?: Array<Pick<SessionEvent, "type" | "payload">>;
-  };
-  return body.events ?? [];
+async function eventsOf(port: number, sessionId: string): Promise<SessionEvent[]> {
+  // Inspect committed evidence directly: a candidate export must not expose
+  // private system/interviewer payloads just to make a wiring test convenient.
+  return servers.find((server) => server.port === port)!.eventLog.read(sessionId);
 }
 
 describe("the classifier reaches the runtime", () => {

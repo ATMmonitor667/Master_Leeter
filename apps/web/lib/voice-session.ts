@@ -1,4 +1,5 @@
 import { PlaybackScheduler, type AudioSink, type ScheduledSource } from "./playback";
+import { apiFetch } from "./auth";
 import {
   RealtimeVoice,
   type SpeechAuthorization,
@@ -178,7 +179,7 @@ export class VoiceSession {
         // the tools read pinned scenario content and check the gate's
         // authorization, neither of which may live here.
         callTool: async (call) => {
-          const res = await fetch(
+          const res = await apiFetch(
             `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-tool`,
             {
               method: "POST",
@@ -198,7 +199,7 @@ export class VoiceSession {
           this.setStatus("LISTENING");
           // Tells the server the authorization window is closed. Fire and
           // forget: a lost report costs a stale window, not a broken session.
-          void fetch(
+          void apiFetch(
             `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
             { method: "POST", keepalive: true },
           ).catch(() => {});
@@ -215,7 +216,7 @@ export class VoiceSession {
           // Opens the interview. Until the model can be spoken through there is
           // nothing to deliver the brief to, so this is the moment — not session
           // creation, which would spend the authorization on silence.
-          void fetch(
+          void apiFetch(
             `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-ready`,
             { method: "POST" },
           ).catch(() => {});
@@ -268,7 +269,7 @@ export class VoiceSession {
   // ── Internals ──────────────────────────────────────────────────────────────
 
   private async mintCredential(): Promise<VoiceCredential> {
-    const res = await fetch(
+    const res = await apiFetch(
       `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/realtime-token`,
       { method: "POST" },
     );

@@ -32,7 +32,7 @@ Existing: Next.js editor/reports, five original versioned scenarios, Fastify
 HTTP/WebSocket API, deterministic interview gate, Python observer, Gemini voice/
 classifier adapters, predicted runner, reconnect leases and extensive tests.
 
-Missing for production: verified identity/ownership, durable sessions/events/jobs/
+Missing for production: live identity/ownership acceptance, durable sessions/events/jobs/
 reports, reliable live-audio transcript capture, resilient voice lifetime and
 server deadlines. Evaluation currently uses a baseline evaluator. Resume analysis,
 validated AI rewrites and separate final AI graders are not implemented.
@@ -63,12 +63,18 @@ readiness claim is implied by completion of this foundation.
 
 ## I02 — Identity, ownership and durable sessions
 
+Delivery split: I02a implements email-code sign-in, verified API identity,
+HTTP/voice/report ownership, single-use socket tickets, frame session binding,
+token refresh, origin checks and private export filtering. See
+[SUPABASE_AUTH.md](SUPABASE_AUTH.md). I02b remains open for durable repositories,
+atomic lifecycle operations and restart/distributed recovery. This split makes
+the access-control change independently reviewable before storage refactoring.
+
 Tasks:
 
 - Managed sign-in and verified JWTs, owner checks on every HTTP/WS/voice/report/
   deletion route, single-use socket tickets and token refresh. Never trust
-  x-user-id. Supabase Auth is proposed; confirm before replacing the older Clerk
-  proposal.
+  x-user-id. Supabase Auth is implemented alongside the existing Supabase bank.
 - Migrations/repositories for users, sessions, pinned questions, ordered events,
   code revisions, notes and jobs; unique user/idempotency constraints, atomic
   event sequences and stage changes.

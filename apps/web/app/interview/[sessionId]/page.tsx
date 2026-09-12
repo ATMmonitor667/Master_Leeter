@@ -11,6 +11,8 @@ import { TestPanel } from "../../../components/TestPanel";
 import { Timer } from "../../../components/Timer";
 import { VoiceControls } from "../../../components/VoiceControls";
 import { SessionClient } from "../../../lib/session-client";
+import { apiFetch } from "../../../lib/auth";
+import { connectSessionTransport } from "../../../lib/session-transport";
 import { VoiceSession, type VoiceStatus } from "../../../lib/voice-session";
 
 /**
@@ -90,7 +92,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
     let cancelled = false;
 
-    fetch(`${api}/v1/interview-sessions/${sessionId}/resume`)
+    apiFetch(`${api}/v1/interview-sessions/${sessionId}/resume`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data) return setRestored(true);
@@ -112,9 +114,6 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   }, [sessionId]);
 
   useEffect(() => {
-    const wsBase = process.env["NEXT_PUBLIC_WS_URL"] ?? "ws://localhost:4000";
-    const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
-
     const client = new SessionClient({
       sessionId,
       onServerMessage,
@@ -122,28 +121,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       // A 40-minute session will drop. Re-dial rather than stranding the
       // candidate's buffered edits.
       reconnectDelayMs: 1500,
-      connect: (handlers) => {
-        const socket = new WebSocket(`${wsBase}/v1/interview-sessions/${sessionId}/events`);
-        socket.onopen = () => handlers.onOpen();
-        socket.onclose = () => {
-          // Tell the server the socket went down so the grace window starts and
-          // a sustained outage gets credited back to the clock.
-          void fetch(`${api}/v1/interview-sessions/${sessionId}/disconnected`, {
-            method: "POST",
-            keepalive: true,
-          }).catch(() => {});
-          handlers.onClose();
-        };
-        socket.onmessage = (e) => handlers.onMessage(String(e.data));
-
-        return {
-          send: (data) => socket.send(data),
-          close: () => socket.close(),
-          get connected() {
-            return socket.readyState === WebSocket.OPEN;
-          },
-        };
-      },
+      connect: (handlers) => connectSessionTransport(sessionId, handlers, setVoiceError),
     });
 
     client.connect();
@@ -241,9 +219,12 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
 
     const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
     try {
-      await fetch(`${api}/v1/interview-sessions/${sessionId}/end`, { method: "POST" });
-    } finally {
+      const response = await apiFetch(`${api}/v1/interview-sessions/${sessionId}/end`, { method: "POST" });
+      if (!response.ok) throw new Error("Could not complete this interview. Please retry.");
       window.location.href = `/report/${sessionId}`;
+    } catch (error) {
+      setEnding(false);
+      setVoiceError((error as Error).message);
     }
   }, [sessionId]);
 
