@@ -5,20 +5,22 @@ import { type AppendRequest, type AppendResult, type EventLog, evidenceHash } fr
  * Postgres-backed event log.
  *
  * UNVERIFIED against a live database — there is no Postgres in CI yet. It
- * satisfies the same conformance suite as the in-memory implementation by
- * construction, and the suite should be pointed at it the moment infra exists
- * (see event-log.test.ts). Treat green in-memory tests as evidence about the
- * contract, not about this file.
+ * targets the same conformance contract as the in-memory implementation; the
+ * suite must run against a real database before deployment. Adapter protocol
+ * tests do not establish PostgreSQL concurrency or permission guarantees.
  *
- * The `seq` assignment is the part worth reading. It is computed inside the
- * INSERT rather than read-then-written, so two concurrent appends cannot both
- * observe the same max and collide — and if they somehow do, the (session_id,
- * seq) primary key rejects the loser rather than silently reordering evidence.
+ * Appends lock the parent session row on a dedicated connection. All reads and
+ * writes use that transaction, so concurrent writers serialize before reading
+ * MAX(seq). An INSERT containing MAX(seq) without this lock is NOT race-safe.
  */
 
 /** Minimal shape of a `pg` Pool. Kept structural so `pg` isn't a hard dependency yet. */
 export interface QueryClient {
   query<R = unknown>(text: string, values?: unknown[]): Promise<{ rows: R[] }>;
+}
+export interface TransactionClient extends QueryClient { release(): void }
+export interface TransactionPool extends QueryClient {
+  connect(): Promise<TransactionClient>;
 }
 
 interface EventRow {
@@ -48,27 +50,46 @@ function toEvent(row: EventRow): SessionEvent {
 }
 
 const INSERT = `
-  INSERT INTO session_events
+  INSERT INTO public.session_events
     (session_id, seq, occurred_at, type, actor, scenario_version_id,
      payload, evidence_hash, trace_id, idempotency_key)
   SELECT
     $1::uuid,
-    COALESCE((SELECT MAX(seq) + 1 FROM session_events WHERE session_id = $1::uuid), 0),
+    COALESCE((SELECT MAX(seq) + 1 FROM public.session_events WHERE session_id = $1::uuid), 0),
     $2::timestamptz, $3, $4, $5, $6::jsonb, $7, $8, $9
   ON CONFLICT (session_id, idempotency_key) DO NOTHING
   RETURNING *`;
 
 const SELECT_BY_KEY = `
-  SELECT * FROM session_events
+  SELECT * FROM public.session_events
   WHERE session_id = $1::uuid AND idempotency_key = $2`;
 
 export class PgEventLog implements EventLog {
-  constructor(private readonly db: QueryClient) {}
+  constructor(private readonly db: TransactionPool) {}
 
   async append(req: AppendRequest): Promise<AppendResult> {
+    const connection = await this.db.connect();
+    try {
+      await connection.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      const locked = await connection.query<{ id: string; scenario_version_id: string }>(
+        "SELECT id, scenario_version_id FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE", [req.sessionId]);
+      if (!locked.rows[0]) throw new Error("UNKNOWN_SESSION");
+      if (locked.rows[0].scenario_version_id !== req.scenarioVersionId) throw new Error("SCENARIO_PIN_MISMATCH");
+      const result = await this.appendLocked(connection, req);
+      await connection.query("COMMIT");
+      return result;
+    } catch (error) {
+      try { await connection.query("ROLLBACK"); } catch { /* Preserve original failure. */ }
+      throw error;
+    } finally { connection.release(); }
+  }
+
+  private async appendLocked(db: QueryClient, req: AppendRequest): Promise<AppendResult> {
+    const prior = await db.query<EventRow>(SELECT_BY_KEY, [req.sessionId, req.idempotencyKey]);
+    if (prior.rows[0]) return { event: toEvent(prior.rows[0]), duplicate: true };
     const occurredAt = req.occurredAt ?? new Date().toISOString();
 
-    const inserted = await this.db.query<EventRow>(INSERT, [
+    const inserted = await db.query<EventRow>(INSERT, [
       req.sessionId,
       occurredAt,
       req.type,
@@ -83,21 +104,14 @@ export class PgEventLog implements EventLog {
     const row = inserted.rows[0];
     if (row) return { event: toEvent(row), duplicate: false };
 
-    // DO NOTHING fired: this key was already appended. Return the original so
-    // the caller cannot tell a retry from a first attempt.
-    const existing = await this.db.query<EventRow>(SELECT_BY_KEY, [req.sessionId, req.idempotencyKey]);
-    const prior = existing.rows[0];
-    if (!prior) {
-      throw new Error(
-        `Append conflicted but no prior event found for key ${req.idempotencyKey} (session ${req.sessionId})`,
-      );
-    }
-    return { event: toEvent(prior), duplicate: true };
+    // A writer bypassing the parent lock can still conflict. Fail safely; the
+    // transaction rolls back and a caller retry can find the committed winner.
+    throw new Error("EVENT_APPEND_CONFLICT");
   }
 
   async read(sessionId: string, fromSeq = 0): Promise<SessionEvent[]> {
     const { rows } = await this.db.query<EventRow>(
-      "SELECT * FROM session_events WHERE session_id = $1::uuid AND seq >= $2 ORDER BY seq ASC",
+      "SELECT * FROM public.session_events WHERE session_id = $1::uuid AND seq >= $2 ORDER BY seq ASC",
       [sessionId, fromSeq],
     );
     return rows.map(toEvent);
@@ -105,7 +119,7 @@ export class PgEventLog implements EventLog {
 
   async latestSeq(sessionId: string): Promise<number> {
     const { rows } = await this.db.query<{ max: number | null }>(
-      "SELECT MAX(seq) AS max FROM session_events WHERE session_id = $1::uuid",
+      "SELECT MAX(seq) AS max FROM public.session_events WHERE session_id = $1::uuid",
       [sessionId],
     );
     return rows[0]?.max ?? -1;

@@ -1,0 +1,165 @@
+MASTER LEETER — RESUMABLE IMPLEMENTATION HANDOFF
+Updated: 2026-09-12
+
+READ THIS FIRST
+User owns deployment, pushing and merging. After each verified checkpoint,
+commit the intended files, report the commit and owner actions, then pause.
+Never claim an entire iteration is finished when only a checkpoint is done.
+Do not commit credentials, .env.local, generated dependencies or the owner's
+untracked CODE_REVIEW_2026-09-12.txt without an explicit reason.
+Before resuming: git status --short --branch; git log -5 --oneline.
+Read this file, docs/PRODUCTION_ITERATIONS.md and docs/SUPABASE_AUTH.md.
+Inspect any AGENTS.md instructions. Preserve unrelated edits.
+
+BASELINE
+Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
+Question bank: d1c9354. Authentication: dc5a1a7. Hardening: 259f60a.
+259f60a secures startup defaults, adds reconnect backoff/terminal handling,
+fixes CI branch matching and removes internal error text from create responses.
+Verified then: 42 API + 33 web targeted tests and workspace typecheck.
+Live Supabase migration/auth acceptance remains unverified.
+Current server constructs in-memory sessions/events/reports/tickets/consents.
+Database adapters alone DO NOT make the running app persistent.
+
+CURRENT CHECKPOINT — I02b.1 DATABASE REPOSITORY FOUNDATION
+[x] Expand storage contracts to support idempotency lookup and user enumeration.
+[x] Add PostgreSQL session repository with immutable scenario pin and policy,
+    user-scoped create dedupe, atomic pause increments, idempotent end and no
+    transition reopening a completed session.
+[x] Correct PgEventLog concurrency: MAX(seq)+1 alone is NOT race-safe.
+    Acquire a session row lock on the SAME database connection and transaction;
+    read idempotency result AFTER the lock and append before committing.
+[x] Add migration for session dedupe and scenario pin. Document migration order
+    and private table privileges; do not silently overwrite existing data.
+[x] Unit-test repository protocol, transaction rollback/release and connection use.
+    Mock tests do not prove actual PostgreSQL concurrency/RLS behavior.
+[x] Record exactly what is implemented, tested, not wired and not cloud-tested.
+
+NEXT CHECKPOINT — I02b.2 LIVE DATABASE ACCEPTANCE
+1. Add a supported PostgreSQL pool driver, typed DB configuration and a private
+   development DB connection. Use DATABASE_URL in ignored API env only.
+   For hosted Supabase use its documented server/pooler connection and verify TLS;
+   never disable certificate validation as a workaround.
+2. Apply apps/api/migrations in numeric order ONLY to a disposable development
+   database first. Supabase question-bank migration remains a separate migration.
+3. Run actual database conformance tests: new pool/repository can read old data;
+   concurrent same-user creates dedupe; different users don't collide; concurrent
+   appends yield gap-free unique sequences; duplicate append returns original;
+   failed transaction leaves no event/counter mutation. Verify permissions using
+   actual anon/authenticated roles, not just SQL text inspection.
+4. Test pinned retired question recovery without depending on the ACTIVE catalog.
+5. Add disposable PostgreSQL CI service and run these tests on every PR.
+
+NEXT CHECKPOINT — I02b.3 WIRE THE WHOLE PERSISTENCE BOUNDARY
+1. Replace concrete InMemory types at module boundaries with interfaces. Inject
+   repositories from buildServer; keep explicit local/test memory mode only.
+2. Persist private consent, ordered event payloads, code/notes, sealed inputs,
+   reports and durable jobs. Add tombstones to prevent resurrection after deletion.
+3. Make session stage + corresponding event commit atomically. Create + initial
+   event and end + final event + grading job also need transaction/outbox semantics.
+4. Rehydrate runtime from pinned question and checkpoints: hints/probes already
+   used, granted/disclosed facts, candidate state, voice delivery and client seq.
+   Inspect runtime.ts, channel.ts, resume.ts and lease.ts; restoring editor text
+   alone does not restore interview policy.
+5. Move one-use socket tickets to shared storage with atomic consume and expiry.
+   Implement fenced single-writer ownership before enabling multiple API replicas.
+6. Restore code, revision and client event numbering after page refresh. Reject
+   stale writers; do not overwrite newer acknowledged code with a stale tab.
+7. Persist server deadline and completion; cancel stale workers on deletion.
+8. Only enable durable mode once all dependencies are wired. Fail startup safely
+   if durable production configuration is missing. No silent memory fallback.
+Acceptance: two-account ownership tests, browser refresh, API restart, two API
+instances, outage/retry, same-key concurrent starts, deletion racing report jobs.
+
+I03 — PREPARATION / RESUME / QUESTION / TONE
+1. Pasted resume with consent first; bounded PDF/DOCX extraction can follow.
+2. Extract evidence-backed skills/projects; candidate reviews summary. Treat all
+   resume content as untrusted data, omit unsupported/sensitive inferences.
+3. Select ACTIVE original question from Supabase, pin immutable version/content.
+4. AI restatement preserves signature, examples, constraints and edge cases;
+   invalid/timeout output falls back to canonical framing. No private tests leak.
+5. Extra nice / Normal / Mean: natural speech, professional even when demanding.
+   Tone must not change assistance budgets or grading standards.
+6. Preparation excluded from the exactly 2700-second server-owned interview.
+Acceptance: injection fixtures, semantic-equivalence fixtures, generation retries,
+no duplicate model charges, human tone review, real provider smoke test.
+
+I04 — LIVE EXPERIENCE
+1. Minimal codepad + notes + voice/timer/Complete Interview controls.
+2. Persist acknowledged debounced edits; interviewer references current revision.
+3. Automatically capture finalized candidate speech with segment ID, timestamp,
+   speaker; dedupe and prevent interviewer echo. Captions are independent.
+4. Preserve application-controlled speech gate; no unsolicited model replies.
+5. Recover microphone/network/voice lifetime; deadline still authoritative.
+6. Completion flushes final edits/transcript, seals once, rejects late writes.
+Acceptance: real 45-minute session, last keystroke/answer captured, refresh/offline
+recovery, no Run/Submit Code dependency, keyboard/reduced-motion/browser checks.
+
+I05 — INDEPENDENT GRADERS
+1. Separate durable idempotent solution and transcript jobs over sealed evidence.
+2. Each produces validated 0–100 score, confidence, evidence and actionable advice.
+3. Solution grader estimates correctness; never label estimates as executed tests.
+4. Transcript grader assesses reasoning/approach/complexity/testing/communication,
+   not accent, prestige or personality; no access to solution grader's score.
+5. Backoff/retry/partial report states; no invented zero score on provider failure.
+6. Calibrate correct/partial/incorrect code and strong/weak/noisy explanations.
+Acceptance: restart/retry/deletion races, injection defense and human report review.
+
+I06 — RELEASE / PILOT
+1. Cost caps, per-user quotas, concurrency limits and abuse protection.
+2. Signup protection, production email sender, privacy retention/export/deletion.
+3. Redacted monitoring, job alerts, Linux builds, backup/restore and rollback.
+4. Owner deploys Vercel frontend plus long-lived API/worker; verify auth/origins,
+   WebSockets and recovery on staging. See docs/VERCEL_DEPLOYMENT.md; older
+   provider proposals are superseded by docs/PRODUCTION_ITERATIONS.md.
+5. Expand original question bank; invite 5–10 users and observe ten interviews.
+6. Public launch only after real full-round, reliability, grading and cost gates.
+
+OWNER INPUT / KEYS
+- Development Supabase project, question migration/import, email-code template.
+- DATABASE_URL for a disposable development DB before live DB acceptance.
+- Public Supabase keys for browser/auth; secret/service key only server-side.
+- Existing Gemini credentials and funded quota for real AI/voice checks later.
+- Retention policy, monthly cost cap, concurrency cap and pilot signup policy.
+- Synthetic resumes for tests; do not send real private resumes in chat.
+- No new key is needed for offline repository unit tests.
+
+VERIFICATION / TROUBLESHOOTING
+pnpm typecheck
+pnpm --filter @master-leeter/api exec vitest run <changed test paths>
+pnpm --filter @master-leeter/web exec vitest run <changed test paths>
+git diff --check
+If pnpm cannot find vitest despite a complete install, from apps/api or apps/web:
+node node_modules/vitest/vitest.mjs run <changed test paths>
+Previous dependency rebuild stalled inside the Windows sandbox; an approved
+pnpm install --frozen-lockfile outside it succeeded. Do not delete the workspace.
+Do not expose credential values during diagnostics.
+
+HANDOFF UPDATE REQUIRED BEFORE COMMIT
+Add exact files, tests, remaining cloud gates and next executable step below.
+Use git add with explicit paths; git commit; report branch/hash. Owner pushes.
+
+CHECKPOINT RESULT — I02b.1
+Implemented files:
+- apps/api/src/modules/session/pg-session-store.ts: repository queries and pin.
+- apps/api/src/modules/session/pg-event-log.ts: dedicated transaction connection,
+  parent lock, pin check, dedupe, commit/rollback/release.
+- apps/api/src/modules/session/session-store.ts: lookup/enumeration interface,
+  completed-session guard and nonnegative integer pause validation.
+- apps/api/migrations/002_session_storage.sql: columns, unique user/key, pin
+  mutation trigger, RLS and removal of PUBLIC/anon/authenticated table privileges.
+- apps/api/src/modules/session/pg-storage.test.ts: nine adapter protocol tests.
+Validation: all 689 API tests pass; workspace typecheck and diff check pass.
+No PostgreSQL executable/container was available. SQL migration/concurrency/RLS
+NOT verified on a real DB. No driver added, migration applied, cloud data written,
+API repository injection enabled or runtime recovery implemented.
+NEXT ACTION: I02b.2 above. Add the pool driver and real DB conformance harness.
+Use a disposable database; verify 001 then 002 from empty schema. Existing
+production migration 001 alone must never be briefly exposed before 002 applies
+RLS/revokes. Keep both in a private maintenance window or create a unified safe
+bootstrap migration before deployment. Migration 002 is once-only, not rerunnable.
+Legacy session rows lack pin/idempotency values; recovery must explicitly reject
+missing pins, not substitute a current bank version. Runtime hydration must
+validate stored snapshot schema/hash/identity before creating an interviewer.
+Do NOT enable durable mode by swapping only the session/event stores: consent,
+reports, jobs, checkpoints and deletion are still process-local.

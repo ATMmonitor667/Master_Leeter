@@ -10,6 +10,8 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [ ] I02 Authentication, ownership, durable sessions/events and private-data lifecycle.
     I02a auth committed (dc5a1a7); configuration/reconnect hardening follows.
     I02b durable storage/recovery remains open; single API process only for now.
+    I02b.1 repository foundation implemented; real PostgreSQL tests and API wiring
+    remain open. Resume instructions: NEXT_IMPLEMENTATION_PLAN.txt.
 [x] I02a Supabase email-code sign-in, verified ownership and session-bound sockets.
 [ ] I02a-CLOUD Real sign-in/email/token-expiry acceptance with development project.
 [ ] I02b Durable storage, atomic lifecycle, replay and cross-process recovery.

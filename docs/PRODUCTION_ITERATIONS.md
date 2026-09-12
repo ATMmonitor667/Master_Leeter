@@ -63,6 +63,14 @@ readiness claim is implied by completion of this foundation.
 
 ## I02 — Identity, ownership and durable sessions
 
+I02b.1 repository foundation: PgSessionStore, migration 002_session_storage.sql,
+and transaction-scoped parent locking in PgEventLog. All 689 API tests and
+workspace typecheck pass; nine new tests verify adapter protocol using mocks.
+Migration, PostgreSQL concurrency and RLS have NOT run against a real database.
+The API still uses in-memory stores; this does not enable durable interviews.
+See NEXT_IMPLEMENTATION_PLAN.txt at the repository root for full recovery,
+integration, owner prerequisites and remaining product work.
+
 I02a is committed as dc5a1a7 on codex-production-02-auth-storage. Follow-up
 hardening makes authentication secure by default in every environment, requires
 explicit local bypass flags, logs the selected mode, and adds bounded reconnect

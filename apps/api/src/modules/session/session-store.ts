@@ -42,6 +42,8 @@ export interface CreateSessionRequest {
 
 export interface SessionStore {
   create(req: CreateSessionRequest): Promise<InterviewSession>;
+  findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null>;
+  idsForUser(userId: string): Promise<string[]>;
   get(id: string): Promise<InterviewSession | null>;
   /** Idempotent. Ending an ended session returns it unchanged. */
   end(id: string, at?: string): Promise<InterviewSession>;
@@ -129,6 +131,7 @@ export class InMemorySessionStore implements SessionStore {
 
   async transition(id: string, state: InterviewState): Promise<InterviewSession> {
     const session = this.require(id);
+    if (session.endedAt) return session;
     const updated: InterviewSession = {
       ...session,
       state,
@@ -139,7 +142,9 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   async addPause(id: string, seconds: number): Promise<InterviewSession> {
+    if (!Number.isSafeInteger(seconds) || seconds < 0) throw new Error("INVALID_PAUSE");
     const session = this.require(id);
+    if (session.endedAt) return session;
     const updated = { ...session, pausedSeconds: session.pausedSeconds + seconds };
     this.sessions.set(id, updated);
     return updated;
