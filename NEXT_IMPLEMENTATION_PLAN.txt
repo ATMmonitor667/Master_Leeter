@@ -36,6 +36,14 @@ CURRENT CHECKPOINT — I02b.1 DATABASE REPOSITORY FOUNDATION
 [x] Record exactly what is implemented, tested, not wired and not cloud-tested.
 
 NEXT CHECKPOINT — I02b.2 LIVE DATABASE ACCEPTANCE
+Active implementation checkpoint (2026-09-12): add pg driver, opt-in isolated
+PostgreSQL integration tests and a required CI PostgreSQL service job. Tests
+must create their OWN temporary database from a local maintenance connection,
+apply migrations there, and clean up only that generated database. Never use
+DATABASE_URL as a destructive test target. A missing test URL skips ordinary
+unit runs; the explicit database test command must fail if it is missing.
+No docker/psql executable was found locally at the start of this checkpoint;
+record CI/live-test execution as pending unless real PostgreSQL becomes available.
 1. Add a supported PostgreSQL pool driver, typed DB configuration and a private
    development DB connection. Use DATABASE_URL in ignored API env only.
    For hosted Supabase use its documented server/pooler connection and verify TLS;
@@ -163,3 +171,31 @@ missing pins, not substitute a current bank version. Runtime hydration must
 validate stored snapshot schema/hash/identity before creating an interviewer.
 Do NOT enable durable mode by swapping only the session/event stores: consent,
 reports, jobs, checkpoints and deletion are still process-local.
+
+CHECKPOINT RESULT — I02b.2 HARNESS IMPLEMENTED, LIVE ACCEPTANCE PENDING
+- pg + @types/pg installed; package.json and pnpm-lock.yaml updated.
+- pg-database.ts supplies the actual connection pool and transaction adapter.
+  Remote TLS is verified; URL query overrides are rejected; no runtime wiring.
+- pg-database.test.ts checks transport configuration (nine tests).
+- pg-integration.test.ts implements six real-PostgreSQL tests: migrations,
+  user-scoped concurrent creates, fresh-pool pins/code/notes reconstruction,
+  concurrent events/retries, failed SQL rollback, atomic pauses, immutable
+  pins/events and unprivileged role visibility with explicit SELECT grants.
+- apps/api/scripts/test-database.mjs fails if TEST_DATABASE_ADMIN_URL is absent.
+- .github/workflows/ci.yml now has a PostgreSQL 16 database test service/job.
+- docs/DATABASE_TESTING.md contains exact local commands and safety boundaries.
+Local validation: 698 API tests pass; six live database tests skipped (no local
+PostgreSQL configured). Explicit database command fails without its URL, as
+intended. Workspace typecheck passes. CI has not been pushed/run by this agent.
+
+NEXT PERSON / AGENT:
+1. Owner pushes this branch and checks BOTH verify and database CI jobs.
+2. If database fails, reproduce its output and fix before enabling persistence.
+   A configured test superuser needs CREATE DATABASE/ROLE on LOCAL PostgreSQL.
+   Tests clean up their randomly generated DB/role, never the supplied DB.
+3. Make database a required branch-protection check (owner GitHub setting).
+4. Verify actual Supabase anon/authenticated grants and pooler TLS separately;
+   generic PostgreSQL RLS tests do not establish project-specific configuration.
+5. Then proceed to I02b.3: whole persistence boundary, checkpoints, jobs, privacy
+   and shared tickets. Still no server restart recovery or persistent runtime.
+No Supabase secrets are needed for CI; it uses a disposable local test service.

@@ -63,6 +63,12 @@ readiness claim is implied by completion of this foundation.
 
 ## I02 — Identity, ownership and durable sessions
 
+I02b.2 adds the pg driver, verified remote TLS configuration, an opt-in real
+PostgreSQL test harness and a dedicated PostgreSQL 16 CI job. Local API result:
+698 passed, six database tests skipped without a configured server; typecheck
+passes. Explicit test:database fails if its URL is missing. No CI run or Supabase
+deployment is claimed. See docs/DATABASE_TESTING.md and NEXT_IMPLEMENTATION_PLAN.txt.
+
 I02b.1 repository foundation: PgSessionStore, migration 002_session_storage.sql,
 and transaction-scoped parent locking in PgEventLog. All 689 API tests and
 workspace typecheck pass; nine new tests verify adapter protocol using mocks.

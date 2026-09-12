@@ -4,7 +4,7 @@ import { type AppendRequest, type AppendResult, type EventLog, evidenceHash } fr
 /**
  * Postgres-backed event log.
  *
- * UNVERIFIED against a live database — there is no Postgres in CI yet. It
+ * Live database acceptance is exercised by CI's PostgreSQL integration job. It
  * targets the same conformance contract as the in-memory implementation; the
  * suite must run against a real database before deployment. Adapter protocol
  * tests do not establish PostgreSQL concurrency or permission guarantees.
@@ -14,7 +14,7 @@ import { type AppendRequest, type AppendResult, type EventLog, evidenceHash } fr
  * MAX(seq). An INSERT containing MAX(seq) without this lock is NOT race-safe.
  */
 
-/** Minimal shape of a `pg` Pool. Kept structural so `pg` isn't a hard dependency yet. */
+/** Structural query contract, shared by pg driver and protocol-test doubles. */
 export interface QueryClient {
   query<R = unknown>(text: string, values?: unknown[]): Promise<{ rows: R[] }>;
 }

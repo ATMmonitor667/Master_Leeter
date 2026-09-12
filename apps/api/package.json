@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json",
     "test": "vitest run --passWithNoTests",
+    "test:database": "node scripts/test-database.mjs",
     "spike:realtime": "tsx scripts/m0-1-realtime-spike.ts",
     "verify:token": "tsx scripts/m3-1-token-check.ts"
   },
@@ -16,6 +17,7 @@
     "@fastify/websocket": "^11.0.1",
     "@master-leeter/contracts": "workspace:*",
     "fastify": "^5.2.0",
+    "pg": "^8.23.0",
     "tree-sitter-python": "^0.23.6",
     "web-tree-sitter": "^0.26.12",
     "yaml": "^2.6.1",
@@ -23,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
