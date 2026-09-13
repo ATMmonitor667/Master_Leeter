@@ -4,6 +4,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { DimensionCard } from "../../../components/DimensionCard";
 import ConstellationField from "../../../components/ui/constellation-field";
 import type { SessionReport } from "../../../lib/report";
+import { apiFetch } from "../../../lib/auth";
 
 /**
  * Post-session report (M6-3).
@@ -34,7 +35,7 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
 
   const fetchReport = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await fetch(`${API}/v1/interview-sessions/${sessionId}/report`);
+      const res = await apiFetch(`${API}/v1/interview-sessions/${sessionId}/report`);
 
       if (res.status === 202) {
         const body = await res.json();

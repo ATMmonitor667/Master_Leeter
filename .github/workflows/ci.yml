@@ -2,10 +2,41 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, production, 'codex/production-*', 'codex-production-*']
   pull_request:
 
 jobs:
+  database:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: PostgreSQL migration, concurrency and privacy checks
+        run: pnpm --filter @master-leeter/api test:database
+        env:
+          TEST_DATABASE_ADMIN_URL: postgresql://postgres:local-test-only@127.0.0.1:5432/postgres
+
   verify:
     runs-on: ubuntu-latest
     steps:

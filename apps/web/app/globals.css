@@ -72,6 +72,19 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .ghost-button { border: 1px solid transparent; padding: 7px 10px; background: transparent; color: var(--muted); }
 .ghost-button:hover:not(:disabled) { background: var(--panel-raised); color: var(--text); }
 
+.auth-shell { min-height: 100vh; max-width: 550px; margin: auto; padding: 64px 24px; display: flex; flex-direction: column; justify-content: center; gap: 32px; }
+.setup-card.auth-card { padding: 28px; }
+.auth-card h1 { font-size: clamp(28px, 4vw, 40px); line-height: 1.15; letter-spacing: -.035em; margin: 18px 0; }
+.auth-card p { color: var(--muted-strong); line-height: 1.65; }
+.auth-form { display: grid; gap: 12px; margin-top: 28px; }
+.auth-form label { font-size: 12px; color: var(--muted-strong); }
+.auth-form input { min-height: 46px; width: 100%; }
+.auth-form .primary-button { margin-top: 10px; min-height: 46px; }
+.auth-caption { font-size: 12px; }
+.account-menu { display: flex; align-items: center; gap: 10px; }
+.account-email { max-width: 170px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
+@media (max-width: 640px) { .account-email { display: none; } .landing-nav > .pill { display: none; } }
+
 /* 2026 cockpit pass — editorial setup + focused developer workspace */
 .landing-shell { position: relative; isolation: isolate; }
 .landing-shell::before {

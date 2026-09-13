@@ -39,6 +39,7 @@ export interface SessionClientOptions {
    * semantics, not dialling.
    */
   reconnectDelayMs?: number;
+  random?: () => number;
   newId?: () => string;
   onServerMessage?: (msg: ServerMessage) => void;
   onConnectionChange?: (connected: boolean) => void;
@@ -47,7 +48,7 @@ export interface SessionClientOptions {
 export interface TransportHandlers {
   onMessage: (raw: string) => void;
   onOpen: () => void;
-  onClose: () => void;
+  onClose: (retryable?: boolean) => void;
 }
 
 interface OutboxEntry {
@@ -77,6 +78,8 @@ export class SessionClient {
   private readonly newId: () => string;
   /** Set by disconnect(), so a deliberate teardown does not re-dial. */
   private stopped = false;
+  private reconnectTimer: unknown = null;
+  private reconnectAttempts = 0;
 
   constructor(private readonly opts: SessionClientOptions) {
     this.now = opts.now ?? (() => Date.now());
@@ -87,23 +90,30 @@ export class SessionClient {
   }
 
   connect(): void {
+    if (this.reconnectTimer !== null) this.clearTimer(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.stopped = false;
     this.transport = this.opts.connect({
       onMessage: (raw) => this.handleMessage(raw),
       onOpen: () => {
+        this.reconnectAttempts = 0;
         this.opts.onConnectionChange?.(true);
         this.flushOutbox();
       },
-      onClose: () => {
+      onClose: (retryable = true) => {
         this.opts.onConnectionChange?.(false);
         // Deliberately NOT nulling the transport. A closed transport still
         // knows how to send once it reopens, and dropping the reference here
         // meant a reconnect could never flush the outbox — every event buffered
         // during an outage was stranded.
-        if (!this.stopped && this.opts.reconnectDelayMs !== undefined) {
-          this.setTimer(() => {
+        if (!retryable) this.stopped = true;
+        if (!this.stopped && this.reconnectTimer === null && this.opts.reconnectDelayMs !== undefined) {
+          const base = Math.min(30_000, this.opts.reconnectDelayMs * 2 ** Math.min(this.reconnectAttempts++, 10));
+          const delay = base * (0.5 + (this.opts.random ?? Math.random)() * 0.5);
+          this.reconnectTimer = this.setTimer(() => {
+            this.reconnectTimer = null;
             if (!this.stopped) this.connect();
-          }, this.opts.reconnectDelayMs);
+          }, delay);
         }
       },
     });
@@ -111,6 +121,8 @@ export class SessionClient {
 
   disconnect(): void {
     this.stopped = true;
+    if (this.reconnectTimer !== null) this.clearTimer(this.reconnectTimer);
+    this.reconnectTimer = null;
     if (this.flushTimer !== null) this.clearTimer(this.flushTimer);
     this.flushTimer = null;
     this.transport?.close();

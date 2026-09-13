@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets } from "./modules/auth/index.js";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { loadEnv } from "./env.js";
 import { geminiApiKeyFromEnv } from "./lib/gemini.js";
@@ -12,6 +13,7 @@ import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/inde
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
+import { type QuestionBank, QuestionBankError, questionBankFromEnv, questionBankSource } from "./modules/scenario/question-bank.js";
 import { InMemoryEventLog, InMemorySessionStore, registerSessionModule } from "./modules/session/index.js";
 
 /**
@@ -33,7 +35,11 @@ export const CONTENT_ROOT = join(here, "../../../content/scenarios");
 
 export interface ServerOptions {
   library: Map<string, LoadedScenario>;
+  questionBank?: QuestionBank;
   logger?: boolean;
+  authenticator?: Authenticator;
+  webOrigin?: string;
+  eventLog?: InMemoryEventLog;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -50,17 +56,22 @@ export interface ServerOptions {
 }
 
 export function buildServer(opts: ServerOptions) {
-  const app = Fastify({ logger: opts.logger ?? false });
+  const app = Fastify({ logger: opts.logger ? {
+    redact: ["req.headers.authorization", "req.headers.apikey", "req.headers.cookie"],
+    // Tickets are single-use but still credentials: omit URL queries from logs.
+    serializers: { req: (req) => ({ method: req.method, url: req.url.split("?")[0] ?? "", id: req.id, hostname: req.hostname, remoteAddress: req.ip, remotePort: req.socket.remotePort ?? 0 }) },
+  } : false });
 
-  const webOrigin = process.env["WEB_ORIGIN"] ?? "http://localhost:3000";
+  const webOrigin = opts.webOrigin ?? process.env["WEB_ORIGIN"] ?? "http://localhost:3000";
   void app.register(cors, {
-    origin: [webOrigin, "http://localhost:3000", "http://localhost:3001"],
+    origin: opts.authenticator ? [webOrigin] : [webOrigin, "http://localhost:3000", "http://localhost:3001"],
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["content-type", "idempotency-key"],
+    allowedHeaders: ["content-type", "idempotency-key", "authorization"],
   });
 
-  const eventLog = new InMemoryEventLog();
+  const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const store = new InMemorySessionStore();
+  registerAccessControl(app, { sessions: store, webOrigin, tickets: new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
   const evaluationQueue = new EvaluationQueue(eventLog);
 
   // Decorated on the root instance, not inside the plugins: Fastify
@@ -73,6 +84,7 @@ export function buildServer(opts: ServerOptions) {
   void app.register(registerSessionModule, {
     prefix: "/v1",
     library: opts.library,
+    ...(opts.questionBank ? { questionBank: opts.questionBank } : {}),
     store,
     eventLog,
     evaluationQueue,
@@ -80,7 +92,7 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.classifier ? { classifier: opts.classifier } : {}),
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
   });
-  void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library });
+  void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
   void app.register(registerPrivacyModule, {
     prefix: "/v1",
@@ -96,10 +108,17 @@ export async function start(): Promise<void> {
   // Before anything reads process.env. Called here rather than at import time
   // so importing this module from a test does not pull in a personal .env.local.
   const env = loadEnv();
+  const authenticator = authenticatorFromEnv(process.env);
 
   // Scenarios load at boot and fail loudly. A content bug should stop a deploy,
   // not surface mid-interview as an interviewer that cannot answer questions.
-  const library = await loadScenarioLibrary(CONTENT_ROOT);
+  const library = questionBankSource(process.env) === "files"
+    ? await loadScenarioLibrary(CONTENT_ROOT)
+    : new Map<string, LoadedScenario>();
+  const questionBank = questionBankFromEnv(process.env, library);
+  const activeQuestions = await questionBank.listActive();
+  if (activeQuestions.length === 0) throw new QuestionBankError("INVALID_CONTENT");
+  for (const question of activeQuestions) library.set(question.version.id, question);
 
   // The judge is optional at boot. Without it the interview runs, minus
   // execution — far better than refusing to start (M2-4).
@@ -123,7 +142,9 @@ export async function start(): Promise<void> {
 
   const app = buildServer({
     library,
+    questionBank,
     logger: true,
+    ...(authenticator ? { authenticator } : {}),
     ...(runner ? { runner } : {}),
     classifier,
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
@@ -136,6 +157,8 @@ export async function start(): Promise<void> {
   app.log.info(
     {
       scenarios: [...library.keys()],
+      questionBank: questionBank.kind,
+      authentication: authenticator ? "supabase" : "insecure-local-development",
       runner: runner ? "model-judge" : "none",
       classifier: classifier.id,
       realtime: realtimeTokenMinter ? realtimeTokenMinter.id : "none",

@@ -2,6 +2,22 @@
 
 **A voice-first AI technical interview simulator.**
 
+Production work is planned on the `production` branch. See the
+[production checklist](PRODUCTION_TODO.txt), [implementation plan](docs/PRODUCTION_PLAN.md),
+and [Vercel deployment runbook](docs/VERCEL_DEPLOYMENT.md). These documents distinguish
+the existing personal MVP from the remaining requirements for external users;
+historical branch/status descriptions below are not production-readiness claims.
+
+The current [iteration roadmap](docs/PRODUCTION_ITERATIONS.md) supersedes earlier
+product/provider proposals: original Supabase questions, resume context, a 45-minute
+codepad interview and separate final AI graders. Iteration 1 adds the private bank;
+see [Supabase setup and acceptance](docs/SUPABASE_QUESTION_BANK.md). Public launch
+still requires live authentication acceptance, durable sessions and the remaining iterations.
+
+Iteration I02a adds [Supabase email-code sign-in and access control](docs/SUPABASE_AUTH.md).
+Node 22+ is required. Configure both API and browser public auth settings for
+protected use; durable sessions and live Supabase acceptance remain pending.
+
 Practice coding interviews the way they actually happen: you hear the problem spoken aloud, think out loud, write code, and run tests — while an AI interviewer watches and **speaks only when it has something authorized to say**. Silence is a system action, not a prompt suggestion.
 
 ---

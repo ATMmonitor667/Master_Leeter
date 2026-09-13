@@ -42,6 +42,8 @@ export interface CreateSessionRequest {
 
 export interface SessionStore {
   create(req: CreateSessionRequest): Promise<InterviewSession>;
+  findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null>;
+  idsForUser(userId: string): Promise<string[]>;
   get(id: string): Promise<InterviewSession | null>;
   /** Idempotent. Ending an ended session returns it unchanged. */
   end(id: string, at?: string): Promise<InterviewSession>;
@@ -63,7 +65,8 @@ export class InMemorySessionStore implements SessionStore {
   constructor(private readonly now: () => string = () => new Date().toISOString()) {}
 
   async create(req: CreateSessionRequest): Promise<InterviewSession> {
-    const existingId = this.byIdempotencyKey.get(req.idempotencyKey);
+    const key = JSON.stringify([req.userId, req.idempotencyKey]);
+    const existingId = this.byIdempotencyKey.get(key);
     if (existingId) {
       const existing = this.sessions.get(existingId);
       if (existing) return existing;
@@ -98,8 +101,14 @@ export class InMemorySessionStore implements SessionStore {
     };
 
     this.sessions.set(session.id, session);
-    this.byIdempotencyKey.set(req.idempotencyKey, session.id);
+    this.byIdempotencyKey.set(key, session.id);
     return session;
+  }
+
+  /** Retry must succeed even when the bank is offline or the question was retired. */
+  async findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null> {
+    const id = this.byIdempotencyKey.get(JSON.stringify([userId, key]));
+    return id ? this.sessions.get(id) ?? null : null;
   }
 
   async get(id: string): Promise<InterviewSession | null> {
@@ -122,6 +131,7 @@ export class InMemorySessionStore implements SessionStore {
 
   async transition(id: string, state: InterviewState): Promise<InterviewSession> {
     const session = this.require(id);
+    if (session.endedAt) return session;
     const updated: InterviewSession = {
       ...session,
       state,
@@ -132,7 +142,9 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   async addPause(id: string, seconds: number): Promise<InterviewSession> {
+    if (!Number.isSafeInteger(seconds) || seconds < 0) throw new Error("INVALID_PAUSE");
     const session = this.require(id);
+    if (session.endedAt) return session;
     const updated = { ...session, pausedSeconds: session.pausedSeconds + seconds };
     this.sessions.set(id, updated);
     return updated;

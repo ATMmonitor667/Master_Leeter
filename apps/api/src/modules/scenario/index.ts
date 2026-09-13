@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { type LoadedScenario, scenarioRef, selectableScenarios } from "./loader.js";
+import { type QuestionBank, QuestionBankError } from "./question-bank.js";
 
 /**
  * Scenario module — content loading, versioning, and the clarification map.
@@ -32,6 +33,7 @@ export { evaluateTrigger, validateScenarioTriggers } from "./triggers.js";
 
 export interface ScenarioModuleOptions {
   library: Map<string, LoadedScenario>;
+  questionBank?: QuestionBank;
 }
 
 export async function registerScenarioModule(
@@ -46,7 +48,14 @@ export async function registerScenarioModule(
    * interview is *about* stays server-side until the voice agent delivers it.
    */
   app.get("/scenarios", async (_req, reply) => {
-    const catalogue = selectableScenarios(opts.library).map((s) => ({
+    let questions: LoadedScenario[];
+    try {
+      questions = opts.questionBank ? await opts.questionBank.listActive() : selectableScenarios(opts.library);
+    } catch (error) {
+      if (!(error instanceof QuestionBankError)) throw error;
+      return reply.code(503).send({ error: "QUESTION_BANK_UNAVAILABLE", message: "Interview questions are temporarily unavailable. Please retry shortly." });
+    }
+    const catalogue = questions.map((s) => ({
       // Opaque ref, not the descriptive id — the id names the problem.
       ref: scenarioRef(s.version.id),
       level: s.version.target.level,

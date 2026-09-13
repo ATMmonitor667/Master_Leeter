@@ -1,0 +1,108 @@
+MASTER LEETER — PRODUCTION IMPLEMENTATION TODO
+Prepared: 2026-09-11
+Branch: production
+Audited commit: b4c25c4
+Status: ITERATION 1 implemented locally; external acceptance remains open.
+
+CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
+[x] I01 Private Supabase bank migration, adapter, importer and session wiring.
+[ ] I01-CLOUD Owner applies development migration/import and verifies permissions.
+[ ] I02 Authentication, ownership, durable sessions/events and private-data lifecycle.
+    I02a auth committed (dc5a1a7); configuration/reconnect hardening follows.
+    I02b durable storage/recovery remains open; single API process only for now.
+    I02b.1 repository foundation implemented; real PostgreSQL tests and API wiring
+    remain open. Resume instructions: NEXT_IMPLEMENTATION_PLAN.txt.
+    I02b.2 pg driver/integration harness/CI job implemented; six live DB tests
+    await PostgreSQL or CI execution. See docs/DATABASE_TESTING.md.
+[x] I02a Supabase email-code sign-in, verified ownership and session-bound sockets.
+[ ] I02a-CLOUD Real sign-in/email/token-expiry acceptance with development project.
+[ ] I02b Durable storage, atomic lifecycle, replay and cross-process recovery.
+[ ] I03 Resume analysis, equivalent question rewrites, tones and 45-minute setup.
+[ ] I04 Minimal live codepad/notes, automatic transcription and resilient completion.
+[ ] I05 Separate 0-100 solution/transcript AI graders and evidence-based reports.
+[ ] I06 Security/cost/recovery hardening, release checks and owner-assisted pilot.
+Full per-iteration tasks, acceptance and owner dependencies:
+  docs/PRODUCTION_ITERATIONS.md
+Question bank setup (no cloud data has been written):
+  docs/SUPABASE_QUESTION_BANK.md
+Each iteration gets a tested commit, then owner review/merge to production.
+The detailed P-tasks below remain open unless explicitly closed with evidence.
+
+Detailed scope, dependencies, owners and acceptance:
+  docs/PRODUCTION_PLAN.md
+Vercel settings, backend hosting, environments, rollout and rollback:
+  docs/VERCEL_DEPLOYMENT.md
+
+Historical TODO.txt describes the completed personal-MVP pass. This is the new
+production backlog. Close a task only with a linked commit/test/deployment or
+human acceptance record. A green frontend build alone does not close launch.
+
+RECOMMENDED HOSTING
+  Vercel: Next.js web app.
+  Render paid service: Fastify HTTP + application WebSocket API.
+  Render worker: durable execution dispatch and report processing.
+  Managed PostgreSQL + Redis-compatible coordination; Clerk proposed for auth.
+  External sandbox for actual Python execution; choose after isolation tests.
+  Gemini: account-verified speech/classifier configuration with full recovery.
+  Alternative API-on-Vercel spike is documented; WebSockets now exist in beta
+  but function duration and instance turnover require proven recovery.
+
+FOUNDATION / ACCESS
+[ ] P01 Production specification, provider/budget decisions, documentation audit.
+[ ] P02 Reproducible Linux API/worker artifacts, contracts, assets, start scripts.
+[ ] P03 Typed config, production validation, readiness, browser endpoint setup.
+[ ] P04 Managed authentication, accounts and token refresh.
+[ ] P05 Ownership on every HTTP/WS route and single-use socket tickets.
+[ ] P06 Origins, input limits, rate limits, browser headers and abuse controls.
+
+DATA / RECOVERY
+[ ] P07 Real PostgreSQL repositories, migrations, identities/drafts/history.
+[ ] P08 Transactional event sequencing, state writes, idempotency and outbox.
+[ ] P09 Runtime checkpoint/replay and safe delivery-state recovery.
+[ ] P10 Single session owner, fenced leases, cross-instance commands, durable jobs.
+
+INTERVIEW / EXECUTION / REPORTS
+[ ] P11 Transcription independent of captions; audible-completion and preflight.
+[ ] P12 45-minute voice lifecycle, GoAway/resumption/compression, live verification.
+[ ] P13 Durable deadlines, silent-candidate expiry, finalization and abandonment.
+[ ] P14 Sandbox provider spike: actual enforced isolation/resource/cleanup tests.
+[ ] P15 Actual CodeRunner adapter and correct test harness for all five scenarios.
+[ ] P16 Runner queues, fairness, admission, idempotency and recovery.
+[ ] P17 Durable report worker, persisted results, retries and deletion races.
+[ ] P18 Evaluator/observer wiring audit, grounded feedback and human calibration.
+
+PRODUCT / PRIVACY / OPERATIONS
+[ ] P19 Retention/consent/export/delete, append-only design, restore erasure ledger.
+[ ] P20 Onboarding, dashboard/history, recovery UX, settings and accessibility.
+[ ] P21 Atomic credits/capacity, provider-cost enforcement, caps and kill switch.
+[ ] P22 Redacted diagnostics, alerts, service status and user support.
+[ ] P23 Real DB/queue, browser, two-instance, load and human voice acceptance.
+[ ] P24 Production CI/release gates, protocol compatibility and migrations.
+[ ] P25 Protected staging + Vercel integration + API/worker/domain configuration.
+[ ] P26 Backup restore, deployment rollback and incident rehearsal.
+
+LAUNCH / GROWTH
+[ ] P27 Invite 5–10 users; observe ten full interviews and fix activation failures.
+[ ] P28 Expand to 12–20 reviewed original/licensed scenarios for repeat use.
+[ ] P29 Meet public-beta reliability, capacity, quality and cost thresholds.
+[ ] P30 Landing/demo/FAQ, measured activation funnel and two acquisition cohorts.
+[ ] P31 Gradual public signup, first-48-hour monitoring and operational ownership.
+[ ] P32 If charging: billing, entitlements, webhooks, refunds and paid-launch test.
+
+ORDER NOTES
+  Begin P01–P03, then P07/P08 and P04–P06, then P09/P10.
+  P14 sandbox spike can run alongside storage work; P11/P12 is a critical risk.
+  Start release plumbing from P24/P25 early to give P23 a protected test host.
+  Finish P24 after P23 passes; staging exists before release qualification.
+  Detailed task dependencies in the plan take precedence over numeric order.
+
+RELEASE GATES
+[ ] G0 Protected staging: runnable, authenticated, persistent hosted vertical slice.
+[ ] G1 Invite beta: P01–P27 and ten real full interviews, including 45 minutes.
+[ ] G2 Public beta: P28–P31 and 20 full sessions across at least ten people.
+[ ] G3 Paid launch, if applicable: P32 plus verified cost/support controls.
+
+OWNER DECISIONS TO RECORD DURING P01
+  Domain; launch region; monthly spend ceiling; maximum concurrent interviews;
+  free-credit offer; supported devices; retention; identity and sandbox choices.
+  No accounts, payments, deployment or public promotion were performed by this plan.

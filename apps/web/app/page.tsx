@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AccountMenu } from "../components/AccountMenu";
+import { apiFetch, SignInRequired } from "../lib/auth";
 
 /**
  * Session setup.
@@ -32,6 +34,7 @@ export default function Home() {
   const [mode, setMode] = useState<(typeof MODES)[number]>("MOCK");
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const attempt = useRef<{ selection: string; key: string } | null>(null);
 
   useEffect(() => {
     fetch(`${API}/v1/scenarios`)
@@ -48,12 +51,14 @@ export default function Home() {
     setStarting(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/v1/interview-sessions`, {
+      const selection = `${scenarioRef}:${mode}`;
+      if (attempt.current?.selection !== selection) attempt.current = { selection, key: crypto.randomUUID() };
+      const res = await apiFetch(`${API}/v1/interview-sessions`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           // Stable per attempt, so a retry cannot silently create two sessions.
-          "idempotency-key": crypto.randomUUID(),
+          "idempotency-key": attempt.current.key,
         },
         body: JSON.stringify({ scenarioRef, mode }),
       });
@@ -62,6 +67,7 @@ export default function Home() {
       const { sessionId } = await res.json();
       window.location.href = `/interview/${sessionId}`;
     } catch (err) {
+      if (err instanceof SignInRequired) { window.location.assign("/login"); return; }
       setError((err as Error).message);
       setStarting(false);
     }
@@ -74,6 +80,7 @@ export default function Home() {
       <nav className="landing-nav" aria-label="Product">
         <div className="brand"><span className="brand-mark">ML</span><span className="brand-name">Master Leeter</span></div>
         <span className="pill"><span className="status-dot" /> Voice-first technical practice</span>
+        <AccountMenu />
       </nav>
 
       <section className="landing-hero">
