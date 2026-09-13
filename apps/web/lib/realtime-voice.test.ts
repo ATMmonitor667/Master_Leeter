@@ -7,6 +7,7 @@ import {
   type SpeechBoundary,
   type VoiceCredential,
   type VoiceToolCall,
+  type RealtimeVoiceOptions,
 } from "./realtime-voice";
 import { Vad } from "./vad";
 
@@ -41,6 +42,9 @@ function build(
   options: {
     vad?: Vad;
     callTool?: (call: VoiceToolCall) => Promise<Record<string, unknown>>;
+    isPlaying?: () => boolean;
+    onSpeechComplete?: RealtimeVoiceOptions["onSpeechComplete"];
+    onBargeIn?: RealtimeVoiceOptions["onBargeIn"];
   } = {},
 ): Harness {
   const sent: Array<Record<string, unknown>> = [];
@@ -63,14 +67,17 @@ function build(
     ...(options.vad ? { vad: options.vad } : {}),
     ...(options.callTool ? { callTool: options.callTool } : {}),
     now: () => t,
+    ...(options.isPlaying ? { isPlaying: options.isPlaying } : {}),
+    ...(options.onSpeechComplete ? { onSpeechComplete: options.onSpeechComplete } : {}),
     connect: (h) => {
       handlers = h;
       return transport;
     },
     onSpeechBoundary: (b) => boundaries.push(b),
     onModelAudio: (pcm) => audio.push(pcm),
-    onBargeIn: () => {
+    onBargeIn: (id) => {
       bargeIns += 1;
+      options.onBargeIn?.(id);
     },
     onError: (e) => errors.push(e),
   });
@@ -296,6 +303,7 @@ describe("speech boundaries", () => {
 describe("barge-in", () => {
   it("fires the moment the candidate speaks over model audio", () => {
     const h = build();
+    h.voice.requestSpeech({ action: "DELIVER_BRIEF", utteranceId: "brief" });
     h.receive({
       serverContent: {
         modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm", data: pcm16ToBase64(new Int16Array(160)) } }] },
@@ -315,6 +323,7 @@ describe("barge-in", () => {
 
   it("stops applying once the interviewer's turn is complete", () => {
     const h = build();
+    h.voice.requestSpeech({ action: "DELIVER_BRIEF", utteranceId: "brief" });
     h.receive({
       serverContent: {
         modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm", data: pcm16ToBase64(new Int16Array(160)) } }] },
@@ -328,8 +337,46 @@ describe("barge-in", () => {
 });
 
 describe("model audio", () => {
+  const audioMessage = { serverContent: { modelTurn: { parts: [
+    { inlineData: { mimeType: "audio/pcm", data: pcm16ToBase64(new Int16Array([100])) } },
+  ] } } };
+
+  it("drops unsolicited audio outside an authorized turn", () => {
+    const h = build();
+    h.receive(audioMessage);
+    expect(h.audio).toHaveLength(0);
+  });
+
+  it("reports an interruption with the same ID during the playback tail", () => {
+    const completed: Array<string | null> = [];
+    const interrupted: Array<string | null> = [];
+    const h = build({ isPlaying: () => true,
+      onSpeechComplete: (id) => completed.push(id), onBargeIn: (id) => interrupted.push(id) });
+    h.voice.requestSpeech({ action: "DELIVER_BRIEF", utteranceId: "opening" });
+    h.receive(audioMessage);
+    h.receive({ serverContent: { turnComplete: true } });
+    h.speak(600);
+    expect(completed).toEqual(["opening"]);
+    expect(interrupted).toEqual(["opening"]);
+  });
+
+  it("waits for both provider completion and playback before starting a queued response", () => {
+    const h = build();
+    h.voice.requestSpeech({ action: "DELIVER_BRIEF", utteranceId: "first" });
+    h.receive(audioMessage);
+    h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "next" });
+    const requests = () => h.sent.filter((message) => message["clientContent"]);
+    expect(requests()).toHaveLength(1);
+    h.receive({ serverContent: { turnComplete: true } });
+    expect(requests()).toHaveLength(1);
+    h.voice.markPlaybackFinished("first");
+    expect(requests()).toHaveLength(2);
+    expect(JSON.stringify(requests()[1])).toContain("next");
+  });
+
   it("decodes inline audio parts", () => {
     const h = build();
+    h.voice.requestSpeech({ action: "DELIVER_BRIEF", utteranceId: "brief" });
     const pcm = new Int16Array([1, -1, 32767, -32768]);
 
     h.receive({
@@ -350,6 +397,7 @@ describe("model audio", () => {
 
   it("reads snake_case as well as camelCase", () => {
     const h = build();
+    h.voice.requestSpeech({ action: "DELIVER_BRIEF", utteranceId: "brief" });
     const pcm = new Int16Array([7, 8]);
 
     h.receive({

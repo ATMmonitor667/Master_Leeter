@@ -1,5 +1,54 @@
 MASTER LEETER — RESUMABLE IMPLEMENTATION HANDOFF
-Updated: 2026-09-12
+Updated: 2026-09-13
+
+LATEST CHECKPOINT — VOICE RELIABILITY (read before the older baseline below)
+Branch: codex-voice-reliability-checkpoint, based on main e7f2dcb.
+The user prioritized the live voice switching problem before more production
+features. All remote refs were fetched and every local/remote branch compared.
+main includes I01/I02a/I02b.1/I02b.2. codex and origin/production are six commits
+behind main; the production feature branches are merged. auth and the marketing
+branch share two unique older commits (landing/injection tests), not newer auth.
+Existing stashes and .claude were preserved. A flat branch name is necessary
+because the existing codex ref prevents creation of codex/... refs.
+
+This checkpoint incorporates the existing uncommitted audio work, with additional
+runtime and browser corrections. It does not complete I04 or enable persistence.
+- Register the five provider tools and allow the complete opening script.
+- Keep ORAL_PROBLEM_DELIVERY until successful playback completion, including
+  when speech/code events invoke the normal stage driver during the brief.
+- Give opening retries separate utterance/event identities. Interrupted/failed
+  openings remain owed; stale reports cannot complete the replacement attempt.
+- Require a valid utteranceId and COMPLETED/INTERRUPTED/FAILED outcome over HTTP.
+  Deploy API and web together: older clients with empty completion bodies fail.
+- Coordinate local interruption with provider activity signals; retain identity
+  through speaker drain; serialize queued requests after the previous provider
+  turn and playback; discard audio outside a current authorization.
+- A response that produces no audio reports failure, not completed delivery.
+- Preserve the prior audio-clock capture, adaptive VAD and playback-buffer work.
+
+Validation: 702 API tests passed, six real PostgreSQL tests skipped; 125 web tests
+passed; workspace typecheck and diff check passed. After final transport edits,
+89 targeted API tests and 58 targeted audio tests passed again. No live Gemini,
+microphone/browser-device acceptance or actual PostgreSQL run was performed.
+No push, merge, deployment, migration or cloud data changes were performed.
+
+NEXT EXECUTABLE CHECKPOINT:
+1. Test the full VoiceSession browser shell with delayed permissions, stop/start,
+   socket failures, pending playback, and completion HTTP failure/retry. Transport
+   unit tests do not establish browser-resource cleanup or successful delivery.
+2. Verify actual provider tool setup and record one opening/interrupt/reconnect
+   session. Confirm interruption pacing, no truncation, correct retry, and no
+   unauthorized reply while the candidate talks. Input boundaries can trigger
+   provider behavior; automatic VAD disabled is NOT a no-generation guarantee.
+3. Completion reports still lack durable acknowledgement/retry. Runtime playback
+   completion/attempt counters are process-local; checkpoint/replay must persist
+   this evidence before enabling durable mode. BRIEF_DELIVERED still records
+   attempted wording selection, not independently verified human audibility.
+4. Voice lifetime rotation, automatic transcripts independent of captions,
+   reconnect recovery and 45-minute acceptance remain I04 work.
+5. Resume I02b.2 live database acceptance and I02b.3 whole-boundary persistence;
+   do not swap only the session repository and claim restart recovery.
+Owner reviews/pushes/merges this checkpoint and runs cloud/device acceptance.
 
 READ THIS FIRST
 User owns deployment, pushing and merging. After each verified checkpoint,

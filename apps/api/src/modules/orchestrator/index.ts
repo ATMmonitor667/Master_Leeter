@@ -17,6 +17,7 @@ export {
   type InterviewRuntimeDeps,
   type RuntimeResult,
   type Utterance,
+  type UtteranceOutcome,
 } from "./runtime.js";
 export {
   MID_THOUGHT_CEILING,

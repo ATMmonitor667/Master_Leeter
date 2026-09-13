@@ -59,6 +59,122 @@ export type VoiceToolName = (typeof VOICE_TOOLS)[number];
 const TOOL_SET = new Set<string>(VOICE_TOOLS);
 
 /**
+ * The five tools as function declarations for the realtime provider.
+ *
+ * These have to exist somewhere, and until now they existed nowhere.
+ * `executeVoiceTool` below was fully implemented, the persona told the model it
+ * had exactly five tools and no other access, and `instructionFor` on the
+ * client told it to call them by name — but nothing ever declared them in the
+ * Live setup. A model asked to call a function it was never given does one of
+ * two things: says nothing, or invents the answer. Both look like a prompt
+ * problem, and neither is.
+ *
+ * They live here rather than in `token.ts` so the executable surface and the
+ * advertised surface are edited in one place, with
+ * `assertDeclarationsMatchTools` below to catch it when they are not.
+ *
+ * ── Shape, which the docs will mislead you about ───────────────────────────
+ *
+ * Types are the uppercase OpenAPI spellings REST wants ("OBJECT", "STRING"),
+ * not the SDK's lowercase ones. A tool that takes no arguments omits
+ * `parameters` entirely — declaring `{ type: "OBJECT", properties: {} }` is
+ * rejected as an object schema with no properties, and the rejection arrives at
+ * mint time as an opaque 400.
+ *
+ * ── Why the descriptions are this long ─────────────────────────────────────
+ *
+ * They are written for the model, not for us, and the thing they have to convey
+ * is not what each tool returns but *when it refuses*. Every speaking tool
+ * refuses unless the gate authorized that exact action this turn. A model that
+ * does not expect refusal treats it as an error and improvises around it, which
+ * is the one behaviour this whole surface exists to prevent.
+ */
+export interface VoiceToolDeclaration {
+  name: VoiceToolName;
+  description: string;
+  parameters?: {
+    type: "OBJECT";
+    properties: Record<string, { type: "STRING"; description: string }>;
+    required?: string[];
+  };
+}
+
+export const VOICE_TOOL_DECLARATIONS: readonly VoiceToolDeclaration[] = [
+  {
+    name: "get_interview_context",
+    description:
+      "Where the interview currently stands: the stage, time remaining, what has already been asked and answered, and which single action you are authorized to take right now. While the opening is being delivered it also returns openingScript, the authored problem brief. Call this when you are unsure what you have been given permission to do.",
+  },
+  {
+    name: "get_clarification_fact",
+    description:
+      "Look up the canonical answer to a clarifying question the candidate has just asked. Returns one authored fact, or refuses. A refusal means the answer is not yours to give: say briefly that you would rather not say, or ask them to make an assumption and note it. Never answer from your own knowledge of the problem.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        utterance: {
+          type: "STRING",
+          description: "The candidate's question, as close to verbatim as you heard it.",
+        },
+      },
+      required: ["utterance"],
+    },
+  },
+  {
+    name: "get_probe_wording",
+    description:
+      "Fetch the exact wording of the probe you have been authorized to ask. It takes no arguments because which probe is not your choice — it is the one this interview decided was worth asking now. Refuses when no probe is authorized for this turn.",
+  },
+  {
+    name: "get_follow_up",
+    description:
+      "Fetch the authored follow-up you have been authorized to present. Takes no arguments; the branch has already been chosen. Refuses when no follow-up is authorized for this turn.",
+  },
+  {
+    name: "record_delivery",
+    description:
+      "Report what you actually said, immediately after saying it. This is bookkeeping and not permission — calling it authorizes nothing — and it must reflect what the candidate heard rather than what you set out to say.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        kind: {
+          type: "STRING",
+          description: "What was delivered: brief, probe, clarification, follow_up, hint, or ack.",
+        },
+        ref: {
+          type: "STRING",
+          description: "Identifier of the delivered item where it has one, such as a probe id.",
+        },
+        transcript: { type: "STRING", description: "What you said, as spoken." },
+      },
+      required: ["kind"],
+    },
+  },
+];
+
+/**
+ * The advertised surface and the executable surface are the same five.
+ *
+ * Checked at module load rather than only in a test. The failure this prevents
+ * is a model calling a tool that answers UNKNOWN_TOOL in the middle of a live
+ * interview, which is a bad moment to discover a list went stale.
+ */
+function assertDeclarationsMatchTools(): void {
+  const declared = VOICE_TOOL_DECLARATIONS.map((d) => d.name as string);
+  const missing = VOICE_TOOLS.filter((tool) => !declared.includes(tool));
+  const extra = declared.filter((name) => !TOOL_SET.has(name));
+
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(
+      `voice tool declarations out of sync with VOICE_TOOLS: ` +
+        `missing [${missing.join(", ")}], undeclared [${extra.join(", ")}]`,
+    );
+  }
+}
+
+assertDeclarationsMatchTools();
+
+/**
  * The action each speaking tool is the mouth of.
  *
  * `get_interview_context` and `record_delivery` are absent deliberately: one

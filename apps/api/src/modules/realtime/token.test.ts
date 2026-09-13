@@ -109,6 +109,9 @@ describe("the minted token cannot auto-respond", () => {
     const setup = constrainedSetup("gemini-2.5-flash-native-audio-latest");
     expect(setup.model).toBe("models/gemini-2.5-flash-native-audio-latest");
     expect(setup.generationConfig.responseModalities).toEqual(["AUDIO"]);
+    expect(setup.tools[0]?.functionDeclarations.map((tool) => tool.name)).toEqual([
+      "get_interview_context", "get_clarification_fact", "get_probe_wording", "get_follow_up", "record_delivery",
+    ]);
   });
 
   it("always pins a voice, defaulting to a chosen one", () => {

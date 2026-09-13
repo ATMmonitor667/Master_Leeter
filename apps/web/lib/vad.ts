@@ -142,6 +142,31 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   initialNoiseFloorDb: -55,
 };
 
+/**
+ * A second, deliberately deaf detector, used ONLY to decide barge-in.
+ *
+ * The module comment above explains why `DEFAULT_VAD_CONFIG` leans towards
+ * declaring speech early: a false start merely holds the floor, which costs a
+ * beat of silence nobody notices. That reasoning does not transfer to barge-in,
+ * where a false start *destroys* the interviewer mid-sentence. The two decisions
+ * have opposite cost asymmetries and therefore cannot share a threshold.
+ *
+ * They especially cannot share one on laptop speakers, where the interviewer's
+ * own voice re-enters the microphone. Browser AEC leaves residual echo that
+ * clears `startMarginDb: 9` for `minSpeechMs: 40` (two frames) without trouble,
+ * and every time it does, the interviewer cuts itself off. Chopped playback with
+ * gaps is what that sounds like.
+ *
+ * So: run this one alongside the real detector on the same frames, and let only
+ * this one trigger barge-in. It wants a genuine, sustained interruption —
+ * roughly a syllable and a half at conversational level over the room.
+ */
+export const BARGE_IN_VAD_CONFIG: Partial<VadConfig> = {
+  startMarginDb: 18,
+  continueMarginDb: 12,
+  minSpeechMs: 300,
+};
+
 export type VadEventType = "SPEECH_START" | "SPEECH_END";
 
 export interface VadEvent {

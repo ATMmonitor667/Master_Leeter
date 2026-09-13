@@ -247,6 +247,17 @@ describe("the authorization survives long enough to be used", () => {
 });
 
 describe("the interview actually opens", () => {
+  it("rejects unscoped or malformed playback completion reports", async () => {
+    const { app, port } = await start();
+    const id = await newSession(port);
+    await app.inject({ method: "POST", url: `/v1/interview-sessions/${id}/voice-ready` });
+    for (const payload of [{}, { utteranceId: "old" }, { utteranceId: "old", outcome: "TYPO" }, { utteranceId: "", outcome: "COMPLETED" }]) {
+      const res = await app.inject({
+        method: "POST", url: `/v1/interview-sessions/${id}/voice-utterance-complete`, payload,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
   /**
    * SESSION_STARTED was appended at creation and never dispatched, so the whole
    * brief-delivery path was unreachable. The problem only got delivered if the

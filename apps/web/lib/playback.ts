@@ -56,14 +56,29 @@ export interface PlaybackSchedulerOptions {
    * a millisecond late the context has already passed it, and Web Audio plays it
    * immediately with the start clipped. A small lead absorbs that without being
    * audible as latency.
+   *
+   * It is also the only jitter buffer this path has. 60ms was too thin: a single
+   * WebSocket hiccup longer than that drains the queue mid-sentence, the cursor
+   * resets to the clock, and the next chunk lands after an audible hole. 150ms
+   * is still well under the gate's own patience and absorbs an ordinary stall.
    */
   leadSeconds?: number;
+  /**
+   * Called when the queue empties.
+   *
+   * Exists because "the model stopped generating" and "the candidate stopped
+   * hearing the interviewer" are different moments, and the second one is the
+   * one the server's timing model needs. Chunks arrive faster than real time, so
+   * `turnComplete` can precede the last speaker output by seconds.
+   */
+  onDrain?: () => void;
 }
 
 export class PlaybackScheduler {
   private readonly sink: AudioSink;
   private readonly sampleRate: number;
   private readonly leadSeconds: number;
+  private readonly onDrain: (() => void) | undefined;
 
   /** When the next buffer should start. Null when nothing is queued. */
   private cursor: number | null = null;
@@ -72,7 +87,8 @@ export class PlaybackScheduler {
   constructor(opts: PlaybackSchedulerOptions) {
     this.sink = opts.sink;
     this.sampleRate = opts.sampleRate ?? LIVE_OUTPUT_SAMPLE_RATE;
-    this.leadSeconds = opts.leadSeconds ?? 0.06;
+    this.leadSeconds = opts.leadSeconds ?? 0.15;
+    this.onDrain = opts.onDrain;
   }
 
   /** True while audio is scheduled or playing. Drives the Speaking indicator. */
@@ -109,8 +125,11 @@ export class PlaybackScheduler {
    * rest of the session.
    */
   release(source: ScheduledSource): void {
-    this.active.delete(source);
-    if (this.active.size === 0) this.cursor = null;
+    if (!this.active.delete(source)) return;
+    if (this.active.size === 0) {
+      this.cursor = null;
+      this.onDrain?.();
+    }
   }
 
   /**

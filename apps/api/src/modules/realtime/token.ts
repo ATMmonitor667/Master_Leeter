@@ -43,6 +43,7 @@
  */
 
 import { DEFAULT_INTERVIEWER_VOICE, INTERVIEWER_PERSONA } from "./persona.js";
+import { VOICE_TOOL_DECLARATIONS } from "./tools.js";
 
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -197,6 +198,20 @@ export function constrainedSetup(model: string, voice?: string | undefined) {
      * be — it can only send the model name, which is what `RealtimeVoice` does.
      */
     systemInstruction: { parts: [{ text: INTERVIEWER_PERSONA }] },
+    /**
+     * The tool surface, pinned here for the third time and the same reason.
+     *
+     * It was previously pinned nowhere at all, which is the more interesting
+     * half: the client's `setup` sends only the model, so a tool surface that
+     * is not in the credential is a tool surface the model does not have. It
+     * was told to call `get_probe_wording` and had no such function.
+     *
+     * Pinning rather than letting the client send it also keeps the surface
+     * closed: a browser that supplied its own declarations could declare a
+     * sixth tool, and while `executeVoiceTool` would refuse it as UNKNOWN_TOOL,
+     * the model would have spent a turn discovering that.
+     */
+    tools: [{ functionDeclarations: VOICE_TOOL_DECLARATIONS }],
     // ADR-001, made structural. See the module comment.
     realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
   };

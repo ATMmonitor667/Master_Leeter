@@ -270,6 +270,7 @@ describe("a session driven only by candidate events", () => {
     // 1. The interview opens. The gate authorizes the brief; delivering it is
     //    what makes clarification legal.
     await feed(runtime, "SESSION_STARTED", { mode: "MOCK" }, "start");
+    await runtime.markSpeechFinished();
     expect(runtime.snapshotState().state).toBe("CLARIFICATION");
 
     // 2. The candidate asks something. Questions do not advance anything —
@@ -314,6 +315,7 @@ describe("a session driven only by candidate events", () => {
   it("cascades legally when one event clears more than one stage", async () => {
     const runtime = build();
     await feed(runtime, "SESSION_STARTED", { mode: "MOCK" }, "start");
+    await runtime.markSpeechFinished();
 
     // A candidate who says nothing and starts typing has passed through
     // approach exploration whether or not they spoke in it. Both transitions
@@ -328,6 +330,7 @@ describe("a session driven only by candidate events", () => {
   it("closes the round when the clock runs out mid-implementation", async () => {
     const runtime = build();
     await feed(runtime, "SESSION_STARTED", { mode: "MOCK" }, "start");
+    await runtime.markSpeechFinished();
     await feed(runtime, "CODE_DELTA", { revision: 1, text: "def f():\n    return 1\n" }, "c1");
     expect(runtime.snapshotState().state).toBe("IMPLEMENTATION");
 
@@ -351,6 +354,7 @@ describe("a session driven only by candidate events", () => {
     // structurally impossible no matter how clearly it was asked.
     const runtime = build();
     await feed(runtime, "SESSION_STARTED", { mode: "MOCK" }, "start");
+    await runtime.markSpeechFinished();
 
     const { event } = await log.append({
       sessionId: SESSION_ID,
@@ -371,6 +375,7 @@ describe("a session driven only by candidate events", () => {
   it("does not re-enter a stage it has already left", async () => {
     const runtime = build();
     await feed(runtime, "SESSION_STARTED", { mode: "MOCK" }, "start");
+    await runtime.markSpeechFinished();
     await feed(runtime, "CODE_DELTA", { revision: 1, text: "def f():\n    return 1\n" }, "c1");
 
     const before = (await stagesIn()).length;

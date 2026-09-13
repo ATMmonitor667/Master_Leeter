@@ -88,6 +88,22 @@ export interface RuntimeResult {
   utterance: Utterance | null;
 }
 
+/**
+ * How an interviewer utterance ended.
+ *
+ * Three outcomes rather than one boolean, because the consequences differ and
+ * collapsing them is what let a half-heard brief advance the interview.
+ *
+ * - COMPLETED   — the candidate heard all of it. The only outcome that may
+ *                 advance a stage.
+ * - INTERRUPTED — the candidate talked over it and playback was cancelled.
+ *                 Whatever it was going to say, they did not hear the end.
+ * - FAILED      — the socket dropped or errored mid-utterance. Indistinguishable
+ *                 from INTERRUPTED in what the candidate heard, distinct in what
+ *                 it says about the session, and worth separating in the log.
+ */
+export type UtteranceOutcome = "COMPLETED" | "INTERRUPTED" | "FAILED";
+
 export interface InterviewRuntimeDeps {
   sessionId: string;
   scenario: InterviewScenarioVersion;
@@ -218,6 +234,9 @@ export class InterviewRuntime {
    * answered from the reviewed variants rather than by paraphrase.
    */
   private briefDeliveryCount = 0;
+  private briefPlaybackCompleted = false;
+  private openingAttempts = 0;
+  private briefAttempts = 0;
 
   private readonly classifier: IntentClassifier;
   private readonly buildSnapshot: typeof buildSnapshot;
@@ -735,6 +754,9 @@ export class InterviewRuntime {
    * through the gate would corrupt the interruption metric.
    */
   private async advanceStages(): Promise<void> {
+    // Candidate events also invoke this driver while audio is playing.
+    // Selecting wording is not evidence that the candidate heard the brief.
+    if (this.state === "ORAL_PROBLEM_DELIVERY" && !this.briefPlaybackCompleted) return;
     // Bounded by the length of the stage path. The transition graph is a
     // forward-only DAG so this cannot cycle, but a bug in a rule should read as
     // a stalled session rather than as a hung request.
@@ -806,15 +828,16 @@ export class InterviewRuntime {
 
     if (decision.action === "STAY_SILENT") return { decision, utterance: null };
 
+    const openingAttempt = ++this.openingAttempts;
     await this.append(
       "ACTION_DECIDED",
       "INTERVIEWER",
       { action: decision.action, reason: decision.reason, decidedByRule: decision.decidedByRule },
-      "action:opening",
+      `action:opening:${openingAttempt}`,
     );
 
     const utterance = await this.realize(decision, {
-      turnId: "opening",
+      turnId: `opening:${openingAttempt}`,
       finalized: true,
       transcript: "",
       semanticEndProbability: 1,
@@ -854,15 +877,60 @@ export class InterviewRuntime {
    * matters is that the flag is driven by a signal rather than left permanently
    * false, so the barge-in rule is live the moment audio is.
    */
-  async markSpeechFinished(): Promise<void> {
-    const completedAction = this.authorized?.decision.action;
+  async markSpeechFinished(
+    utteranceId?: string,
+    outcome: UtteranceOutcome = "COMPLETED",
+  ): Promise<void> {
+    const open = this.authorized;
+
+    /**
+     * A report for an utterance that is not the open one is a late report.
+     *
+     * Without this, the sequence that breaks it is ordinary rather than exotic:
+     * the interviewer speaks, the candidate answers immediately, the gate
+     * authorizes a probe, and *then* the browser's completion for the previous
+     * utterance arrives on a slow connection. It closes the new authorization,
+     * the model calls get_probe_wording, and gets NOT_AUTHORIZED. The log shows
+     * a good decision and no speech, which is the hardest shape of this bug to
+     * read backwards.
+     *
+     * `utteranceId` is optional so the no-socket path — which calls this
+     * immediately, having no audio to wait on — keeps working unchanged.
+     */
+    if (!open || (utteranceId !== undefined && open.utteranceId !== utteranceId)) return;
+
+    const completedAction = open?.decision.action;
     this.interviewerCurrentlySpeaking = false;
     // The authorization does not outlive the utterance. A tool call arriving
     // after this is a model trying to take a second turn, and gets refused.
     this.authorized = null;
-    if (completedAction === "DELIVER_BRIEF" && this.state === "ORAL_PROBLEM_DELIVERY") {
+
+    if (completedAction !== "DELIVER_BRIEF" || this.state !== "ORAL_PROBLEM_DELIVERY") return;
+
+    // Only a brief the candidate heard to the end may move the interview on.
+    // This is the whole reason outcome exists: a candidate who talked over the
+    // problem statement eight seconds in should not find themselves in
+    // CLARIFICATION having never heard the constraints.
+    if (outcome === "COMPLETED") {
+      this.briefPlaybackCompleted = true;
       await this.advanceStages();
+      return;
     }
+
+    /**
+     * Put the brief back so it can be delivered again.
+     *
+     * `realize` increments `briefDeliveryCount` when it picks the wording, which
+     * is before a single sample has played. The gate reads that counter to
+     * decide whether the opening is still owed, so leaving it incremented after
+     * an interruption strands the session: stage will not advance without a
+     * completed brief, and the gate will not authorize one because it believes
+     * the brief was given.
+     *
+     * Attempts have separate event keys and opening utterance IDs, so a late
+     * completion from the interrupted attempt cannot complete its replacement.
+     */
+    if (this.briefDeliveryCount > 0) this.briefDeliveryCount -= 1;
   }
 
   /**
@@ -974,12 +1042,13 @@ export class InterviewRuntime {
             : (variants[(this.briefDeliveryCount - 1) % variants.length] ?? brief.openingScript);
 
         this.briefDeliveryCount += 1;
+        this.briefAttempts += 1;
 
         await this.append(
           "BRIEF_DELIVERED",
           "INTERVIEWER",
           { delivery: this.briefDeliveryCount, repeat: this.briefDeliveryCount > 1 },
-          `brief:${this.briefDeliveryCount}`,
+          `brief-attempt:${this.briefAttempts}`,
         );
 
         return { ...base, text };

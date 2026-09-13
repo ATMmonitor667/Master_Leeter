@@ -2,7 +2,10 @@ import { InterviewModeSchema, type ServerMessage, type SessionEvent } from "@mas
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
-import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.js";
+import {
+  InterviewRuntime,
+  type IntentClassifier,
+} from "../orchestrator/index.js";
 import {
   MintLimiter,
   RealtimeTokenError,
@@ -678,19 +681,38 @@ export async function registerSessionModule(
   });
 
   /**
-   * The interviewer's audio finished (M3-5).
+   * The interviewer's utterance ended (M3-5).
    *
-   * Reported by the browser when the model's turn completes. Two things end
-   * here: the authorization the tool surface checks, and the window in which a
-   * candidate speaking counts as barge-in.
+   * Reported by the browser when the model's audio stops reaching the speakers.
+   * Two things end here: the authorization the tool surface checks, and the
+   * window in which a candidate speaking counts as barge-in.
+   *
+   * The body carries which utterance ended and how. Both matter and neither
+   * used to be sent:
+   *
+   *   - `utteranceId` scopes the report. A completion that arrives after the
+   *     gate has already authorized the next turn would otherwise close that
+   *     new authorization, and the model's very next tool call is refused.
+   *   - `outcome` distinguishes a brief the candidate heard from one they
+   *     talked over. Only the first may advance the interview.
+   *
+   * HTTP reports require both fields. The internal no-socket path calls the
+   * runtime directly and does not need a permissive public request schema.
    */
   app.post("/interview-sessions/:id/voice-utterance-complete", async (req, reply) => {
     const { id } = req.params as { id: string };
     const runtime = runtimes.get(id);
     if (!runtime) return reply.code(409).send({ error: "NO_LIVE_SESSION" });
 
-    await runtime.markSpeechFinished();
-    return reply.send({ ok: true });
+    const body = z.object({
+      utteranceId: z.string().min(1).max(200),
+      outcome: z.enum(["COMPLETED", "INTERRUPTED", "FAILED"]),
+    }).strict().safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "INVALID_BODY" });
+    const { utteranceId, outcome } = body.data;
+
+    await runtime.markSpeechFinished(utteranceId, outcome);
+    return reply.send({ ok: true, outcome });
   });
 
   app.post("/interview-sessions/:id/voice-tool", async (req, reply) => {

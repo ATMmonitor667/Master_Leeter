@@ -4,6 +4,7 @@ import {
   RealtimeVoice,
   type SpeechAuthorization,
   type SpeechBoundary,
+  type UtteranceOutcome,
   type VoiceCredential,
 } from "./realtime-voice";
 
@@ -32,6 +33,22 @@ import {
 /** ~20ms at 48kHz. Matches the VAD's expected frame size. */
 const CAPTURE_FRAME_SAMPLES = 960;
 
+/**
+ * Fade applied when a scheduled buffer is cancelled.
+ *
+ * Barge-in stops buffers at an arbitrary sample. That is a step discontinuity,
+ * and a step discontinuity is a click — on every single interruption. Long
+ * enough to remove it, short enough that nobody hears a fade.
+ */
+const STOP_RAMP_SECONDS = 0.008;
+
+/** What the capture worklet posts. The timestamp is the point of the wrapper. */
+interface CaptureFrame {
+  samples: Float32Array;
+  /** Context time at the end of the frame. See `startCapture`. */
+  atSeconds: number;
+}
+
 const CAPTURE_WORKLET = `
 class CaptureProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -47,7 +64,12 @@ class CaptureProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < channel.length; i++) {
       this.buffer[this.filled++] = channel[i];
       if (this.filled === this.buffer.length) {
-        this.port.postMessage(this.buffer.slice(0));
+        // Timestamped here, from the audio clock, rather than with Date.now()
+        // on the receiving end. Frames queue behind main-thread work, so a
+        // detector reading arrival time sees several frames at the same instant
+        // followed by a gap — and then every duration it measures
+        // (minSpeechMs, endHangoverMs) is wrong exactly when the page is busy.
+        this.port.postMessage({ samples: this.buffer.slice(0), atSeconds: currentTime });
         this.filled = 0;
       }
     }
@@ -79,9 +101,24 @@ export class WebAudioSink implements AudioSink {
 
     const node = this.context.createBufferSource();
     node.buffer = buffer;
-    node.connect(this.context.destination);
 
-    const handle: ScheduledSource = { stop: () => node.stop() };
+    // The gain stage exists for `stop()` alone — see STOP_RAMP_SECONDS. A buffer
+    // scheduled in the future is stopped before it starts, which is legal and
+    // simply means it never plays; `onended` still fires, so the scheduler still
+    // learns the queue drained.
+    const gain = this.context.createGain();
+    node.connect(gain);
+    gain.connect(this.context.destination);
+
+    const handle: ScheduledSource = {
+      stop: () => {
+        const at = this.context.currentTime;
+        gain.gain.cancelScheduledValues(at);
+        gain.gain.setValueAtTime(gain.gain.value, at);
+        gain.gain.linearRampToValueAtTime(0, at + STOP_RAMP_SECONDS);
+        node.stop(at + STOP_RAMP_SECONDS);
+      },
+    };
     node.onended = () => this.onEnded(handle);
     node.start(atTime);
 
@@ -116,6 +153,14 @@ export class VoiceSession {
   private voice: RealtimeVoice | null = null;
   private playback: PlaybackScheduler | null = null;
   private status: VoiceStatus = "IDLE";
+  /** True from an utterance's first audio chunk until it is reported complete. */
+  private utteranceOpen = false;
+  /** The model stopped generating. Not the same as the candidate having stopped hearing it. */
+  private generationDone = false;
+  /** Which utterance the pending report is about, so a stale one cannot close a newer window. */
+  private pendingUtteranceId: string | null = null;
+  /** How it ended. Only COMPLETED waits for the speakers to drain. */
+  private pendingOutcome: UtteranceOutcome = "COMPLETED";
 
   constructor(private readonly opts: VoiceSessionOptions) {}
 
@@ -143,7 +188,12 @@ export class VoiceSession {
           // our VAD sees anything, which is the correct order.
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
+          // Off, deliberately. The VAD thresholds on distance above a tracked
+          // noise floor, and AGC's whole job is to compress that distance: it
+          // lifts the room during pauses and holds speech at a target, which
+          // narrows the very margin the detector measures. Useful for a
+          // transcriber, actively harmful to a relative-energy VAD.
+          autoGainControl: false,
         },
       });
 
@@ -152,11 +202,15 @@ export class VoiceSession {
 
       this.playback = new PlaybackScheduler({
         sink: new WebAudioSink(this.context, (source) => this.playback?.release(source)),
+        onDrain: () => this.settleUtterance(),
       });
 
       this.voice = new RealtimeVoice({
         credential,
         captureRate,
+        // Barge-in must remain possible through the playback tail, which outlasts
+        // generation by however much audio is queued.
+        isPlaying: () => this.playback?.isPlaying ?? false,
         connect: (handlers) => {
           const socket = new WebSocket(credential.wsUrl);
           socket.onopen = () => handlers.onOpen();
@@ -192,24 +246,32 @@ export class VoiceSession {
           return (await res.json()) as Record<string, unknown>;
         },
         onModelAudio: (pcm) => {
+          this.utteranceOpen = true;
           this.playback?.enqueue(pcm);
           this.setStatus("SPEAKING");
         },
-        onSpeechComplete: () => {
-          this.setStatus("LISTENING");
-          // Tells the server the authorization window is closed. Fire and
-          // forget: a lost report costs a stale window, not a broken session.
-          void apiFetch(
-            `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
-            { method: "POST", keepalive: true },
-          ).catch(() => {});
+        onSpeechComplete: (utteranceId) => {
+          // Generation finished. The candidate is very probably still listening
+          // — `settleUtterance` decides when that stops being true.
+          this.armReport(utteranceId, "COMPLETED");
+          this.settleUtterance();
         },
-        onBargeIn: () => {
+        onBargeIn: (utteranceId) => {
           // Immediate and total. Chunks arrive faster than real time, so a
           // barge-in that only stopped future audio would keep talking over the
           // candidate for however much was already scheduled.
           this.playback?.stop();
-          this.setStatus("LISTENING");
+          // As far as the candidate is concerned this utterance is over, so the
+          // window closes now rather than whenever the model finishes generating
+          // into a void — and it closes as INTERRUPTED, which is what stops a
+          // half-heard brief from advancing the interview.
+          this.armReport(utteranceId, "INTERRUPTED");
+          this.settleUtterance();
+        },
+        onSpeechFailed: (utteranceId) => {
+          this.playback?.stop();
+          this.armReport(utteranceId, "FAILED");
+          this.settleUtterance();
         },
         onReady: () => {
           this.setStatus("LISTENING");
@@ -263,10 +325,71 @@ export class VoiceSession {
     this.worklet = null;
     this.voice = null;
     this.playback = null;
+    this.utteranceOpen = false;
+    this.generationDone = false;
+    this.pendingUtteranceId = null;
     this.setStatus("IDLE");
   }
 
   // ── Internals ──────────────────────────────────────────────────────────────
+
+  /** Record what the pending report will say. Separate so `settleUtterance` stays about timing. */
+  private armReport(utteranceId: string | null, outcome: UtteranceOutcome): void {
+    this.pendingUtteranceId = utteranceId;
+    this.pendingOutcome = outcome;
+    this.generationDone = true;
+  }
+
+  /**
+   * Report the interviewer's utterance finished — once, and at the right moment.
+   *
+   * The right moment is when the candidate stops *hearing* the interviewer, not
+   * when the model stops generating. Live chunks arrive faster than real time,
+   * so `turnComplete` can precede the last speaker output by seconds. Reporting
+   * on it started the gate's silence clock while the interviewer was still
+   * audibly talking, which meant every `silenceMs` M4-2 measured was short by
+   * the length of the playback queue — in the one direction that makes the gate
+   * more willing to speak.
+   *
+   * Only COMPLETED waits for the queue. An interruption and a failure are both
+   * already true at the speakers: playback was cancelled on the way in, so
+   * waiting for a drain that has already happened would be waiting for nothing.
+   *
+   * Called from four places (generation end, queue drain, barge-in, failure)
+   * and idempotent across them, because which arrives last depends on the
+   * network.
+   */
+  private settleUtterance(): void {
+    if (!this.generationDone) return;
+    // An authorized turn that produced no audio at all still has to be closed;
+    // waiting on a queue that was never filled would hold the window open.
+    if (this.pendingOutcome === "COMPLETED" && this.utteranceOpen && this.playback?.isPlaying) {
+      return;
+    }
+
+    const utteranceId = this.pendingUtteranceId;
+    const outcome = this.pendingOutcome === "COMPLETED" && !this.utteranceOpen
+      ? "FAILED" : this.pendingOutcome;
+
+    this.generationDone = false;
+    this.utteranceOpen = false;
+    this.pendingUtteranceId = null;
+    this.pendingOutcome = "COMPLETED";
+    this.setStatus("LISTENING");
+    if (!utteranceId) return;
+    this.voice?.markPlaybackFinished(utteranceId);
+
+    // Fire and forget: a lost report costs a stale window, not a broken session.
+    void apiFetch(
+      `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ outcome, ...(utteranceId ? { utteranceId } : {}) }),
+        keepalive: true,
+      },
+    ).catch(() => {});
+  }
 
   private async mintCredential(): Promise<VoiceCredential> {
     const res = await apiFetch(
@@ -293,8 +416,14 @@ export class VoiceSession {
     const source = context.createMediaStreamSource(stream);
     const worklet = new AudioWorkletNode(context, "capture");
 
-    worklet.port.onmessage = (event: MessageEvent<Float32Array>) => {
-      this.voice?.pushAudio(event.data);
+    // Anchor the context clock to wall time once. Boundary timestamps keep the
+    // epoch semantics the server's event log expects, while their *spacing*
+    // comes from the audio clock rather than from when the event loop got round
+    // to the message.
+    const epochMs = Date.now() - context.currentTime * 1_000;
+
+    worklet.port.onmessage = (event: MessageEvent<CaptureFrame>) => {
+      this.voice?.pushAudio(event.data.samples, epochMs + event.data.atSeconds * 1_000);
     };
 
     source.connect(worklet);

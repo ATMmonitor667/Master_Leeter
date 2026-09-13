@@ -35,7 +35,9 @@ export {
 
 export {
   VOICE_TOOLS,
+  VOICE_TOOL_DECLARATIONS,
   executeVoiceTool,
+  type VoiceToolDeclaration,
   type ToolRefusal,
   type ToolResult,
   type VoiceToolContext,

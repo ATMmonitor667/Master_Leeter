@@ -540,6 +540,35 @@ describe("staleness guard is live, not theoretical", () => {
 });
 
 describe("state machine is enforced through the runtime", () => {
+  it("keeps the opening stage and wording available while candidate events arrive during playback", async () => {
+    const runtime = build();
+    const opening = await feed(runtime, "SESSION_STARTED", {}, "start");
+    await feed(runtime, "SPEECH_STARTED", {}, "noise-start");
+    await feed(runtime, "SPEECH_STOPPED", {}, "noise-stop");
+    expect(runtime.snapshotState().state).toBe("ORAL_PROBLEM_DELIVERY");
+    expect(runtime.voiceContext().authorized?.action).toBe("DELIVER_BRIEF");
+    await runtime.markSpeechFinished(opening.utterance!.utteranceId, "COMPLETED");
+    expect(runtime.snapshotState().state).toBe("CLARIFICATION");
+  });
+
+  it.each(["INTERRUPTED", "FAILED"] as const)("retries a %s brief with a new identity and ignores the old completion", async (outcome) => {
+    const runtime = build();
+    const first = await feed(runtime, "SESSION_STARTED", {}, "start");
+    await runtime.markSpeechFinished(first.utterance!.utteranceId, outcome);
+    await feed(runtime, "SPEECH_STOPPED", {}, "stop");
+    expect(runtime.snapshotState().state).toBe("ORAL_PROBLEM_DELIVERY");
+    clock += 10_000;
+    const retry = await feed(runtime, "SESSION_STARTED", {}, "retry");
+    expect(retry.utterance).not.toBeNull();
+    expect(retry.utterance!.utteranceId).not.toBe(first.utterance!.utteranceId);
+    await runtime.markSpeechFinished(first.utterance!.utteranceId, "COMPLETED");
+    expect(runtime.voiceContext().utteranceId).toBe(retry.utterance!.utteranceId);
+    expect(runtime.snapshotState().state).toBe("ORAL_PROBLEM_DELIVERY");
+    await runtime.markSpeechFinished(retry.utterance!.utteranceId, "COMPLETED");
+    expect(runtime.snapshotState().state).toBe("CLARIFICATION");
+    expect(await payloadsOf("BRIEF_DELIVERED")).toHaveLength(2);
+  });
+
   it("reaches test and debug using candidate events only", async () => {
     const transitions: string[] = [];
     const runtime = build({
