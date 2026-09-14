@@ -614,6 +614,85 @@ describe("state machine is enforced through the runtime", () => {
   });
 });
 
+describe("runtime restart recovery", () => {
+  it("hydrates recorded policy state without classifying history or replaying audio", async () => {
+    const original = build();
+    const started = await record("SESSION_STARTED", {}, "restart-start");
+    await original.ingest(started);
+    await original.markSpeechFinished();
+    await feed(original, "CODE_DELTA", { revision: 3, text: "def solve(xs):\n    return xs" }, "restart-code");
+    await original.settled();
+
+    const before = original.snapshotState();
+    let classifications = 0;
+    const restored = build({
+      classifier: {
+        id: "must-not-run-during-restore",
+        classify: () => {
+          classifications += 1;
+          throw new Error("historical transcript was reclassified");
+        },
+      },
+    });
+
+    restored.restore(await log.read(SESSION_ID));
+
+    expect(classifications).toBe(0);
+    expect(restored.snapshotState()).toEqual(before);
+    expect(restored.codeAtRevision(3)).toBe("def solve(xs):\n    return xs");
+    expect(restored.voiceContext()).toMatchObject({ authorized: null, utteranceId: null });
+
+    const briefCount = (await payloadsOf("BRIEF_DELIVERED")).length;
+    const replayedStart = await restored.ingest(started);
+    expect(replayedStart.utterance).toBeNull();
+    expect((await payloadsOf("BRIEF_DELIVERED"))).toHaveLength(briefCount);
+  });
+
+  it("folds recorded outputs after the latest checkpoint", async () => {
+    const original = build();
+    await feed(original, "STATE_TRANSITIONED", { to: "CLARIFICATION" }, "tail-state");
+
+    const appendOutput = async (type: SessionEvent["type"], payload: Record<string, unknown>, key: string) => {
+      await log.append({
+        sessionId: SESSION_ID,
+        type,
+        actor: "INTERVIEWER",
+        scenarioVersionId: scenario.id,
+        payload,
+        traceId: "trace-1",
+        idempotencyKey: key,
+        occurredAt: new Date(clock).toISOString(),
+      });
+    };
+    await appendOutput("CLARIFICATION_ANSWERED", { factKey: "ordering" }, "tail-fact");
+    await appendOutput("PROBE_ASKED", { probeId: "p-complexity" }, "tail-probe");
+    await appendOutput("HINT_GIVEN", { level: 1 }, "tail-hint");
+    await appendOutput("FOLLOW_UP_PRESENTED", { followUpId: "f-stream" }, "tail-follow-up");
+
+    const restored = build();
+    restored.restore(await log.read(SESSION_ID));
+    expect(restored.voiceContext()).toMatchObject({
+      probeUseCounts: { "p-complexity": 1 },
+      answeredFactKeys: ["ordering"],
+      candidateState: { hintsUsed: [1], probeHistory: ["p-complexity"] },
+    });
+  });
+
+  it("fails closed on a malformed latest checkpoint", async () => {
+    await log.append({
+      sessionId: SESSION_ID,
+      type: "RUNTIME_CHECKPOINT",
+      actor: "SYSTEM",
+      scenarioVersionId: scenario.id,
+      payload: { version: 1, state: "IMPLEMENTATION" },
+      traceId: "trace-1",
+      idempotencyKey: "bad-checkpoint",
+    });
+    const history = await log.read(SESSION_ID);
+    expect(() => build().restore(history)).toThrow("INVALID_RUNTIME_CHECKPOINT");
+  });
+});
+
 describe("determinism", () => {
   it("two runtimes fed the same events reach the same decisions", async () => {
     const script: Array<[SessionEvent["type"], Record<string, unknown>]> = [

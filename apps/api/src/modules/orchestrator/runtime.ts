@@ -1,4 +1,8 @@
 import {
+  CandidateStateSchema,
+  InterviewStateSchema,
+  MilestoneKindSchema,
+  RunResultSchema,
   type CandidateState,
   type GateDecision,
   type InterviewContext,
@@ -11,11 +15,13 @@ import {
   type Turn,
   emptyCandidateState,
 } from "@master-leeter/contracts";
+import { z } from "zod";
 import {
   type MilestoneState,
   type SemanticSnapshot,
   type TranscriptObservation,
   applyComplexityMismatch,
+  applyRunResult,
   buildSnapshot,
   emptyMilestoneState,
   observe,
@@ -128,6 +134,34 @@ export interface InterviewRuntimeDeps {
    */
   onTransition?: (to: InterviewState, reason: string) => void | Promise<void>;
 }
+
+const RuntimeCheckpointSchema = z.object({
+  version: z.literal(1),
+  state: InterviewStateSchema,
+  candidateState: CandidateStateSchema,
+  milestones: z.object({
+    reached: z.array(MilestoneKindSchema),
+    consecutiveIdenticalFailures: z.number().int().nonnegative(),
+    lastFailureFingerprint: z.string().nullable(),
+    lastSnapshotCode: z.string().nullable(),
+  }),
+  probeUseCounts: z.record(z.number().int().nonnegative()),
+  followUpsUsed: z.array(z.string()),
+  runsStarted: z.number().int().nonnegative(),
+  reasoningTurnsInStage: z.number().int().nonnegative(),
+  approachCommitted: z.boolean(),
+  latestCodeRevision: z.number().int().nonnegative(),
+  latestCode: z.string(),
+  previousObservedCode: z.string().nullable(),
+  lastCodeActivityMs: z.number().nonnegative(),
+  lastSpokeAtMs: z.number().nonnegative(),
+  candidateSpeechStarted: z.boolean(),
+  lastSpeechStoppedAtMs: z.number().nonnegative().nullable(),
+  answeredFactKeys: z.array(z.string()),
+  briefDeliveryCount: z.number().int().nonnegative(),
+  observationCount: z.number().int().nonnegative(),
+});
+type RuntimeCheckpoint = z.infer<typeof RuntimeCheckpointSchema>;
 
 export class InterviewRuntime {
   private state: InterviewState = INITIAL_STATE;
@@ -313,7 +347,219 @@ export class InterviewRuntime {
       await this.advanceStages();
     }
 
+    await this.persistCheckpoint(`event:${event.seq}`);
+
     return result;
+  }
+
+  /**
+   * Rebuild mutable policy state from recorded outputs without invoking models,
+   * scheduling speech, or appending new evidence.
+   */
+  restore(events: readonly SessionEvent[]): void {
+    let previousSeq = -1;
+    for (const event of events) {
+      if (event.sessionId !== this.deps.sessionId || event.scenarioVersionId !== this.deps.scenarioVersionId) {
+        throw new Error("RUNTIME_HISTORY_PIN_MISMATCH");
+      }
+      if (event.seq !== previousSeq + 1) throw new Error("RUNTIME_HISTORY_GAP");
+      previousSeq = event.seq;
+    }
+
+    let checkpointIndex = -1;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i]?.type === "RUNTIME_CHECKPOINT") {
+        this.hydrateCheckpoint(events[i]!.payload);
+        checkpointIndex = i;
+        break;
+      }
+    }
+
+    for (const event of events.slice(checkpointIndex + 1)) this.restoreEvent(event);
+
+    // Delivery and authorization are tied to one process's live audio session.
+    // Recovery never repeats audio or leaves a stale tool authorization open.
+    this.authorized = null;
+    this.interviewerCurrentlySpeaking = false;
+    this.clearHeldTurn();
+    this.observationDirty = false;
+    this.pendingRuns.length = 0;
+    this.pendingTranscripts.length = 0;
+  }
+
+  private hydrateCheckpoint(payload: Record<string, unknown>): void {
+    const parsed = RuntimeCheckpointSchema.safeParse(payload);
+    if (!parsed.success) throw new Error("INVALID_RUNTIME_CHECKPOINT");
+    const checkpoint = parsed.data;
+    this.state = checkpoint.state;
+    this.candidateState = structuredClone(checkpoint.candidateState);
+    this.milestones = structuredClone(checkpoint.milestones);
+    this.replaceRecord(this.probeUseCounts, checkpoint.probeUseCounts);
+    this.followUpsUsed.splice(0, this.followUpsUsed.length, ...checkpoint.followUpsUsed);
+    this.runsStarted = checkpoint.runsStarted;
+    this.reasoningTurnsInStage = checkpoint.reasoningTurnsInStage;
+    this.approachCommitted = checkpoint.approachCommitted;
+    this.latestCodeRevision = checkpoint.latestCodeRevision;
+    this.latestCode = checkpoint.latestCode;
+    this.previousObservedCode = checkpoint.previousObservedCode;
+    this.lastCodeActivityMs = checkpoint.lastCodeActivityMs;
+    this.lastSpokeAtMs = checkpoint.lastSpokeAtMs;
+    this.candidateSpeechStarted = checkpoint.candidateSpeechStarted;
+    this.lastSpeechStoppedAtMs = checkpoint.lastSpeechStoppedAtMs;
+    this.answeredFactKeys.splice(0, this.answeredFactKeys.length, ...checkpoint.answeredFactKeys);
+    this.briefDeliveryCount = checkpoint.briefDeliveryCount;
+    this.observationCount = checkpoint.observationCount;
+  }
+
+  private replaceRecord(target: Record<string, number>, source: Record<string, number>): void {
+    for (const key of Object.keys(target)) delete target[key];
+    Object.assign(target, source);
+  }
+
+  /** Fold only recorded facts. Never classify a historical transcript here. */
+  private restoreEvent(event: SessionEvent): void {
+    const payload = event.payload;
+    switch (event.type) {
+      case "CODE_DELTA": {
+        const revision = numberOf(payload["revision"]);
+        const text = stringOf(payload["text"]);
+        if (revision !== null && text !== null && revision >= this.latestCodeRevision) {
+          this.latestCodeRevision = revision;
+          this.latestCode = text;
+          this.lastCodeActivityMs = Date.parse(event.occurredAt) || this.lastCodeActivityMs;
+        }
+        break;
+      }
+      case "RUN_REQUESTED":
+        this.runsStarted += 1;
+        break;
+      case "RUN_COMPLETED": {
+        this.runsStarted = Math.max(this.runsStarted, 1);
+        const run = RunResultSchema.safeParse(payload);
+        if (run.success) this.milestones = applyRunResult(this.milestones, run.data).state;
+        break;
+      }
+      case "SPEECH_STARTED":
+        this.candidateSpeechStarted = true;
+        this.lastSpeechStoppedAtMs = null;
+        break;
+      case "SPEECH_STOPPED":
+        this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.lastSpeechStoppedAtMs;
+        break;
+      case "SPEECH_FINAL":
+        this.candidateSpeechStarted = false;
+        break;
+      case "BARGE_IN":
+        this.candidateSpeechStarted = true;
+        break;
+      case "STATE_TRANSITIONED": {
+        const to = stringOf(payload["to"]);
+        if (to && InterviewStateSchema.safeParse(to).success) {
+          this.state = applyEvent({ state: this.state, eventType: "STATE_TRANSITIONED", requestedState: to as InterviewState }).state;
+          this.reasoningTurnsInStage = 0;
+        }
+        break;
+      }
+      case "SESSION_ENDED":
+        this.state = "EVALUATION";
+        break;
+      case "ACTION_DECIDED": {
+        const intent = stringOf(payload["intent"]);
+        if (intent && isReasoningIntent(intent as TurnClassification["intent"])) this.reasoningTurnsInStage += 1;
+        if (intent === "APPROACH_COMMITMENT") this.approachCommitted = true;
+        if (payload["action"] !== "STAY_SILENT") this.lastSpokeAtMs = Date.parse(event.occurredAt) || this.lastSpokeAtMs;
+        break;
+      }
+      case "BRIEF_DELIVERED": {
+        const delivery = numberOf(payload["delivery"]);
+        this.briefDeliveryCount = Math.max(this.briefDeliveryCount, delivery ?? 1);
+        break;
+      }
+      case "CLARIFICATION_ANSWERED": {
+        const key = stringOf(payload["factKey"]);
+        if (key && !this.answeredFactKeys.includes(key)) this.answeredFactKeys.push(key);
+        break;
+      }
+      case "PROBE_ASKED": {
+        const id = stringOf(payload["probeId"]);
+        if (id) {
+          this.probeUseCounts[id] = (this.probeUseCounts[id] ?? 0) + 1;
+          this.candidateState = { ...this.candidateState, probeHistory: [...this.candidateState.probeHistory, id] };
+        }
+        break;
+      }
+      case "HINT_GIVEN": {
+        const level = numberOf(payload["level"]);
+        if (level !== null && level >= 1 && level <= 4) {
+          this.candidateState = {
+            ...this.candidateState,
+            hintsUsed: [...this.candidateState.hintsUsed, level as 1 | 2 | 3 | 4],
+          };
+        }
+        break;
+      }
+      case "FOLLOW_UP_PRESENTED": {
+        const id = stringOf(payload["followUpId"]);
+        if (id && !this.followUpsUsed.includes(id)) this.followUpsUsed.push(id);
+        break;
+      }
+      case "MILESTONE": {
+        const kind = MilestoneKindSchema.safeParse(payload["kind"]);
+        if (kind.success && !this.milestones.reached.includes(kind.data)) this.milestones.reached.push(kind.data);
+        break;
+      }
+      case "CANDIDATE_STATE_UPDATED": {
+        const restored = CandidateStateSchema.safeParse({
+          ...this.candidateState,
+          ...payload,
+          updatedAt: event.occurredAt,
+        });
+        if (restored.success) this.candidateState = restored.data;
+        this.observationCount += 1;
+        if (this.candidateState.derivedFromRevision === this.latestCodeRevision) {
+          this.previousObservedCode = this.latestCode;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  private checkpoint(): RuntimeCheckpoint {
+    return {
+      version: 1,
+      state: this.state,
+      candidateState: structuredClone(this.candidateState),
+      milestones: structuredClone(this.milestones),
+      probeUseCounts: { ...this.probeUseCounts },
+      followUpsUsed: [...this.followUpsUsed],
+      runsStarted: this.runsStarted,
+      reasoningTurnsInStage: this.reasoningTurnsInStage,
+      approachCommitted: this.approachCommitted,
+      latestCodeRevision: this.latestCodeRevision,
+      latestCode: this.latestCode,
+      previousObservedCode: this.previousObservedCode,
+      lastCodeActivityMs: this.lastCodeActivityMs,
+      lastSpokeAtMs: this.lastSpokeAtMs,
+      candidateSpeechStarted: this.candidateSpeechStarted,
+      lastSpeechStoppedAtMs: this.lastSpeechStoppedAtMs,
+      answeredFactKeys: [...this.answeredFactKeys],
+      briefDeliveryCount: this.briefDeliveryCount,
+      observationCount: this.observationCount,
+    };
+  }
+
+  private async persistCheckpoint(key: string): Promise<void> {
+    await this.deps.events.append({
+      sessionId: this.deps.sessionId,
+      type: "RUNTIME_CHECKPOINT",
+      actor: "SYSTEM",
+      scenarioVersionId: this.deps.scenarioVersionId,
+      payload: this.checkpoint(),
+      traceId: this.deps.traceId,
+      idempotencyKey: `runtime-checkpoint:${key}`,
+    });
   }
 
   private async applyCommitted(event: SessionEvent): Promise<RuntimeResult> {
@@ -684,6 +930,7 @@ export class InterviewRuntime {
     );
 
     const result = await this.reevaluate(Date.parse(occurredAt));
+    await this.persistCheckpoint(`silence:${held.turn.turnId}`);
     if (result?.decision && result.decision.action !== "STAY_SILENT") {
       // Nobody is awaiting this call — it came from a timer, not from ingest —
       // so an authorized action has to be handed back explicitly or it would be
@@ -855,6 +1102,7 @@ export class InterviewRuntime {
    * false, so the barge-in rule is live the moment audio is.
    */
   async markSpeechFinished(): Promise<void> {
+    const completedUtteranceId = this.authorized?.utteranceId;
     const completedAction = this.authorized?.decision.action;
     this.interviewerCurrentlySpeaking = false;
     // The authorization does not outlive the utterance. A tool call arriving
@@ -863,6 +1111,7 @@ export class InterviewRuntime {
     if (completedAction === "DELIVER_BRIEF" && this.state === "ORAL_PROBLEM_DELIVERY") {
       await this.advanceStages();
     }
+    if (completedUtteranceId) await this.persistCheckpoint(`speech-finished:${completedUtteranceId}`);
   }
 
   /**
@@ -1207,6 +1456,8 @@ export class InterviewRuntime {
         },
         `observation:${pass}`,
       );
+
+      await this.persistCheckpoint(`observation:${pass}`);
 
       // BASE_TESTS_PASS is what opens the follow-up stage, and it lands here —
       // one observation pass after the run that earned it. Without this the

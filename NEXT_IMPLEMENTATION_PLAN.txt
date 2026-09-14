@@ -51,6 +51,29 @@ deletion must be completed before Supabase mode can be enabled safely.
 NEXT: implement deterministic runtime recovery from committed events without
 rerunning classifiers or replaying previously spoken audio.
 
+CHECKPOINT RESULT — I02b.3c RUNTIME RESTART RECOVERY (2026-09-13)
+- InterviewRuntime now writes versioned RUNTIME_CHECKPOINT events containing
+  stage, candidate/observer state, code revision/source, hint/probe/follow-up
+  budgets, disclosed facts, brief count, run/stage signals and timing state.
+- A fresh runtime hydrates the newest valid checkpoint and folds later recorded
+  outputs without reclassifying historical transcripts or scheduling speech.
+  Live audio authorization is intentionally cleared during recovery.
+- Runtime creation reads history before applying the newly committed event.
+  The voice-ready replay path restores the full stream and remains idempotent,
+  so a fresh API process does not deliver the opening a second time.
+- Invalid checkpoints, event gaps and session/scenario pin mismatches fail the
+  runtime closed instead of silently starting with empty policy state.
+Validation: workspace typecheck; 38 contract, 708 API and 123 web tests pass;
+seven live database tests remain skipped. The restart wiring test uses two fresh
+server instances over one repository/event log and verifies no reclassification
+or duplicate opening.
+Remaining limitation: a crash between committing an input event and recording
+its first derived output still needs an explicit durable processing/outbox state.
+Runtime checkpoints alone do not provide multi-replica ownership or atomic
+stage/session updates.
+NEXT: make lifecycle transitions/outbox records transactional, then persist the
+remaining consent/report/job/ticket/deletion stores before enabling durable mode.
+
 BASELINE
 Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
 Question bank: d1c9354. Authentication: dc5a1a7. Hardening: 259f60a.

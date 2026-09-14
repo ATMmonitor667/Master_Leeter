@@ -229,6 +229,60 @@ describe("the interview state machine has a driver", () => {
     }
   });
 
+  it("restores a runtime in a fresh server without delivering the opening twice", async () => {
+    const store = new InMemorySessionStore();
+    const eventLog = new InMemoryEventLog();
+    const pinned = library.get("conveyor-rescan@1")!;
+    const session = await store.create({
+      userId: "local-dev-user",
+      scenario: pinned,
+      mode: "MOCK",
+      idempotencyKey: "runtime-restart",
+    });
+    await eventLog.append({
+      sessionId: session.id,
+      type: "SESSION_STARTED",
+      actor: "SYSTEM",
+      scenarioVersionId: session.scenarioVersionId,
+      payload: {},
+      traceId: session.traceId,
+      idempotencyKey: `session-started:${session.id}`,
+    });
+
+    const first = buildServer({ library, sessionStore: store, eventLog });
+    await first.ready();
+    await first.inject({ method: "POST", url: `/v1/interview-sessions/${session.id}/voice-ready` });
+    await new Promise((resolve) => setImmediate(resolve));
+    await first.close();
+
+    const deliveriesBeforeRestart = (await eventLog.read(session.id))
+      .filter((event) => event.type === "BRIEF_DELIVERED").length;
+    let historicalClassifications = 0;
+    const second = buildServer({
+      library: new Map(),
+      sessionStore: store,
+      eventLog,
+      classifier: {
+        id: "restart-guard",
+        classify: () => {
+          historicalClassifications += 1;
+          throw new Error("history must not be classified again");
+        },
+      },
+    });
+    await second.ready();
+    try {
+      const response = await second.inject({ method: "POST", url: `/v1/interview-sessions/${session.id}/voice-ready` });
+      expect(response.statusCode).toBe(200);
+      expect(historicalClassifications).toBe(0);
+      const history = await eventLog.read(session.id);
+      expect(history.filter((event) => event.type === "BRIEF_DELIVERED")).toHaveLength(deliveriesBeforeRestart);
+      expect(history.some((event) => event.type === "RUNTIME_CHECKPOINT")).toBe(true);
+    } finally {
+      await second.close();
+    }
+  });
+
   /**
    * The M1-2b wiring gap, tested the only way that would have caught it.
    *

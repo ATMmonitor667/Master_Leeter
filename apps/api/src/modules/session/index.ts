@@ -175,7 +175,7 @@ export async function registerSessionModule(
    */
   const liveSessions = new Map<string, InterviewSession>();
 
-  async function runtimeFor(sessionId: string): Promise<InterviewRuntime | null> {
+  async function runtimeFor(sessionId: string, beforeSeq?: number): Promise<InterviewRuntime | null> {
     const existing = runtimes.get(sessionId);
     if (existing) return existing;
 
@@ -222,6 +222,15 @@ export async function registerSessionModule(
       },
     });
 
+    try {
+      const history = await eventLog.read(session.id);
+      runtime.restore(beforeSeq === undefined ? history : history.filter((event) => event.seq < beforeSeq));
+    } catch (err) {
+      app.log.error({ sessionId, err }, "session runtime could not be restored");
+      liveSessions.delete(session.id);
+      return null;
+    }
+
     runtimes.set(session.id, runtime);
     return runtime;
   }
@@ -246,13 +255,13 @@ export async function registerSessionModule(
    * candidate's connection. A quiet interviewer is a degraded interview, a lost
    * event log is an unrecoverable one.
    */
-  async function dispatch(event: SessionEvent): Promise<void> {
+  async function dispatch(event: SessionEvent, replayExisting = false): Promise<void> {
+    const runtime = await runtimeFor(event.sessionId, replayExisting ? undefined : event.seq);
+    if (!runtime) return;
+
     if (event.type === "RUN_REQUESTED") {
       await handleRunRequestedEvent(event, runDeps);
     }
-
-    const runtime = await runtimeFor(event.sessionId);
-    if (!runtime) return;
 
     try {
       const result = await runtime.ingest(event);
@@ -678,7 +687,7 @@ export async function registerSessionModule(
 
     // Idempotent by construction: the gate only authorizes the brief while
     // briefDeliveryCount is 0, so a retried call decides STAY_SILENT.
-    await dispatch(started);
+    await dispatch(started, true);
     return reply.send({ ok: true });
   });
 
