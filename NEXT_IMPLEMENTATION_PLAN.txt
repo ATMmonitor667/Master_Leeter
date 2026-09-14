@@ -92,6 +92,25 @@ yet complete or selectable.
 NEXT: persist report jobs/results and consent, then add lifecycle/outbox and
 deletion coordination before assembling the Supabase runtime bundle.
 
+CHECKPOINT RESULT — I02b.3e REPORT JOBS + CONSENT REPOSITORIES (2026-09-13)
+- EvaluationQueue now uses an async ReportJobStore. Work is claimed with an
+  expiring lease and random fencing token; an expired job can be recovered and
+  the stale worker cannot overwrite its replacement's result.
+- PgReportJobStore persists queue state and complete report bodies in the
+  existing session_reports table. Migration 005 adds paired lease columns and
+  a claim index. buildServer accepts a report repository as part of its storage
+  boundary; local/test mode retains InMemoryReportJobStore.
+- Consent routes now use ConsentStore rather than a process Map. PgConsentStore
+  keeps timestamped, ordered, append-only grant/revocation history; migration
+  006 creates its private table with RLS and browser/public privilege revocation.
+- Runtime checkpoint payloads are now fully removed by privacy redaction because
+  they contain code and derived candidate context.
+- Protocol and memory tests cover claim fencing, malformed consent fail-closed
+  behavior and ordered history. Opt-in live tests cover cross-pool report claim
+  replacement/result persistence and consent deletion; still pending execution.
+NEXT: add database redaction+tombstones and transactional lifecycle/outbox, then
+persist leases/run admission and assemble the all-or-nothing Supabase bundle.
+
 BASELINE
 Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
 Question bank: d1c9354. Authentication: dc5a1a7. Hardening: 259f60a.

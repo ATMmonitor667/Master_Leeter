@@ -84,7 +84,7 @@ export interface SessionModuleOptions {
   /** Absent until a judge model is configured. The interview works without it. */
   runner?: CodeRunner;
   /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
-  evaluationQueue?: { enqueue(sessionId: string, rubricId: string): unknown };
+  evaluationQueue?: { enqueue(sessionId: string, rubricId: string): Promise<unknown> };
   /**
    * Shared across every session in the process, deliberately.
    *
@@ -501,7 +501,10 @@ export async function registerSessionModule(
       // health, so this is deliberately not awaited and its failure cannot
       // affect the response (ADR-004).
       const scenario = opts.library.get(session.scenarioVersionId);
-      opts.evaluationQueue?.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1");
+      if (opts.evaluationQueue) {
+        void opts.evaluationQueue.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1")
+          .catch((err: unknown) => app.log.error({ sessionId: session.id, err }, "report job enqueue failed"));
+      }
 
       return reply.send({ sessionId: session.id, endedAt: session.endedAt });
     } catch (err) {

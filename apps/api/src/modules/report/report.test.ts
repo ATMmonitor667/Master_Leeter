@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { InMemoryEventLog } from "../session/event-log.js";
 import { BaselineEvaluator, weightedOverall } from "./evaluator.js";
 import { extractFacts, momentsFor } from "./evidence.js";
-import { EvaluationQueue } from "./index.js";
+import { EvaluationQueue, InMemoryReportJobStore } from "./index.js";
 import { CODING_RUBRIC_V1, rubricById, weightSum } from "./rubric.js";
 
 const SESSION = "00000000-0000-4000-8000-000000000009";
@@ -248,20 +248,22 @@ describe("evaluation queue", () => {
   });
 
   it("produces a report from the event log", async () => {
-    queue.enqueue(SESSION, "rubric-coding-v1");
+    await queue.enqueue(SESSION, "rubric-coding-v1");
     const job = await queue.settled(SESSION);
     expect(job?.status).toBe("READY");
     expect(job?.report?.dimensions).toHaveLength(7);
   });
 
   it("is idempotent on enqueue", async () => {
-    const first = queue.enqueue(SESSION, "rubric-coding-v1");
-    const second = queue.enqueue(SESSION, "rubric-coding-v1");
-    expect(second).toBe(first);
+    const first = await queue.enqueue(SESSION, "rubric-coding-v1");
+    const second = await queue.enqueue(SESSION, "rubric-coding-v1");
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.rubricId).toBe(first.rubricId);
+    expect((await queue.settled(SESSION))?.attempts).toBe(1);
   });
 
   it("fails cleanly for a session with no events, and stays retryable", async () => {
-    queue.enqueue("00000000-0000-4000-8000-0000000000aa", "rubric-coding-v1");
+    await queue.enqueue("00000000-0000-4000-8000-0000000000aa", "rubric-coding-v1");
     const job = await queue.settled("00000000-0000-4000-8000-0000000000aa");
     expect(job?.status).toBe("FAILED");
     expect(job?.error).toMatch(/no events/);
@@ -271,7 +273,7 @@ describe("evaluation queue", () => {
   it("regenerates from the same immutable events after a rubric change", async () => {
     // This is what append-only buys: improving the rubric re-scores every past
     // session without re-running a single interview.
-    queue.enqueue(SESSION, "rubric-coding-v1");
+    await queue.enqueue(SESSION, "rubric-coding-v1");
     const first = await queue.settled(SESSION);
 
     const again = await queue.regenerate(SESSION, "rubric-coding-v1");
@@ -281,8 +283,24 @@ describe("evaluation queue", () => {
 
   it("a failed evaluation does not touch the events it read", async () => {
     const before = await log.read(SESSION);
-    queue.enqueue("00000000-0000-4000-8000-0000000000bb", "rubric-coding-v1");
+    await queue.enqueue("00000000-0000-4000-8000-0000000000bb", "rubric-coding-v1");
     await queue.settled("00000000-0000-4000-8000-0000000000bb");
     expect(await log.read(SESSION)).toEqual(before);
+  });
+});
+
+describe("report job leases", () => {
+  it("lets an expired claim be replaced and fences its stale completion", async () => {
+    const store = new InMemoryReportJobStore();
+    const queuedAt = "2026-09-13T00:00:00.000Z";
+    await store.enqueue(SESSION, "rubric-coding-v1", queuedAt);
+    const first = await store.claim(SESSION, queuedAt, "2026-09-13T00:00:10.000Z");
+    expect(first).not.toBeNull();
+    expect(await store.claim(SESSION, "2026-09-13T00:00:05.000Z", "2026-09-13T00:00:15.000Z")).toBeNull();
+    const replacement = await store.claim(SESSION, "2026-09-13T00:00:11.000Z", "2026-09-13T00:00:21.000Z");
+    expect(replacement).not.toBeNull();
+    const report = (await new BaselineEvaluator().evaluate(strongSession(), "rubric-coding-v1"));
+    expect(await store.complete(SESSION, first!.token, report, "2026-09-13T00:00:12.000Z")).toBeNull();
+    expect((await store.complete(SESSION, replacement!.token, report, "2026-09-13T00:00:13.000Z"))?.status).toBe("READY");
   });
 });

@@ -7,11 +7,9 @@ import type { SessionStore } from "../session/session-store.js";
 import {
   CURRENT_NOTICE_VERSION,
   ConsentScopeSchema,
-  type ConsentState,
-  emptyConsent,
   isPermitted,
-  record,
 } from "./consent.js";
+import { InMemoryConsentStore, type ConsentStore } from "./consent-store.js";
 import { type Deletable, type DeletionRequest, executeDeletion } from "./deletion.js";
 
 export {
@@ -28,6 +26,7 @@ export {
   type ConsentScope,
   type ConsentState,
 } from "./consent.js";
+export { InMemoryConsentStore, type ConsentStore } from "./consent-store.js";
 export {
   REDACTED,
   executeDeletion,
@@ -55,10 +54,10 @@ const ConsentBody = z.object({
 /** Reports are derived data — deletable without touching the source events. */
 export class ReportStore implements Deletable {
   readonly name = "reports";
-  constructor(private readonly queue: { forget?(sessionId: string): boolean }) {}
+  constructor(private readonly queue: { forget?(sessionId: string): boolean | Promise<boolean> }) {}
 
   async deleteForSession(sessionId: string): Promise<number> {
-    return this.queue.forget?.(sessionId) ? 1 : 0;
+    return (await this.queue.forget?.(sessionId)) ? 1 : 0;
   }
   async deleteForUser(): Promise<number> {
     return 0;
@@ -86,14 +85,14 @@ export interface PrivacyModuleOptions {
   eventLog: EventLog & { redact?(sessionId: string): Promise<number> };
   sessions: SessionStore & { idsForUser?(userId: string): Promise<string[]> };
   evaluationQueue?: EvaluationQueue;
-  consentStore?: Map<string, ConsentState>;
+  consentStore?: ConsentStore;
 }
 
 export async function registerPrivacyModule(
   app: FastifyInstance,
   opts: PrivacyModuleOptions,
 ): Promise<void> {
-  const consents = opts.consentStore ?? new Map<string, ConsentState>();
+  const consents = opts.consentStore ?? new InMemoryConsentStore();
 
   const stores: Deletable[] = [
     new ReportStore(opts.evaluationQueue ?? {}),
@@ -104,7 +103,7 @@ export async function registerPrivacyModule(
 
   app.get("/privacy/consent", async (req, reply) => {
     const userId = principal(req);
-    const state = consents.get(userId) ?? emptyConsent(userId);
+    const state = await consents.get(userId);
 
     return reply.send({
       noticeVersion: CURRENT_NOTICE_VERSION,
@@ -123,16 +122,12 @@ export async function registerPrivacyModule(
     }
 
     const userId = principal(req);
-    const state = consents.get(userId) ?? emptyConsent(userId);
-
-    const updated = record(state, {
+    const updated = await consents.record(userId, {
       scope: body.data.scope,
       granted: body.data.granted,
       decidedAt: new Date().toISOString(),
       noticeVersion: CURRENT_NOTICE_VERSION,
     });
-    consents.set(userId, updated);
-
     return reply.send({ scope: body.data.scope, granted: isPermitted(updated, body.data.scope) });
   });
 
@@ -182,7 +177,7 @@ export async function registerPrivacyModule(
       { eventLog: opts.eventLog, sessionsOf: async () => sessionIds, stores },
     );
 
-    consents.delete(userId);
+    await consents.deleteForUser(userId);
     return reply.send(receipt);
   });
 

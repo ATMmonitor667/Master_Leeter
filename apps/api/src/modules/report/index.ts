@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { scenarioRef } from "../scenario/loader.js";
 import type { EventLog } from "../session/event-log.js";
 import { BaselineEvaluator, type Evaluator, type SessionReport } from "./evaluator.js";
+import { InMemoryReportJobStore, type ReportJob, type ReportJobStore } from "./report-store.js";
 
 export { extractFacts, momentsFor, type EvidenceMoment, type SessionFacts } from "./evidence.js";
 export {
@@ -12,6 +13,7 @@ export {
   type SessionReport,
 } from "./evaluator.js";
 export { CODING_RUBRIC_V1, rubricById, weightSum, type Rubric, type RubricDimension } from "./rubric.js";
+export { InMemoryReportJobStore, type ReportClaim, type ReportJob, type ReportJobStore, type ReportStatus } from "./report-store.js";
 
 /**
  * Report module — post-session evaluation.
@@ -21,19 +23,6 @@ export { CODING_RUBRIC_V1, rubricById, weightSum, type Rubric, type RubricDimens
  * evaluate observable interview behavior only.
  */
 
-export type ReportStatus = "QUEUED" | "RUNNING" | "READY" | "FAILED";
-
-export interface ReportJob {
-  sessionId: string;
-  status: ReportStatus;
-  rubricId: string;
-  report: SessionReport | null;
-  error: string | null;
-  attempts: number;
-  queuedAt: string;
-  completedAt: string | null;
-}
-
 /**
  * Evaluation queue.
  *
@@ -42,37 +31,24 @@ export interface ReportJob {
  * separation the whole scoring design rests on has broken.
  */
 export class EvaluationQueue {
-  private readonly jobs = new Map<string, ReportJob>();
-
   constructor(
     private readonly eventLog: EventLog,
     private readonly evaluator: Evaluator = new BaselineEvaluator(),
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly jobs: ReportJobStore = new InMemoryReportJobStore(),
   ) {}
 
   /** Idempotent: enqueuing a session already evaluated returns the existing job. */
-  enqueue(sessionId: string, rubricId: string): ReportJob {
-    const existing = this.jobs.get(sessionId);
-    if (existing && existing.status !== "FAILED") return existing;
-
-    const job: ReportJob = {
-      sessionId,
-      status: "QUEUED",
-      rubricId,
-      report: null,
-      error: null,
-      attempts: existing?.attempts ?? 0,
-      queuedAt: this.now(),
-      completedAt: null,
-    };
-
-    this.jobs.set(sessionId, job);
-    void this.process(job);
+  async enqueue(sessionId: string, rubricId: string): Promise<ReportJob> {
+    const job = await this.jobs.enqueue(sessionId, rubricId, this.now());
+    if (job.status === "QUEUED" || job.status === "RUNNING") void this.process(sessionId);
     return job;
   }
 
-  get(sessionId: string): ReportJob | null {
-    return this.jobs.get(sessionId) ?? null;
+  async get(sessionId: string): Promise<ReportJob | null> {
+    const job = await this.jobs.get(sessionId);
+    if (job?.status === "QUEUED" || job?.status === "RUNNING") void this.process(sessionId);
+    return job;
   }
 
   /**
@@ -82,7 +58,7 @@ export class EvaluationQueue {
    * meaningless once they are redacted. Deleting one destroys nothing that the
    * event log does not already hold.
    */
-  forget(sessionId: string): boolean {
+  async forget(sessionId: string): Promise<boolean> {
     return this.jobs.delete(sessionId);
   }
 
@@ -93,39 +69,37 @@ export class EvaluationQueue {
    * past session without re-running a single interview.
    */
   async regenerate(sessionId: string, rubricId: string): Promise<ReportJob> {
-    this.jobs.delete(sessionId);
-    const job = this.enqueue(sessionId, rubricId);
+    await this.jobs.delete(sessionId);
+    const job = await this.enqueue(sessionId, rubricId);
     await this.settled(sessionId);
-    return this.jobs.get(sessionId) ?? job;
+    return (await this.jobs.get(sessionId)) ?? job;
   }
 
   /** Test/observability helper — resolves once the job is no longer in flight. */
   async settled(sessionId: string): Promise<ReportJob | null> {
     for (let i = 0; i < 200; i++) {
-      const job = this.jobs.get(sessionId);
+      const job = await this.jobs.get(sessionId);
       if (job && (job.status === "READY" || job.status === "FAILED")) return job;
       await new Promise((r) => setTimeout(r, 5));
     }
-    return this.jobs.get(sessionId) ?? null;
+    return (await this.jobs.get(sessionId)) ?? null;
   }
 
-  private async process(job: ReportJob): Promise<void> {
-    job.status = "RUNNING";
-    job.attempts += 1;
+  private async process(sessionId: string): Promise<void> {
+    const now = this.now();
+    const leaseExpiresAt = new Date(Date.parse(now) + 60_000).toISOString();
+    const claim = await this.jobs.claim(sessionId, now, leaseExpiresAt);
+    if (!claim) return;
 
     try {
-      const events = await this.eventLog.read(job.sessionId);
+      const events = await this.eventLog.read(sessionId);
       if (events.length === 0) throw new Error("no events for session");
-
-      job.report = await this.evaluator.evaluate(events, job.rubricId);
-      job.status = "READY";
+      const report = await this.evaluator.evaluate(events, claim.job.rubricId);
+      await this.jobs.complete(sessionId, claim.token, report, this.now());
     } catch (err) {
       // A failed evaluation never affects the completed interview. The job is
       // retryable from the same immutable events.
-      job.status = "FAILED";
-      job.error = (err as Error).message;
-    } finally {
-      job.completedAt = this.now();
+      await this.jobs.fail(sessionId, claim.token, (err as Error).message, this.now());
     }
   }
 }
@@ -157,7 +131,7 @@ export async function registerReportModule(
 
   app.get("/interview-sessions/:id/report", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const job = queue.get(id);
+    const job = await queue.get(id);
 
     if (!job) return reply.code(404).send({ error: "NO_REPORT", message: "Session has not been evaluated." });
 

@@ -3,12 +3,12 @@ import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
-import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
+import { EvaluationQueue, registerReportModule, type ReportJobStore } from "./modules/report/index.js";
 import { loadEnv } from "./env.js";
 import { geminiApiKeyFromEnv } from "./lib/gemini.js";
 import { classifierFromEnv, type IntentClassifier } from "./modules/orchestrator/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
-import { registerPrivacyModule } from "./modules/privacy/index.js";
+import { registerPrivacyModule, type ConsentStore } from "./modules/privacy/index.js";
 import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
@@ -48,6 +48,8 @@ export interface ServerOptions {
   eventLog?: EventLog & { redact?(sessionId: string): Promise<number> };
   sessionStore?: SessionStore;
   socketTickets?: SocketTicketStore;
+  reportJobStore?: ReportJobStore;
+  consentStore?: ConsentStore;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -80,7 +82,7 @@ export function buildServer(opts: ServerOptions) {
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const store = opts.sessionStore ?? new InMemorySessionStore();
   registerAccessControl(app, { sessions: store, webOrigin, tickets: opts.socketTickets ?? new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
-  const evaluationQueue = new EvaluationQueue(eventLog);
+  const evaluationQueue = new EvaluationQueue(eventLog, undefined, undefined, opts.reportJobStore);
 
   // Decorated on the root instance, not inside the plugins: Fastify
   // encapsulates decorations per plugin scope, so a decorate() call inside
@@ -107,6 +109,7 @@ export function buildServer(opts: ServerOptions) {
     eventLog,
     sessions: store,
     evaluationQueue,
+    ...(opts.consentStore ? { consentStore: opts.consentStore } : {}),
   });
 
   return app;

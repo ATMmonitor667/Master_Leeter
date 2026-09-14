@@ -102,6 +102,7 @@ const FULLY_REDACTED: ReadonlySet<EventType> = new Set<EventType>([
   "BRIEF_DELIVERED",
   "NOTE_DELTA",
   "CODE_DELTA",
+  "RUNTIME_CHECKPOINT",
 ]);
 
 export function redactionFor(event: SessionEvent): SessionEvent {

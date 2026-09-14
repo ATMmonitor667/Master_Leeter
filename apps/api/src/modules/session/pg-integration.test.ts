@@ -8,6 +8,9 @@ import { PgEventLog } from "./pg-event-log.js";
 import { loadScenarioLibrary, type LoadedScenario } from "../scenario/loader.js";
 import { reconstruct } from "./resume.js";
 import { PgSocketTickets } from "../auth/pg-socket-tickets.js";
+import { PgReportJobStore } from "../report/pg-report-store.js";
+import type { SessionReport } from "../report/evaluator.js";
+import { PgConsentStore } from "../privacy/pg-consent-store.js";
 
 const adminUrl = process.env["TEST_DATABASE_ADMIN_URL"];
 if (!adminUrl && process.env["REQUIRE_DATABASE_TESTS"] === "1") throw new Error("TEST_DATABASE_ADMIN_URL_REQUIRED");
@@ -39,7 +42,7 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     // Temporary cluster role belongs to this run; never change existing roles.
     await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
     roleCreated = true;
-    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql"]) {
+    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql"]) {
       await db.query(await readFile(new URL(`../../../migrations/${migration}`, import.meta.url), "utf8"));
     }
     const library = await loadScenarioLibrary(fileURLToPath(new URL("../../../../../content/scenarios/", import.meta.url)));
@@ -130,6 +133,63 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
       expect(await consumer.take(replacement, other.id)).toBeNull();
       expect(await consumer.take(replacement, session.id)).toEqual(principal);
       expect(await issuer.take(replacement, session.id)).toBeNull();
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("recovers expired report work and fences the stale worker", async () => {
+    const session = await create();
+    const jobs = new PgReportJobStore(db);
+    const t0 = "2026-09-13T00:00:00.000Z";
+    await jobs.enqueue(session.id, "rubric-coding-v1", t0);
+    const first = await jobs.claim(session.id, t0, "2026-09-13T00:00:10.000Z");
+    expect(first).not.toBeNull();
+    expect(await jobs.claim(session.id, "2026-09-13T00:00:05.000Z", "2026-09-13T00:00:15.000Z")).toBeNull();
+    const fresh = new PgDatabase(connection);
+    const replacement = await new PgReportJobStore(fresh)
+      .claim(session.id, "2026-09-13T00:00:11.000Z", "2026-09-13T00:00:21.000Z");
+    await fresh.close();
+    expect(replacement).not.toBeNull();
+    const report: SessionReport = {
+      sessionId: session.id,
+      scenarioVersionId: session.scenarioVersionId,
+      rubricId: "rubric-coding-v1",
+      rubricVersion: 1,
+      generatedAt: "2026-09-13T00:00:12.000Z",
+      overall: 50,
+      dimensions: [],
+      hintsUsed: [],
+      probesAsked: [],
+      missedOpportunities: [],
+      drills: { communication: "practice", algorithmic: "practice", testing: "practice" },
+    };
+    expect(await jobs.complete(session.id, first!.token, report, report.generatedAt)).toBeNull();
+    expect((await jobs.complete(session.id, replacement!.token, report, report.generatedAt))?.status).toBe("READY");
+    expect((await new PgReportJobStore(db).get(session.id))?.report).toEqual(report);
+  });
+
+  it("persists consent history across pools and removes it for account deletion", async () => {
+    const userId = randomUUID();
+    const first = new PgConsentStore(db);
+    await first.record(userId, {
+      scope: "TRANSCRIPT",
+      granted: true,
+      decidedAt: "2026-09-13T00:00:00.000Z",
+      noticeVersion: "consent-2026-08-1",
+    });
+    await first.record(userId, {
+      scope: "TRANSCRIPT",
+      granted: false,
+      decidedAt: "2026-09-13T00:01:00.000Z",
+      noticeVersion: "consent-2026-08-1",
+    });
+    const fresh = new PgDatabase(connection);
+    try {
+      const restored = new PgConsentStore(fresh);
+      expect((await restored.get(userId)).grants.map((grant) => grant.granted)).toEqual([true, false]);
+      expect(await restored.deleteForUser(userId)).toBe(2);
+      expect((await first.get(userId)).grants).toEqual([]);
     } finally {
       await fresh.close();
     }
