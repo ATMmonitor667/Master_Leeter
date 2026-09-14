@@ -13,7 +13,7 @@ import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario } from "../scenario/loader.js";
 import { type QuestionBank, FileQuestionBank, QuestionBankError, chooseQuestion } from "../scenario/question-bank.js";
 import { SessionChannel } from "./channel.js";
-import { InMemoryEventLog } from "./event-log.js";
+import { InMemoryEventLog, type EventLog } from "./event-log.js";
 import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
 import { reconstruct } from "./resume.js";
 import { buildSessionReview } from "./review.js";
@@ -21,6 +21,7 @@ import { enqueueRun, handleRunRequestedEvent, type RunContext } from "./runs.js"
 import {
   InMemorySessionStore,
   type InterviewSession,
+  type SessionStore,
   SessionNotFoundError,
   remainingSeconds,
 } from "./session-store.js";
@@ -78,8 +79,8 @@ const RunBody = z.object({
 export interface SessionModuleOptions {
   library: Map<string, LoadedScenario>;
   questionBank?: QuestionBank;
-  store?: InMemorySessionStore;
-  eventLog?: InMemoryEventLog;
+  store?: SessionStore;
+  eventLog?: EventLog;
   /** Absent until a judge model is configured. The interview works without it. */
   runner?: CodeRunner;
   /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
@@ -181,8 +182,12 @@ export async function registerSessionModule(
     const session = await store.get(sessionId);
     if (!session || session.endedAt) return null;
 
-    const scenario = opts.library.get(session.scenarioVersionId);
-    if (!scenario) return null;
+    const scenario = await store.pinnedScenario(session.id);
+    if (!scenario || scenario.version.id !== session.scenarioVersionId ||
+        scenario.contentHash !== session.scenarioHash) {
+      app.log.error({ sessionId }, "session scenario snapshot is missing or does not match its pin");
+      return null;
+    }
 
     let liveSession = session;
     liveSessions.set(session.id, session);

@@ -14,7 +14,13 @@ import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
 import { type QuestionBank, QuestionBankError, questionBankFromEnv, questionBankSource } from "./modules/scenario/question-bank.js";
-import { InMemoryEventLog, InMemorySessionStore, registerSessionModule } from "./modules/session/index.js";
+import {
+  InMemoryEventLog,
+  InMemorySessionStore,
+  registerSessionModule,
+  type EventLog,
+  type SessionStore,
+} from "./modules/session/index.js";
 
 /**
  * Modular monolith (ADR-005).
@@ -39,7 +45,8 @@ export interface ServerOptions {
   logger?: boolean;
   authenticator?: Authenticator;
   webOrigin?: string;
-  eventLog?: InMemoryEventLog;
+  eventLog?: EventLog & { redact?(sessionId: string): Promise<number> };
+  sessionStore?: SessionStore;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -70,7 +77,7 @@ export function buildServer(opts: ServerOptions) {
   });
 
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
-  const store = new InMemorySessionStore();
+  const store = opts.sessionStore ?? new InMemorySessionStore();
   registerAccessControl(app, { sessions: store, webOrigin, tickets: new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
   const evaluationQueue = new EvaluationQueue(eventLog);
 

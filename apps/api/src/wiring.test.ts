@@ -7,6 +7,7 @@ import type { IntentClassifier } from "./modules/orchestrator/index.js";
 import { loadScenarioLibrary, scenarioRef } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
 import { InMemoryEventLog } from "./modules/session/event-log.js";
+import { InMemorySessionStore } from "./modules/session/session-store.js";
 
 /**
  * Wiring tests.
@@ -207,6 +208,27 @@ describe("the classifier reaches the runtime", () => {
 });
 
 describe("the interview state machine has a driver", () => {
+  it("rebuilds from the session's pinned scenario when the active catalogue no longer has it", async () => {
+    const store = new InMemorySessionStore();
+    const pinned = library.get("conveyor-rescan@1")!;
+    const session = await store.create({ userId: "local-dev-user", scenario: pinned, mode: "MOCK", idempotencyKey: "retired-pin" });
+    const eventLog = new InMemoryEventLog();
+    await eventLog.append({
+      sessionId: session.id, type: "SESSION_STARTED", actor: "SYSTEM",
+      scenarioVersionId: session.scenarioVersionId, payload: {}, traceId: session.traceId,
+      idempotencyKey: `session-started:${session.id}`,
+    });
+    const app = buildServer({ library: new Map(), sessionStore: store, eventLog });
+    await app.ready();
+    try {
+      const response = await app.inject({ method: "POST", url: `/v1/interview-sessions/${session.id}/voice-ready` });
+      expect(response.statusCode).toBe(200);
+      expect((await eventLog.read(session.id)).some((event) => event.type === "BRIEF_DELIVERED")).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
   /**
    * The M1-2b wiring gap, tested the only way that would have caught it.
    *

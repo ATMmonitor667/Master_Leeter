@@ -136,6 +136,17 @@ describe("session store", () => {
     const s = await create();
     expect(s.scenarioVersionId).toBe("conveyor-rescan@1");
     expect(s.scenarioHash).toBe(scenario.contentHash);
+    expect(await store.pinnedScenario(s.id)).toEqual(scenario);
+  });
+
+  it("keeps an immutable scenario snapshot rather than a caller-owned reference", async () => {
+    const input = structuredClone(scenario);
+    const created = await store.create({ userId: "u1", scenario: input, mode: "MOCK", idempotencyKey: "pin" });
+    input.version.status = "RETIRED";
+    const firstRead = await store.pinnedScenario(created.id);
+    expect(firstRead?.version.status).toBe("ACTIVE");
+    if (firstRead) firstRead.version.status = "RETIRED";
+    expect((await store.pinnedScenario(created.id))?.version.status).toBe("ACTIVE");
   });
 
   it("pins policy at creation so a later config change cannot alter a live session", async () => {

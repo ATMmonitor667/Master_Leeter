@@ -11,6 +11,25 @@ Before resuming: git status --short --branch; git log -5 --oneline.
 Read this file, docs/PRODUCTION_ITERATIONS.md and docs/SUPABASE_AUTH.md.
 Inspect any AGENTS.md instructions. Preserve unrelated edits.
 
+CHECKPOINT RESULT — I02b.3a REPOSITORY BOUNDARY + PIN RECOVERY (2026-09-13)
+Branch: codex-production-02b3-supabase-runtime, based on main e7f2dcb.
+- buildServer and the session module now accept SessionStore/EventLog interfaces;
+  PostgreSQL adapters are no longer excluded by concrete in-memory types.
+- Every SessionStore returns its immutable pinned scenario snapshot. The memory
+  adapter clones on write/read so caller mutation cannot change a live session.
+- Runtime creation reads and validates the stored version/hash snapshot. It no
+  longer depends on the ACTIVE catalogue retaining an old or retired question.
+- Added a server-wiring regression that opens an interview from its pin with an
+  empty active catalogue, plus memory pin immutability coverage.
+Validation: all 700 API tests pass; six live database tests remain skipped;
+API typecheck and targeted wiring/storage tests pass.
+Not enabled: start() still constructs memory storage. No Supabase connection,
+migration or cloud write occurred. Consent/reports/tickets/runtime checkpoints,
+client sequence and deletion remain process-local, so enabling only these two
+PostgreSQL adapters would still be unsafe.
+NEXT: persist runtime/client checkpoints and lifecycle data, then assemble one
+complete durable storage bundle and fail closed before selecting it at startup.
+
 BASELINE
 Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
 Question bank: d1c9354. Authentication: dc5a1a7. Hardening: 259f60a.

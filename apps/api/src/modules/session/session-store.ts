@@ -45,6 +45,8 @@ export interface SessionStore {
   findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null>;
   idsForUser(userId: string): Promise<string[]>;
   get(id: string): Promise<InterviewSession | null>;
+  /** Immutable private scenario snapshot used to rebuild a runtime after restart. */
+  pinnedScenario(id: string): Promise<LoadedScenario | null>;
   /** Idempotent. Ending an ended session returns it unchanged. */
   end(id: string, at?: string): Promise<InterviewSession>;
   transition(id: string, state: InterviewState): Promise<InterviewSession>;
@@ -60,6 +62,7 @@ export class SessionNotFoundError extends Error {
 
 export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, InterviewSession>();
+  private readonly scenarios = new Map<string, LoadedScenario>();
   private readonly byIdempotencyKey = new Map<string, string>();
 
   constructor(private readonly now: () => string = () => new Date().toISOString()) {}
@@ -101,6 +104,7 @@ export class InMemorySessionStore implements SessionStore {
     };
 
     this.sessions.set(session.id, session);
+    this.scenarios.set(session.id, structuredClone(req.scenario));
     this.byIdempotencyKey.set(key, session.id);
     return session;
   }
@@ -113,6 +117,11 @@ export class InMemorySessionStore implements SessionStore {
 
   async get(id: string): Promise<InterviewSession | null> {
     return this.sessions.get(id) ?? null;
+  }
+
+  async pinnedScenario(id: string): Promise<LoadedScenario | null> {
+    const scenario = this.scenarios.get(id);
+    return scenario ? structuredClone(scenario) : null;
   }
 
   /** Every session belonging to a user. Drives account-scope deletion (M7-3). */
