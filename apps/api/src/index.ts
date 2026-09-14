@@ -45,7 +45,7 @@ export interface ServerOptions {
   logger?: boolean;
   authenticator?: Authenticator;
   webOrigin?: string;
-  eventLog?: EventLog & { redact?(sessionId: string): Promise<number> };
+  eventLog?: EventLog;
   sessionStore?: SessionStore;
   socketTickets?: SocketTicketStore;
   reportJobStore?: ReportJobStore;

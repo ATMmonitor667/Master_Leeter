@@ -72,9 +72,10 @@ export class PgEventLog implements EventLog {
     const connection = await this.db.connect();
     try {
       await connection.query("BEGIN ISOLATION LEVEL READ COMMITTED");
-      const locked = await connection.query<{ id: string; scenario_version_id: string }>(
-        "SELECT id, scenario_version_id FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE", [req.sessionId]);
+      const locked = await connection.query<{ id: string; scenario_version_id: string; deleted_at: Date | string | null }>(
+        "SELECT id, scenario_version_id, deleted_at FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE", [req.sessionId]);
       if (!locked.rows[0]) throw new Error("UNKNOWN_SESSION");
+      if (locked.rows[0].deleted_at) throw new Error("SESSION_DELETED");
       if (locked.rows[0].scenario_version_id !== req.scenarioVersionId) throw new Error("SCENARIO_PIN_MISMATCH");
       const result = await this.appendLocked(connection, req);
       await connection.query("COMMIT");
@@ -143,5 +144,13 @@ export class PgEventLog implements EventLog {
       [sessionId],
     );
     return rows[0]?.max ?? -1;
+  }
+
+  async redact(sessionId: string): Promise<number> {
+    const result = await this.db.query<{ count: number }>(
+      "SELECT public.redact_session_events($1::uuid)::integer AS count",
+      [sessionId],
+    );
+    return result.rows[0]?.count ?? 0;
   }
 }

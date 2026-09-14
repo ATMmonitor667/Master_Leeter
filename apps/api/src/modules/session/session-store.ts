@@ -51,6 +51,8 @@ export interface SessionStore {
   end(id: string, at?: string): Promise<InterviewSession>;
   transition(id: string, state: InterviewState): Promise<InterviewSession>;
   addPause(id: string, seconds: number): Promise<InterviewSession>;
+  /** Hide the session from normal reads before privacy redaction begins. */
+  tombstone(id: string, at?: string): Promise<boolean>;
 }
 
 export class SessionNotFoundError extends Error {
@@ -64,6 +66,7 @@ export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, InterviewSession>();
   private readonly scenarios = new Map<string, LoadedScenario>();
   private readonly byIdempotencyKey = new Map<string, string>();
+  private readonly tombstones = new Map<string, string>();
 
   constructor(private readonly now: () => string = () => new Date().toISOString()) {}
 
@@ -71,6 +74,7 @@ export class InMemorySessionStore implements SessionStore {
     const key = JSON.stringify([req.userId, req.idempotencyKey]);
     const existingId = this.byIdempotencyKey.get(key);
     if (existingId) {
+      if (this.tombstones.has(existingId)) throw new Error("SESSION_DELETED");
       const existing = this.sessions.get(existingId);
       if (existing) return existing;
     }
@@ -112,21 +116,22 @@ export class InMemorySessionStore implements SessionStore {
   /** Retry must succeed even when the bank is offline or the question was retired. */
   async findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null> {
     const id = this.byIdempotencyKey.get(JSON.stringify([userId, key]));
-    return id ? this.sessions.get(id) ?? null : null;
+    return id && !this.tombstones.has(id) ? this.sessions.get(id) ?? null : null;
   }
 
   async get(id: string): Promise<InterviewSession | null> {
-    return this.sessions.get(id) ?? null;
+    return this.tombstones.has(id) ? null : this.sessions.get(id) ?? null;
   }
 
   async pinnedScenario(id: string): Promise<LoadedScenario | null> {
+    if (this.tombstones.has(id)) return null;
     const scenario = this.scenarios.get(id);
     return scenario ? structuredClone(scenario) : null;
   }
 
   /** Every session belonging to a user. Drives account-scope deletion (M7-3). */
   async idsForUser(userId: string): Promise<string[]> {
-    return [...this.sessions.values()].filter((s) => s.userId === userId).map((s) => s.id);
+    return [...this.sessions.values()].filter((s) => s.userId === userId && !this.tombstones.has(s.id)).map((s) => s.id);
   }
 
   async end(id: string, at?: string): Promise<InterviewSession> {
@@ -159,7 +164,15 @@ export class InMemorySessionStore implements SessionStore {
     return updated;
   }
 
+  async tombstone(id: string, at = this.now()): Promise<boolean> {
+    if (this.tombstones.has(id)) return false;
+    if (!this.sessions.has(id)) throw new SessionNotFoundError(id);
+    this.tombstones.set(id, at);
+    return true;
+  }
+
   private require(id: string): InterviewSession {
+    if (this.tombstones.has(id)) throw new SessionNotFoundError(id);
     const session = this.sessions.get(id);
     if (!session) throw new SessionNotFoundError(id);
     return session;

@@ -11,6 +11,7 @@ type Row = {
   state: InterviewState; language: string; trace_id: string;
   created_at: Date | string; started_at: Date | string | null; ended_at: Date | string | null;
   expected_seconds: number; paused_seconds: number;
+  deleted_at: Date | string | null;
 };
 const iso = (value: Date | string) => new Date(value).toISOString();
 function session(row: Row): InterviewSession {
@@ -52,45 +53,54 @@ export class PgSessionStore implements SessionStore {
   }
 
   async findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null> {
-    const { rows } = await this.db.query<Row>("SELECT * FROM public.interview_sessions WHERE user_id=$1 AND idempotency_key=$2", [userId, key]);
+    const { rows } = await this.db.query<Row>("SELECT * FROM public.interview_sessions WHERE user_id=$1 AND idempotency_key=$2 AND deleted_at IS NULL", [userId, key]);
     return rows[0] ? session(rows[0]) : null;
   }
 
   async get(id: string): Promise<InterviewSession | null> {
-    const { rows } = await this.db.query<Row>("SELECT * FROM public.interview_sessions WHERE id=$1::uuid", [id]);
+    const { rows } = await this.db.query<Row>("SELECT * FROM public.interview_sessions WHERE id=$1::uuid AND deleted_at IS NULL", [id]);
     return rows[0] ? session(rows[0]) : null;
   }
 
   async idsForUser(userId: string): Promise<string[]> {
-    const { rows } = await this.db.query<{ id: string }>("SELECT id FROM public.interview_sessions WHERE user_id=$1 ORDER BY created_at,id", [userId]);
+    const { rows } = await this.db.query<{ id: string }>("SELECT id FROM public.interview_sessions WHERE user_id=$1 AND deleted_at IS NULL ORDER BY created_at,id", [userId]);
     return rows.map((row) => row.id);
   }
 
   /** Private server-only pin; never put this object in a browser response. */
   async pinnedScenario(id: string): Promise<LoadedScenario | null> {
     const { rows } = await this.db.query<{ scenario_snapshot: LoadedScenario | null }>(
-      "SELECT scenario_snapshot FROM public.interview_sessions WHERE id=$1::uuid", [id]);
+      "SELECT scenario_snapshot FROM public.interview_sessions WHERE id=$1::uuid AND deleted_at IS NULL", [id]);
     return rows[0]?.scenario_snapshot ?? null;
   }
 
   async end(id: string, at = new Date().toISOString()): Promise<InterviewSession> {
     return this.update(id, `UPDATE public.interview_sessions SET
       ended_at=COALESCE(ended_at,$2::timestamptz), state='EVALUATION'
-      WHERE id=$1::uuid RETURNING *`, [id, at]);
+      WHERE id=$1::uuid AND deleted_at IS NULL RETURNING *`, [id, at]);
   }
 
   async transition(id: string, state: InterviewState): Promise<InterviewSession> {
     return this.update(id, `UPDATE public.interview_sessions SET
       state=CASE WHEN ended_at IS NULL THEN $2 ELSE state END,
       started_at=CASE WHEN ended_at IS NULL THEN COALESCE(started_at,now()) ELSE started_at END
-      WHERE id=$1::uuid RETURNING *`, [id, state]);
+      WHERE id=$1::uuid AND deleted_at IS NULL RETURNING *`, [id, state]);
   }
 
   async addPause(id: string, seconds: number): Promise<InterviewSession> {
     if (!Number.isSafeInteger(seconds) || seconds < 0) throw new Error("INVALID_PAUSE");
     return this.update(id, `UPDATE public.interview_sessions SET
       paused_seconds=paused_seconds + CASE WHEN ended_at IS NULL THEN $2::integer ELSE 0 END
-      WHERE id=$1::uuid RETURNING *`, [id, seconds]);
+      WHERE id=$1::uuid AND deleted_at IS NULL RETURNING *`, [id, seconds]);
+  }
+
+  async tombstone(id: string, at = new Date().toISOString()): Promise<boolean> {
+    const result = await this.db.query<{ id: string }>(
+      "UPDATE public.interview_sessions SET deleted_at=COALESCE(deleted_at,$2::timestamptz) WHERE id=$1::uuid RETURNING id",
+      [id, at],
+    );
+    if (!result.rows[0]) throw new SessionNotFoundError(id);
+    return true;
   }
 
   private async update(id: string, sql: string, values: unknown[]): Promise<InterviewSession> {

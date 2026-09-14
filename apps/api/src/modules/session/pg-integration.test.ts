@@ -42,7 +42,7 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     // Temporary cluster role belongs to this run; never change existing roles.
     await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
     roleCreated = true;
-    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql"]) {
+    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql", "007_deletion_tombstones.sql"]) {
       await db.query(await readFile(new URL(`../../../migrations/${migration}`, import.meta.url), "utf8"));
     }
     const library = await loadScenarioLibrary(fileURLToPath(new URL("../../../../../content/scenarios/", import.meta.url)));
@@ -193,6 +193,20 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     } finally {
       await fresh.close();
     }
+  });
+
+  it("tombstones before redaction and refuses resurrection", async () => {
+    const session = await create();
+    const log = new PgEventLog(db);
+    await log.append({ ...requestFor(session.id, session.traceId), idempotencyKey: "private-before-delete" });
+    await store.end(session.id);
+    await store.tombstone(session.id, "2026-09-13T00:00:00.000Z");
+    expect(await log.redact(session.id)).toBe(1);
+    expect(await store.get(session.id)).toBeNull();
+    expect((await log.read(session.id))[0]?.payload).toEqual({ redacted: true });
+    await expect(log.append({ ...requestFor(session.id, session.traceId), idempotencyKey: "resurrection" }))
+      .rejects.toThrow("SESSION_DELETED");
+    await expect(db.query("UPDATE public.session_events SET payload='{}'::jsonb WHERE session_id=$1", [session.id])).rejects.toThrow();
   });
 
   it("keeps pause increments atomic and completed sessions terminal", async () => {

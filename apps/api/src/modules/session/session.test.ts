@@ -191,6 +191,16 @@ describe("session store", () => {
   it("throws a typed error for an unknown session", async () => {
     await expect(store.end("nope")).rejects.toBeInstanceOf(SessionNotFoundError);
   });
+
+  it("hides a tombstoned session and its pinned scenario", async () => {
+    const session = await create("deleted");
+    await store.end(session.id);
+    expect(await store.tombstone(session.id)).toBe(true);
+    expect(await store.get(session.id)).toBeNull();
+    expect(await store.pinnedScenario(session.id)).toBeNull();
+    expect(await store.idsForUser(session.userId)).not.toContain(session.id);
+    await expect(store.transition(session.id, "IMPLEMENTATION")).rejects.toBeInstanceOf(SessionNotFoundError);
+  });
 });
 
 describe("timer", () => {

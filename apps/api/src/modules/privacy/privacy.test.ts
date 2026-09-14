@@ -182,7 +182,7 @@ describe("event log redaction", () => {
 
   it("does not resurrect payloads when an old client event is replayed", async () => {
     await log.redact(SESSION);
-    await log.append({
+    await expect(log.append({
       sessionId: SESSION,
       type: "CODE_DELTA",
       actor: "CANDIDATE",
@@ -190,12 +190,10 @@ describe("event log redaction", () => {
       payload: { revision: 1, text: "my code" },
       traceId: "t",
       idempotencyKey: "k1",
-    });
+    })).rejects.toThrow("SESSION_DELETED");
 
     const events = await log.read(SESSION);
-    const restored = events.filter((e) => JSON.stringify(e).includes("my code"));
-    expect(restored, "a replayed event resurrected deleted content").toHaveLength(1);
-    expect(restored[0]?.seq).toBe(3);
+    expect(events.filter((e) => JSON.stringify(e).includes("my code"))).toHaveLength(0);
   });
 
   it("is a no-op for an unknown session", async () => {
@@ -245,6 +243,20 @@ describe("deletion", () => {
       { eventLog: log, sessionsOf: async () => [SESSION], stores: [] },
     );
     expect(receipt.eventsRedacted).toBe(1);
+  });
+
+  it("removes the whole runtime checkpoint payload", () => {
+    expect(redactionFor({
+      sessionId: SESSION,
+      seq: 0,
+      occurredAt: NOW,
+      type: "RUNTIME_CHECKPOINT",
+      actor: "SYSTEM",
+      scenarioVersionId: "scenario@1",
+      payload: { latestCode: "private source", candidateState: { currentApproach: "private words" } },
+      evidenceHash: "hash",
+      traceId: "trace",
+    }).payload).toEqual({ redacted: true });
   });
 
   it("reaches every registered store", async () => {

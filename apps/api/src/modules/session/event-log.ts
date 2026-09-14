@@ -48,6 +48,8 @@ export interface EventLog {
   latestSeq(sessionId: string): Promise<number>;
   /** Highest committed browser sequence, or -1 before the first client event. */
   latestClientSeq(sessionId: string): Promise<number>;
+  /** Irreversibly redact payloads and reject all later appends for the session. */
+  redact?(sessionId: string): Promise<number>;
 }
 
 /**
@@ -89,8 +91,10 @@ export class InMemoryEventLog implements EventLog {
   private readonly events = new Map<string, SessionEvent[]>();
   private readonly byKey = new Map<string, SessionEvent>();
   private readonly clientSequences = new Map<string, Map<number, SessionEvent>>();
+  private readonly redactedSessions = new Set<string>();
 
   async append(req: AppendRequest): Promise<AppendResult> {
+    if (this.redactedSessions.has(req.sessionId)) throw new Error("SESSION_DELETED");
     const dedupeKey = `${req.sessionId}:${req.idempotencyKey}`;
     const existing = this.byKey.get(dedupeKey);
     if (existing) return { event: existing, duplicate: true };
@@ -154,6 +158,7 @@ export class InMemoryEventLog implements EventLog {
    * privacy module, which produces a receipt.
    */
   async redact(sessionId: string): Promise<number> {
+    this.redactedSessions.add(sessionId);
     const list = this.events.get(sessionId);
     if (!list) return 0;
 

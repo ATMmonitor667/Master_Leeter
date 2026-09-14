@@ -111,6 +111,26 @@ CHECKPOINT RESULT — I02b.3e REPORT JOBS + CONSENT REPOSITORIES (2026-09-13)
 NEXT: add database redaction+tombstones and transactional lifecycle/outbox, then
 persist leases/run admission and assemble the all-or-nothing Supabase bundle.
 
+CHECKPOINT RESULT — I02b.3f TOMBSTONE-FIRST DELETION (2026-09-13)
+- SessionStore now tombstones sessions. Normal lookup, owner enumeration and
+  pinned-scenario reads hide tombstoned sessions; memory and PostgreSQL mutation
+  paths refuse further lifecycle changes.
+- InMemoryEventLog permanently rejects appends after redaction. PgEventLog locks
+  and checks the session tombstone before every append and delegates redaction
+  to a restricted database function.
+- Migration 007 adds deleted_at and a SECURITY DEFINER redaction function that
+  runs only for a tombstoned session. The event mutation trigger permits only
+  that function's exact `{redacted:true}` payload replacement; sequence, type,
+  actor, pin, trace, idempotency/client sequence and original evidence hash are
+  immutable. Public/anon/authenticated execution is revoked.
+- Privacy routes tombstone before touching report/event stores, closing the race
+  where a late worker or replay could restore private payloads after deletion.
+Validation includes memory resurrection rejection and opt-in live PostgreSQL
+coverage for tombstone visibility, full payload removal, append refusal and
+continued rejection of arbitrary UPDATE. Live execution remains pending.
+NEXT: implement atomic create+SESSION_STARTED and end+SESSION_ENDED+report-outbox
+transactions, then persist/fence session ownership and select the full bundle.
+
 BASELINE
 Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
 Question bank: d1c9354. Authentication: dc5a1a7. Hardening: 259f60a.

@@ -10,7 +10,7 @@ Use a dedicated local PostgreSQL 16+ server with a test superuser able to create
 databases and roles. Never provide a live Supabase URL to this harness. It
 accepts only loopback hosts and the postgres/template1 maintenance database.
 It creates a random `ml_test_<uuid>` database and `ml_reader_<uuid>` role, applies
-every numbered migration through 006_consent_grants.sql there, and removes only
+every numbered migration through 007_deletion_tombstones.sql there, and removes only
 those generated resources at the end. If the process is killed, they can remain;
 inspect their exact names before manually cleaning them up.
 
@@ -30,7 +30,8 @@ CI's `database` job runs a disposable PostgreSQL 16 service with test-only
 credentials. It exercises concurrent creation, atomic event sequencing, retry
 deduplication, rollback after a rejected pin, fresh-pool reads, code/notes replay,
 durable browser sequencing, cross-pool single-use socket tickets,
-fenced report claims/results and durable consent history,
+fenced report claims/results, durable consent history, tombstone-first event
+redaction and post-deletion append refusal,
 terminal state, immutable pin/event triggers and RLS with an unprivileged role.
 Configure this job as a required branch-protection check before merging releases.
 Fresh-pool reconstruction tests storage, not full API/voice restart recovery.
@@ -49,6 +50,9 @@ development database first. Legacy session rows have no scenario snapshot;
 never recover those using a different/current question version. Live Supabase
 anon/authenticated grants, production-role provisioning, RLS behavior and
 connection compatibility still need acceptance on that project.
+Migration 007 revokes public execution of `redact_session_events`. A dedicated
+backend runtime role must receive explicit EXECUTE permission during provisioning;
+browser roles must remain revoked.
 
 Driver implementation follows node-postgres guidance for
 [same-client transactions](https://node-postgres.com/features/transactions) and

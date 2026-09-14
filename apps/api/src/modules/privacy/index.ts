@@ -82,8 +82,8 @@ export class AudioStore implements Deletable {
 }
 
 export interface PrivacyModuleOptions {
-  eventLog: EventLog & { redact?(sessionId: string): Promise<number> };
-  sessions: SessionStore & { idsForUser?(userId: string): Promise<string[]> };
+  eventLog: EventLog;
+  sessions: SessionStore;
   evaluationQueue?: EvaluationQueue;
   consentStore?: ConsentStore;
 }
@@ -154,6 +154,8 @@ export async function registerPrivacyModule(
 
     if (!session.endedAt) return reply.code(409).send({ error: "END_SESSION_BEFORE_DELETION" });
 
+    await opts.sessions.tombstone(id, request.requestedAt);
+
     const receipt = await executeDeletion(request, {
       eventLog: opts.eventLog,
       sessionsOf: async () => [id],
@@ -171,9 +173,11 @@ export async function registerPrivacyModule(
     for (const id of sessionIds) {
       if (!(await opts.sessions.get(id))?.endedAt) return reply.code(409).send({ error: "END_SESSION_BEFORE_DELETION" });
     }
+    const requestedAt = new Date().toISOString();
+    for (const id of sessionIds) await opts.sessions.tombstone(id, requestedAt);
 
     const receipt = await executeDeletion(
-      { scope: "ACCOUNT", userId, requestedAt: new Date().toISOString() },
+      { scope: "ACCOUNT", userId, requestedAt },
       { eventLog: opts.eventLog, sessionsOf: async () => sessionIds, stores },
     );
 
