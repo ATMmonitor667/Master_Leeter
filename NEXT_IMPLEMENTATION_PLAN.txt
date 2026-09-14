@@ -2,6 +2,13 @@ MASTER LEETER — RESUMABLE IMPLEMENTATION HANDOFF
 Updated: 2026-09-14
 
 READ THIS FIRST
+Production work now lives in the isolated worktree:
+C:/Users/ATM Rahat Hossain/Desktop/Master_Leeter/.worktrees/production-runtime
+Branch: codex-production-02b3-supabase-runtime. The main checkout is voiceWorks
+with separate uncommitted voice work. Do not switch or modify that checkout.
+Ownership changes were recovered selectively from GitHub Desktop stash
+26a2f360b56a6d77da7ab282582d906446708363 and committed as befbc94.
+The original stash remains intact; do not reapply it over the recovered commit.
 User owns deployment, pushing and merging. After each verified checkpoint,
 commit the intended files, report the commit and owner actions, then pause.
 Never claim an entire iteration is finished when only a checkpoint is done.
@@ -10,6 +17,33 @@ untracked CODE_REVIEW_2026-09-12.txt without an explicit reason.
 Before resuming: git status --short --branch; git log -5 --oneline.
 Read this file, docs/PRODUCTION_ITERATIONS.md and docs/SUPABASE_AUTH.md.
 Inspect any AGENTS.md instructions. Preserve unrelated edits.
+
+CHECKPOINT RESULT — DURABLE BROWSER INPUT PROCESSING RECORDS (2026-09-14)
+- Migration 009 creates private runtime_inputs references, with no payload copy.
+  It backfills prior browser events using deterministic checkpoint keys to mark
+  known completions. Missing checkpoints remain unresolved, including partial work.
+- PgEventLog inserts the input reference in the SAME transaction as the browser
+  event, before ACK is possible. InterviewRuntime passes completedInputSeq to its
+  final event checkpoint. PgEventLog validates the checkpoint key/type/actor and
+  ownership token, then marks completion in that checkpoint transaction.
+- PgRuntimeInputs.pending provides bounded ordered discovery for active sessions,
+  excluding tombstones/ended sessions. Discovery does NOT execute or reclassify.
+- Tests cover transaction ordering and rollback on ledger/completion failure,
+  rejected candidate completion metadata, bounded discovery, and real DB pending
+  persistence/completion rollback/idempotency (live DB execution remains pending).
+- IMPORTANT: durable routing/replay worker is still required. Unresolved inputs
+  may have partial derived outputs; never blindly rerun historical model calls.
+  Voice-ready and worker-result command routing are not covered by browser rows.
+- During this checkpoint a background editor action sorted the session index and
+  injected an automatic export when runtime-inputs.ts appeared. Comparison showed
+  no other nonblank edits. Restored that file from befbc94; no intended work lost.
+  Existing .vscode settings identify Auto Barrel and disable it, but the observed
+  background rewrite still occurred. Run corruption checks before commits.
+Validation: API typecheck and 738 API tests pass; 16 real database tests skipped.
+Workspace typecheck also passed after ownership recovery. No Supabase changes.
+NEXT: reconcile pending inputs against recorded decisions/checkpoints, then add
+durable owner-routed dispatch and worker/voice commands. Deadlines and production
+activation remain later steps. Do not advertise cross-instance routing as done.
 
 CHECKPOINT RESULT — FENCED RUNTIME OWNERSHIP (2026-09-14)
 - Migration 008 adds private session_runtime_owners with RLS and browser revokes.

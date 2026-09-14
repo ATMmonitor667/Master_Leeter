@@ -16,6 +16,7 @@ import { createSupabaseStorage } from "../../storage.js";
 import { buildServer } from "../../index.js";
 import { EvaluationQueue } from "../report/index.js";
 import { PgRuntimeOwnership } from "./runtime-ownership.js";
+import { PgRuntimeInputs } from "./runtime-inputs.js";
 
 const adminUrl = process.env["TEST_DATABASE_ADMIN_URL"];
 if (!adminUrl && process.env["REQUIRE_DATABASE_TESTS"] === "1") throw new Error("TEST_DATABASE_ADMIN_URL_REQUIRED");
@@ -47,7 +48,7 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     // Temporary cluster role belongs to this run; never change existing roles.
     await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
     roleCreated = true;
-    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql", "007_deletion_tombstones.sql", "008_runtime_ownership.sql"]) {
+    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql", "007_deletion_tombstones.sql", "008_runtime_ownership.sql", "009_runtime_inputs.sql"]) {
       await db.query(await readFile(new URL(`../../../migrations/${migration}`, import.meta.url), "utf8"));
     }
     const library = await loadScenarioLibrary(fileURLToPath(new URL("../../../../../content/scenarios/", import.meta.url)));
@@ -100,6 +101,34 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     expect(new Set(results.map((result) => result.id)).size).toBe(1);
     expect((await create(key)).id).not.toBe(results[0]!.id);
     expect(await store.idsForUser(user)).toEqual([results[0]!.id]);
+  });
+
+  it("persists unresolved input references and atomically completes them with checkpoints", async () => {
+    const session = await create();
+    const token = await new PgRuntimeOwnership(db).claim(session.id);
+    const log = new PgEventLog(db);
+    const input = await log.append({ ...requestFor(session.id, session.traceId),
+      idempotencyKey: "input-recovery", clientSeq: 0, runtimeToken: token! });
+    const fresh = new PgDatabase(connection);
+    try {
+      const inputs = new PgRuntimeInputs(fresh);
+      expect(await inputs.pending()).toContainEqual({ sessionId: session.id, inputSeq: input.event.seq });
+      const transaction = await db.connect();
+      const checkpoint = { ...requestFor(session.id, session.traceId), type: "RUNTIME_CHECKPOINT" as const,
+        actor: "SYSTEM" as const, runtimeToken: token!, completedInputSeq: input.event.seq,
+        idempotencyKey: `runtime-checkpoint:event:${input.event.seq}` };
+      try {
+        await transaction.query("BEGIN");
+        await log.appendInTransaction(transaction, checkpoint);
+        await transaction.query("ROLLBACK");
+      } finally { transaction.release(); }
+      expect(await inputs.pending()).toContainEqual({ sessionId: session.id, inputSeq: input.event.seq });
+      expect(await log.read(session.id)).toHaveLength(1);
+      await log.append(checkpoint);
+      expect(await inputs.pending()).not.toContainEqual({ sessionId: session.id, inputSeq: input.event.seq });
+      expect((await log.append(checkpoint)).duplicate).toBe(true);
+      expect(await log.read(session.id)).toHaveLength(2);
+    } finally { await fresh.close(); }
   });
 
   it("fences stale runtime writes and transitions across independent pools", async () => {

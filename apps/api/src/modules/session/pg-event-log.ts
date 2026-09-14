@@ -84,6 +84,11 @@ export class PgEventLog implements EventLog {
 
   /** Append inside a caller-owned transaction, after locking the session row. */
   async appendInTransaction(db: QueryClient, req: AppendRequest): Promise<AppendResult> {
+    if (req.completedInputSeq !== undefined && (
+      !Number.isInteger(req.completedInputSeq) || req.completedInputSeq < 0 ||
+      req.type !== "RUNTIME_CHECKPOINT" || req.actor !== "SYSTEM" || !req.runtimeToken ||
+      req.idempotencyKey !== `runtime-checkpoint:event:${req.completedInputSeq}`
+    )) throw new Error("INVALID_INPUT_COMPLETION");
     const locked = await db.query<{ id: string; scenario_version_id: string; deleted_at: Date | string | null }>(
       "SELECT id, scenario_version_id, deleted_at FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE",
       [req.sessionId],
@@ -123,7 +128,22 @@ export class PgEventLog implements EventLog {
     }
 
     const row = inserted.rows[0];
-    if (row) return { event: toEvent(row), duplicate: false };
+    if (row) {
+      if (req.clientSeq !== undefined) {
+        await db.query(
+          "INSERT INTO public.runtime_inputs(session_id,input_seq) VALUES ($1::uuid,$2)",
+          [req.sessionId, row.seq],
+        );
+      }
+      if (req.completedInputSeq !== undefined) {
+        await db.query(
+          `UPDATE public.runtime_inputs SET completed_at=$3::timestamptz
+           WHERE session_id=$1::uuid AND input_seq=$2 AND completed_at IS NULL`,
+          [req.sessionId, req.completedInputSeq, occurredAt],
+        );
+      }
+      return { event: toEvent(row), duplicate: false };
+    }
 
     // A writer bypassing the parent lock can still conflict. Fail safely; the
     // transaction rolls back and a caller retry can find the committed winner.

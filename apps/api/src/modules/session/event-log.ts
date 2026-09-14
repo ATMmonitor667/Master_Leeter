@@ -34,6 +34,8 @@ export interface AppendRequest {
   clientSeq?: number;
   /** Server-only fencing token; never accepted from client event payloads. */
   runtimeToken?: string;
+  /** Server checkpoint metadata; completion commits in the evidence transaction. */
+  completedInputSeq?: number;
 }
 
 export interface AppendResult {

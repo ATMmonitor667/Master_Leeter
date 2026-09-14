@@ -10,7 +10,7 @@ Use a dedicated local PostgreSQL 16+ server with a test superuser able to create
 databases and roles. Never provide a live Supabase URL to this harness. It
 accepts only loopback hosts and the postgres/template1 maintenance database.
 It creates a random `ml_test_<uuid>` database and `ml_reader_<uuid>` role, applies
-every numbered migration through 008_runtime_ownership.sql there, and removes only
+every numbered migration through 009_runtime_inputs.sql there, and removes only
 those generated resources at the end. If the process is killed, they can remain;
 inspect their exact names before manually cleaning them up.
 
@@ -52,6 +52,13 @@ leases use database time; every takeover gets a fresh token. The backend role
 requires SELECT/INSERT/UPDATE/DELETE on session_runtime_owners; browser roles
 have no grants or RLS policies. Multi-instance command forwarding remains pending;
 a command reaching a non-owner currently returns RUNTIME_OWNED_ELSEWHERE.
+
+Migration 009 records browser-input obligations atomically with events and marks
+completion atomically with a runtime checkpoint. Pending references survive a
+restart without duplicating private payloads. The test suite checks rollback of
+checkpoint completion and duplicate checkpoint delivery. Pending means processing
+is unresolved; some model outputs may already exist. No automatic replay worker
+is enabled yet. The backend needs SELECT/INSERT/UPDATE on runtime_inputs.
 
 ## Supabase connection when runtime integration is ready
 

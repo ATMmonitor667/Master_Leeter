@@ -63,6 +63,12 @@ readiness claim is implied by completion of this foundation.
 
 ## I02 — Identity, ownership and durable sessions
 
+Browser processing-record checkpoint (2026-09-14): input references now commit
+with browser events; completion markers commit with fenced runtime checkpoints.
+Unresolved input discovery is durable and bounded. Automatic reconciliation and
+owner-routed dispatch remain open. Ownership was recovered from the saved stash
+and committed as befbc94 in an isolated production worktree.
+
 Runtime ownership checkpoint (2026-09-14): private expiring ownership tokens now
 fence runtime events, checkpoints, candidate-channel writes and stage transitions.
 The injected bundle renews ownership and rejects non-owner commands explicitly;

@@ -70,6 +70,7 @@ export interface EventSink {
     traceId: string;
     idempotencyKey: string;
     occurredAt?: string;
+    completedInputSeq?: number;
   }): Promise<{ event: SessionEvent; duplicate: boolean }>;
 }
 
@@ -349,7 +350,7 @@ export class InterviewRuntime {
       await this.advanceStages();
     }
 
-    await this.persistCheckpoint(`event:${event.seq}`);
+    await this.persistCheckpoint(`event:${event.seq}`, event.seq);
 
     return result;
   }
@@ -552,7 +553,7 @@ export class InterviewRuntime {
     };
   }
 
-  private async persistCheckpoint(key: string): Promise<void> {
+  private async persistCheckpoint(key: string, completedInputSeq?: number): Promise<void> {
     await this.deps.events.append({
       sessionId: this.deps.sessionId,
       type: "RUNTIME_CHECKPOINT",
@@ -561,6 +562,7 @@ export class InterviewRuntime {
       payload: this.checkpoint(),
       traceId: this.deps.traceId,
       idempotencyKey: `runtime-checkpoint:${key}`,
+      ...(completedInputSeq === undefined ? {} : { completedInputSeq }),
     });
   }
 

@@ -17,6 +17,7 @@ const tableRequirements = [
   ["socket_tickets", ["SELECT", "INSERT", "DELETE"]],
   ["consent_grants", ["SELECT", "INSERT", "DELETE"]],
   ["session_runtime_owners", ["SELECT", "INSERT", "UPDATE", "DELETE"]],
+  ["runtime_inputs", ["SELECT", "INSERT", "UPDATE"]],
 ] as const;
 
 export async function assertDurableSchema(db: QueryClient): Promise<void> {
