@@ -1,4 +1,4 @@
-import { InterviewModeSchema, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
+import { InterviewModeSchema, type InterviewState, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
@@ -26,6 +26,7 @@ import {
   remainingSeconds,
 } from "./session-store.js";
 import { registerEventsSocket } from "./ws.js";
+import type { SessionLifecycle } from "./lifecycle.js";
 
 /**
  * Session module — session lifecycle, the app WebSocket, and the event log.
@@ -44,6 +45,7 @@ export {
   type SessionStore,
 } from "./session-store.js";
 export { SessionChannel, type ChannelDeps } from "./channel.js";
+export { InMemorySessionLifecycle, type SessionLifecycle } from "./lifecycle.js";
 export {
   GRACE_SECONDS,
   isAbandoned,
@@ -85,6 +87,7 @@ export interface SessionModuleOptions {
   runner?: CodeRunner;
   /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
   evaluationQueue?: { enqueue(sessionId: string, rubricId: string): Promise<unknown> };
+  lifecycle?: SessionLifecycle;
   /**
    * Shared across every session in the process, deliberately.
    *
@@ -209,7 +212,21 @@ export async function registerSessionModule(
       ...(opts.classifier ? { classifier: opts.classifier } : {}),
       // A decision reached by the re-evaluation timer has no caller awaiting it.
       onAuthorized: (result) => deliver(session.id, result),
+      ...(opts.lifecycle ? {
+        commitTransition: async (from: InterviewState, to: InterviewState, reason: string) => {
+          const updated = await opts.lifecycle!.transitionWithEvent(session.id, from, to, reason);
+          liveSession = updated;
+          liveSessions.set(session.id, updated);
+          pushToSession(session.id, {
+            kind: "STATE",
+            state: updated.state,
+            remainingSeconds: remainingSeconds(updated, Date.now()),
+            interviewerStatus: "LISTENING",
+          });
+        },
+      } : {}),
       onTransition: async (to) => {
+        if (opts.lifecycle) return;
         const updated = await store.transition(session.id, to);
         liveSession = updated;
         liveSessions.set(session.id, updated);
@@ -400,24 +417,29 @@ export async function registerSessionModule(
         const pinned = opts.library.get(scenario.version.id);
         if (pinned && pinned.contentHash !== scenario.contentHash) throw new QuestionBankError("VERSION_CONFLICT");
         opts.library.set(scenario.version.id, pinned ?? scenario);
-        session = await store.create({
+        const createRequest = {
           userId,
           scenario,
           mode: body.data.mode,
           language: body.data.language,
           idempotencyKey,
-        });
+        };
+        session = opts.lifecycle
+          ? await opts.lifecycle.createStarted(createRequest)
+          : await store.create(createRequest);
       }
 
-      await eventLog.append({
-        sessionId: session.id,
-        type: "SESSION_STARTED",
-        actor: "SYSTEM",
-        scenarioVersionId: session.scenarioVersionId,
-        payload: { mode: session.mode, language: session.language, scenarioHash: session.scenarioHash },
-        traceId: session.traceId,
-        idempotencyKey: `session-started:${session.id}`,
-      });
+      if (!opts.lifecycle) {
+        await eventLog.append({
+          sessionId: session.id,
+          type: "SESSION_STARTED",
+          actor: "SYSTEM",
+          scenarioVersionId: session.scenarioVersionId,
+          payload: { mode: session.mode, language: session.language, scenarioHash: session.scenarioHash },
+          traceId: session.traceId,
+          idempotencyKey: `session-started:${session.id}`,
+        });
+      }
 
       // Note what is NOT in this response: no oral brief, no facts, no tests.
       // The problem reaches the candidate through the voice agent or not at all.
@@ -472,18 +494,24 @@ export async function registerSessionModule(
   app.post("/interview-sessions/:id/end", async (req, reply) => {
     const { id } = req.params as { id: string };
     try {
-      const session = await store.end(id);
+      const beforeEnd = await store.get(id);
+      if (!beforeEnd) throw new SessionNotFoundError(id);
+      const rubricId = opts.library.get(beforeEnd.scenarioVersionId)?.version.rubricId ?? "rubric-coding-v1";
+      const session = opts.lifecycle
+        ? await opts.lifecycle.endWithReport(id, rubricId)
+        : await store.end(id);
 
-      await eventLog.append({
-        sessionId: session.id,
-        type: "SESSION_ENDED",
-        actor: "SYSTEM",
-        scenarioVersionId: session.scenarioVersionId,
-        payload: {},
-        traceId: session.traceId,
-        // Idempotent by construction: ending twice appends once.
-        idempotencyKey: `session-ended:${session.id}`,
-      });
+      if (!opts.lifecycle) {
+        await eventLog.append({
+          sessionId: session.id,
+          type: "SESSION_ENDED",
+          actor: "SYSTEM",
+          scenarioVersionId: session.scenarioVersionId,
+          payload: {},
+          traceId: session.traceId,
+          idempotencyKey: `session-ended:${session.id}`,
+        });
+      }
 
       // Let the orchestrator settle its final observation pass before the
       // evaluator reads the log, then drop it. Without this the last code delta

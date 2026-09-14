@@ -131,6 +131,24 @@ continued rejection of arbitrary UPDATE. Live execution remains pending.
 NEXT: implement atomic create+SESSION_STARTED and end+SESSION_ENDED+report-outbox
 transactions, then persist/fence session ownership and select the full bundle.
 
+CHECKPOINT RESULT — I02b.3g TRANSACTIONAL SESSION LIFECYCLE (2026-09-13)
+- SessionLifecycle now owns create+SESSION_STARTED, stage+STATE_TRANSITIONED and
+  end+SESSION_ENDED+queued-report boundaries. registerSessionModule can inject
+  this coordinator while retaining the existing local memory composition.
+- PgSessionLifecycle performs every boundary on one checked-out connection and
+  transaction. Stage advancement locks the session and compares the expected
+  prior state; a stale runtime cannot commit a competing transition.
+- PgEventLog exposes a caller-transaction append that retains the session lock,
+  tombstone and immutable scenario-pin checks plus idempotent sequence logic.
+- The report row is the durable completion outbox. EvaluationQueue's follow-up
+  enqueue finds that committed row and claims it; a crash cannot leave an ended
+  session with no recoverable report work.
+Validation covers rollback/release at the adapter boundary and an opt-in live
+transaction trajectory through create, stage, stale-stage rejection, end and
+report outbox. Live execution remains pending.
+NEXT: add fenced shared runtime ownership and persistent connection/deadline
+state, then construct and select the complete Supabase storage bundle.
+
 BASELINE
 Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
 Question bank: d1c9354. Authentication: dc5a1a7. Hardening: 259f60a.

@@ -133,6 +133,8 @@ export interface InterviewRuntimeDeps {
    * domain layer that the session module calls into.
    */
   onTransition?: (to: InterviewState, reason: string) => void | Promise<void>;
+  /** Atomically persist stage + event when durable lifecycle storage is active. */
+  commitTransition?: (from: InterviewState, to: InterviewState, reason: string) => void | Promise<void>;
 }
 
 const RuntimeCheckpointSchema = z.object({
@@ -1003,17 +1005,19 @@ export class InterviewRuntime {
       // stage it happened in.
       this.reasoningTurnsInStage = 0;
 
-      await this.append(
-        "STATE_TRANSITIONED",
-        "SYSTEM",
-        { from, to: advance.to, reason: advance.reason },
-        // Forward-only transitions mean each stage is entered at most once, so
-        // the target state is a stable key. A runtime rebuilt mid-session
-        // therefore cannot append a second transition into the same stage.
-        `stage:${advance.to}`,
-      );
-
-      await this.deps.onTransition?.(advance.to, advance.reason);
+      if (this.deps.commitTransition) {
+        await this.deps.commitTransition(from, advance.to, advance.reason);
+      } else {
+        await this.append(
+          "STATE_TRANSITIONED",
+          "SYSTEM",
+          { from, to: advance.to, reason: advance.reason },
+          // Forward-only transitions mean each stage is entered at most once,
+          // so the target state is a stable idempotency key.
+          `stage:${advance.to}`,
+        );
+        await this.deps.onTransition?.(advance.to, advance.reason);
+      }
     }
   }
 

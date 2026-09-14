@@ -11,6 +11,7 @@ import { PgSocketTickets } from "../auth/pg-socket-tickets.js";
 import { PgReportJobStore } from "../report/pg-report-store.js";
 import type { SessionReport } from "../report/evaluator.js";
 import { PgConsentStore } from "../privacy/pg-consent-store.js";
+import { PgSessionLifecycle } from "./pg-lifecycle.js";
 
 const adminUrl = process.env["TEST_DATABASE_ADMIN_URL"];
 if (!adminUrl && process.env["REQUIRE_DATABASE_TESTS"] === "1") throw new Error("TEST_DATABASE_ADMIN_URL_REQUIRED");
@@ -207,6 +208,34 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     await expect(log.append({ ...requestFor(session.id, session.traceId), idempotencyKey: "resurrection" }))
       .rejects.toThrow("SESSION_DELETED");
     await expect(db.query("UPDATE public.session_events SET payload='{}'::jsonb WHERE session_id=$1", [session.id])).rejects.toThrow();
+  });
+
+  it("commits lifecycle evidence and the report outbox atomically", async () => {
+    const lifecycle = new PgSessionLifecycle(db, () => "2026-09-13T00:10:00.000Z");
+    const session = await lifecycle.createStarted({
+      userId: randomUUID(),
+      scenario,
+      mode: "MOCK",
+      idempotencyKey: randomUUID(),
+    });
+    expect((await new PgEventLog(db).read(session.id)).map((event) => event.type)).toEqual(["SESSION_STARTED"]);
+    const transitioned = await lifecycle.transitionWithEvent(
+      session.id,
+      "ORAL_PROBLEM_DELIVERY",
+      "CLARIFICATION",
+      "brief delivered",
+    );
+    expect(transitioned.state).toBe("CLARIFICATION");
+    await expect(lifecycle.transitionWithEvent(session.id, "ORAL_PROBLEM_DELIVERY", "CLARIFICATION", "stale"))
+      .rejects.toThrow("STALE_SESSION_STATE");
+    const ended = await lifecycle.endWithReport(session.id, scenario.version.rubricId);
+    expect(ended.endedAt).toBe("2026-09-13T00:10:00.000Z");
+    expect((await new PgEventLog(db).read(session.id)).map((event) => event.type)).toEqual([
+      "SESSION_STARTED",
+      "STATE_TRANSITIONED",
+      "SESSION_ENDED",
+    ]);
+    expect(await new PgReportJobStore(db).get(session.id)).toMatchObject({ status: "QUEUED", rubricId: scenario.version.rubricId });
   });
 
   it("keeps pause increments atomic and completed sessions terminal", async () => {

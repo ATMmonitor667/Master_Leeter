@@ -20,6 +20,7 @@ import {
   registerSessionModule,
   type EventLog,
   type SessionStore,
+  type SessionLifecycle,
 } from "./modules/session/index.js";
 
 /**
@@ -50,6 +51,7 @@ export interface ServerOptions {
   socketTickets?: SocketTicketStore;
   reportJobStore?: ReportJobStore;
   consentStore?: ConsentStore;
+  lifecycle?: SessionLifecycle;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -98,6 +100,7 @@ export function buildServer(opts: ServerOptions) {
     store,
     eventLog,
     evaluationQueue,
+    ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
     ...(opts.runner ? { runner: opts.runner } : {}),
     ...(opts.classifier ? { classifier: opts.classifier } : {}),
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),

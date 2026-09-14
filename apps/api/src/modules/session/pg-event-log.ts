@@ -72,18 +72,25 @@ export class PgEventLog implements EventLog {
     const connection = await this.db.connect();
     try {
       await connection.query("BEGIN ISOLATION LEVEL READ COMMITTED");
-      const locked = await connection.query<{ id: string; scenario_version_id: string; deleted_at: Date | string | null }>(
-        "SELECT id, scenario_version_id, deleted_at FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE", [req.sessionId]);
-      if (!locked.rows[0]) throw new Error("UNKNOWN_SESSION");
-      if (locked.rows[0].deleted_at) throw new Error("SESSION_DELETED");
-      if (locked.rows[0].scenario_version_id !== req.scenarioVersionId) throw new Error("SCENARIO_PIN_MISMATCH");
-      const result = await this.appendLocked(connection, req);
+      const result = await this.appendInTransaction(connection, req);
       await connection.query("COMMIT");
       return result;
     } catch (error) {
       try { await connection.query("ROLLBACK"); } catch { /* Preserve original failure. */ }
       throw error;
     } finally { connection.release(); }
+  }
+
+  /** Append inside a caller-owned transaction, after locking the session row. */
+  async appendInTransaction(db: QueryClient, req: AppendRequest): Promise<AppendResult> {
+    const locked = await db.query<{ id: string; scenario_version_id: string; deleted_at: Date | string | null }>(
+      "SELECT id, scenario_version_id, deleted_at FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE",
+      [req.sessionId],
+    );
+    if (!locked.rows[0]) throw new Error("UNKNOWN_SESSION");
+    if (locked.rows[0].deleted_at) throw new Error("SESSION_DELETED");
+    if (locked.rows[0].scenario_version_id !== req.scenarioVersionId) throw new Error("SCENARIO_PIN_MISMATCH");
+    return this.appendLocked(db, req);
   }
 
   private async appendLocked(db: QueryClient, req: AppendRequest): Promise<AppendResult> {
