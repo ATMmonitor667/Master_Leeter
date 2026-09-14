@@ -286,6 +286,34 @@ describe("session channel — reconnect semantics", () => {
     expect(next.accepted).toBe(true);
   });
 
+  it("recovers the expected browser sequence in a fresh channel", async () => {
+    await channel.handleClientEvent(clientEvent(0, "e0"));
+    const freshProcess = new SessionChannel({ sessions: store, eventLog: log });
+    const next = await freshProcess.handleClientEvent(clientEvent(1, "e1"));
+    expect(next.accepted).toBe(true);
+    expect(await log.latestClientSeq(sessionId)).toBe(1);
+  });
+
+  it("rejects reuse of a committed browser sequence under a different key", async () => {
+    await channel.handleClientEvent(clientEvent(0, "original"));
+    const collision = await channel.handleClientEvent(clientEvent(0, "different"));
+    expect(collision.accepted).toBe(false);
+    expect(collision.messages).toEqual([{ kind: "REPLAY_FROM", seq: 1 }]);
+    expect(await log.latestSeq(sessionId)).toBe(0);
+  });
+
+  it("refreshes a stale process sequence after a concurrent writer wins", async () => {
+    const staleProcess = new SessionChannel({ sessions: store, eventLog: log });
+    expect((await staleProcess.handleClientEvent(clientEvent(0, "stale-prime"))).messages[0]).toMatchObject({ kind: "ACK" });
+    staleProcess.forget(sessionId);
+
+    const competingProcess = new SessionChannel({ sessions: store, eventLog: log });
+    await competingProcess.handleClientEvent(clientEvent(1, "winner"));
+
+    const collision = await staleProcess.handleClientEvent(clientEvent(1, "loser"));
+    expect(collision).toEqual({ accepted: false, messages: [{ kind: "REPLAY_FROM", seq: 2 }] });
+  });
+
   it("rejects events after the session has ended", async () => {
     await store.end(sessionId);
     const r = await channel.handleClientEvent(clientEvent(0, "e0"));

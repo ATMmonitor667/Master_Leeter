@@ -38,7 +38,7 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     // Temporary cluster role belongs to this run; never change existing roles.
     await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
     roleCreated = true;
-    for (const migration of ["001_init.sql", "002_session_storage.sql"]) {
+    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql"]) {
       await db.query(await readFile(new URL(`../../../migrations/${migration}`, import.meta.url), "utf8"));
     }
     const library = await loadScenarioLibrary(fileURLToPath(new URL("../../../../../content/scenarios/", import.meta.url)));
@@ -97,6 +97,21 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     expect(await log.latestSeq(session.id)).toBe(31);
     await expect(log.append({ ...base, actor: "INVALID" as "CANDIDATE", payload: {}, idempotencyKey: "failed-insert" })).rejects.toThrow();
     expect((await log.append({ ...base, payload: {}, idempotencyKey: "after-rollback" })).event.seq).toBe(32);
+  });
+
+  it("persists browser sequence progress and rejects reuse with another key", async () => {
+    const session = await create();
+    const log = new PgEventLog(db);
+    const base = { sessionId: session.id, scenarioVersionId: scenario.version.id, actor: "CANDIDATE" as const, type: "NOTE_DELTA" as const, traceId: session.traceId };
+    const first = await log.append({ ...base, payload: { text: "first" }, idempotencyKey: "client-0", clientSeq: 0 });
+    expect(first.duplicate).toBe(false);
+    const fresh = new PgDatabase(connection);
+    try { expect(await new PgEventLog(fresh).latestClientSeq(session.id)).toBe(0); }
+    finally { await fresh.close(); }
+    expect((await log.append({ ...base, payload: { text: "retry" }, idempotencyKey: "client-0", clientSeq: 0 })).duplicate).toBe(true);
+    await expect(log.append({ ...base, payload: { text: "collision" }, idempotencyKey: "another-key", clientSeq: 0 }))
+      .rejects.toThrow("CLIENT_SEQUENCE_CONFLICT");
+    expect(await log.latestSeq(session.id)).toBe(0);
   });
 
   it("keeps pause increments atomic and completed sessions terminal", async () => {

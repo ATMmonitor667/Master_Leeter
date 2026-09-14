@@ -33,6 +33,7 @@ interface EventRow {
   payload: Record<string, unknown>;
   evidence_hash: string;
   trace_id: string;
+  client_seq: number | null;
 }
 
 function toEvent(row: EventRow): SessionEvent {
@@ -52,11 +53,11 @@ function toEvent(row: EventRow): SessionEvent {
 const INSERT = `
   INSERT INTO public.session_events
     (session_id, seq, occurred_at, type, actor, scenario_version_id,
-     payload, evidence_hash, trace_id, idempotency_key)
+     payload, evidence_hash, trace_id, idempotency_key, client_seq)
   SELECT
     $1::uuid,
     COALESCE((SELECT MAX(seq) + 1 FROM public.session_events WHERE session_id = $1::uuid), 0),
-    $2::timestamptz, $3, $4, $5, $6::jsonb, $7, $8, $9
+    $2::timestamptz, $3, $4, $5, $6::jsonb, $7, $8, $9, $10::integer
   ON CONFLICT (session_id, idempotency_key) DO NOTHING
   RETURNING *`;
 
@@ -89,17 +90,27 @@ export class PgEventLog implements EventLog {
     if (prior.rows[0]) return { event: toEvent(prior.rows[0]), duplicate: true };
     const occurredAt = req.occurredAt ?? new Date().toISOString();
 
-    const inserted = await db.query<EventRow>(INSERT, [
-      req.sessionId,
-      occurredAt,
-      req.type,
-      req.actor,
-      req.scenarioVersionId,
-      JSON.stringify(req.payload),
-      evidenceHash(req),
-      req.traceId,
-      req.idempotencyKey,
-    ]);
+    let inserted: { rows: EventRow[] };
+    try {
+      inserted = await db.query<EventRow>(INSERT, [
+        req.sessionId,
+        occurredAt,
+        req.type,
+        req.actor,
+        req.scenarioVersionId,
+        JSON.stringify(req.payload),
+        evidenceHash(req),
+        req.traceId,
+        req.idempotencyKey,
+        req.clientSeq ?? null,
+      ]);
+    } catch (error) {
+      const postgresError = error as { code?: string; constraint?: string };
+      if (postgresError.code === "23505" && postgresError.constraint === "session_events_client_seq") {
+        throw new Error("CLIENT_SEQUENCE_CONFLICT");
+      }
+      throw error;
+    }
 
     const row = inserted.rows[0];
     if (row) return { event: toEvent(row), duplicate: false };
@@ -120,6 +131,15 @@ export class PgEventLog implements EventLog {
   async latestSeq(sessionId: string): Promise<number> {
     const { rows } = await this.db.query<{ max: number | null }>(
       "SELECT MAX(seq) AS max FROM public.session_events WHERE session_id = $1::uuid",
+      [sessionId],
+    );
+    return rows[0]?.max ?? -1;
+  }
+
+
+  async latestClientSeq(sessionId: string): Promise<number> {
+    const { rows } = await this.db.query<{ max: number | null }>(
+      "SELECT MAX(client_seq) AS max FROM public.session_events WHERE session_id = $1::uuid",
       [sessionId],
     );
     return rows[0]?.max ?? -1;

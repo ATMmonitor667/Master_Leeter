@@ -297,7 +297,7 @@ describe("the interview state machine has a driver", () => {
     // No runner is configured, and the stage still moves: asking for a run is
     // the candidate's act of testing, so a runner outage cannot pin them in
     // IMPLEMENTATION for the rest of the interview.
-    await send(port, sessionId, "RUN_REQUESTED", { revision: 1, input: "" });
+    await send(port, sessionId, "RUN_REQUESTED", { revision: 1, input: "" }, 1);
     expect(await stageOf(port, sessionId)).toBe("TEST_AND_DEBUG");
 
     // Each step is in the append-only log, so a replay sees the same path.

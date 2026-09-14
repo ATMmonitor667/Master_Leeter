@@ -53,6 +53,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   const [ending, setEnding] = useState(false);
   const [confirmingEnd, setConfirmingEnd] = useState(false);
   const [restored, setRestored] = useState(false);
+  const [resumeCursor, setResumeCursor] = useState({ clientSeq: 0, codeRevision: 0 });
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("IDLE");
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
@@ -104,6 +105,10 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         if (data.notes) setNotes(data.notes);
         if (typeof data.remainingSeconds === "number") setRemaining(data.remainingSeconds);
         if (typeof data.state === "string") setStage(data.state as InterviewState);
+        setResumeCursor({
+          clientSeq: typeof data.nextClientSeq === "number" ? data.nextClientSeq : 0,
+          codeRevision: typeof data.codeRevision === "number" ? data.codeRevision : 0,
+        });
         setRestored(true);
       })
       .catch(() => setRestored(true));
@@ -114,8 +119,11 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   }, [sessionId]);
 
   useEffect(() => {
+    if (!restored) return;
     const client = new SessionClient({
       sessionId,
+      initialClientSeq: resumeCursor.clientSeq,
+      initialCodeRevision: resumeCursor.codeRevision,
       onServerMessage,
       onConnectionChange: setConnected,
       // A 40-minute session will drop. Re-dial rather than stranding the
@@ -131,7 +139,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       client.disconnect();
       clientRef.current = null;
     };
-  }, [sessionId, onServerMessage]);
+  }, [sessionId, onServerMessage, restored, resumeCursor.clientSeq, resumeCursor.codeRevision]);
 
   /**
    * Start voice on request, never on load.

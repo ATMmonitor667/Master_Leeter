@@ -296,7 +296,10 @@ describe("deletion", () => {
   });
 
   it("notes when the log cannot be redacted at all", async () => {
-    const noRedact = { read: log.read.bind(log), append: log.append.bind(log), latestSeq: log.latestSeq.bind(log) };
+    const noRedact = {
+      read: log.read.bind(log), append: log.append.bind(log),
+      latestSeq: log.latestSeq.bind(log), latestClientSeq: log.latestClientSeq.bind(log),
+    };
     const receipt = await executeDeletion(
       { scope: "SESSION", userId: "u1", sessionId: SESSION, requestedAt: NOW },
       { eventLog: noRedact, sessionsOf: async () => [SESSION], stores: [] },

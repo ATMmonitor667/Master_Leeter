@@ -30,6 +30,27 @@ PostgreSQL adapters would still be unsafe.
 NEXT: persist runtime/client checkpoints and lifecycle data, then assemble one
 complete durable storage bundle and fail closed before selecting it at startup.
 
+CHECKPOINT RESULT — I02b.3b DURABLE CLIENT SEQUENCE (2026-09-13)
+- Candidate browser sequence is now part of the EventLog append contract and is
+  committed in the same row as its evidence. A fresh SessionChannel initializes
+  its expected sequence from durable storage instead of process memory.
+- The resume response now returns the authoritative next browser sequence and
+  code revision. The interview page waits for those cursors before constructing
+  SessionClient, so its first post-refresh edit continues both counters.
+- Migration 003_client_sequence.sql adds a nonnegative client_seq column and a
+  per-session partial unique index. PgEventLog normalizes that index collision
+  into the channel recovery protocol and refreshes stale process state before
+  returning REPLAY_FROM.
+- InMemoryEventLog implements the same uniqueness/latest-sequence contract.
+- Added process-restart, stale-writer, adapter-protocol and opt-in live database
+  coverage; the live database case remains skipped until the isolated database
+  harness is configured and run.
+Not enabled: startup still selects the complete in-memory bundle. Durable runtime
+policy state, lifecycle transactions, consent, reports/jobs, tickets, leases and
+deletion must be completed before Supabase mode can be enabled safely.
+NEXT: implement deterministic runtime recovery from committed events without
+rerunning classifiers or replaying previously spoken audio.
+
 BASELINE
 Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
 Question bank: d1c9354. Authentication: dc5a1a7. Hardening: 259f60a.

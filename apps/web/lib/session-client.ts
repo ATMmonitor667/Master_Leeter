@@ -26,6 +26,9 @@ export interface Transport {
 
 export interface SessionClientOptions {
   sessionId: string;
+  /** Authoritative cursors returned by the resume endpoint after a page load. */
+  initialClientSeq?: number;
+  initialCodeRevision?: number;
   connect: (handlers: TransportHandlers) => Transport;
   /** Injected so tests are deterministic and don't sleep. */
   now?: () => number;
@@ -82,6 +85,8 @@ export class SessionClient {
   private reconnectAttempts = 0;
 
   constructor(private readonly opts: SessionClientOptions) {
+    this.clientSeq = opts.initialClientSeq ?? 0;
+    this.codeRevision = opts.initialCodeRevision ?? 0;
     this.now = opts.now ?? (() => Date.now());
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
