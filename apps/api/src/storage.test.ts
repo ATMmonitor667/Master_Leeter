@@ -3,7 +3,7 @@ import { buildServer } from "./index.js";
 import { assertDurableSchema, createSupabaseStorage, type StorageDatabase } from "./storage.js";
 
 function fakeDatabase(change: Record<string, boolean | null> = {}) {
-  const ready = Object.fromEntries(Array.from({ length: 19 }, (_, i) => [`check${i}`, true]));
+  const ready = Object.fromEntries(Array.from({ length: 23 }, (_, i) => [`check${i}`, true]));
   const close = vi.fn(async () => {});
   const queries: string[] = [];
   const db: StorageDatabase = {

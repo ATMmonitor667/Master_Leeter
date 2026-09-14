@@ -10,7 +10,7 @@ Use a dedicated local PostgreSQL 16+ server with a test superuser able to create
 databases and roles. Never provide a live Supabase URL to this harness. It
 accepts only loopback hosts and the postgres/template1 maintenance database.
 It creates a random `ml_test_<uuid>` database and `ml_reader_<uuid>` role, applies
-every numbered migration through 007_deletion_tombstones.sql there, and removes only
+every numbered migration through 008_runtime_ownership.sql there, and removes only
 those generated resources at the end. If the process is killed, they can remain;
 inspect their exact names before manually cleaning them up.
 
@@ -43,6 +43,15 @@ composition; production startup activation still awaits runtime ownership,
 command routing and durable deadlines. Injected report stores start a bounded
 recovery worker, so queued/expired work does not depend on browser polling.
 On Windows with limited free memory, run Vitest with `--maxWorkers=2 --minWorkers=1`.
+
+Migration 008 stores private expiring runtime ownership tokens. The integration
+suite races claims from independent pools, forces expiry, rejects stale renewal,
+release, event writes and stage transitions, and rejects runtime writes after end.
+Claim/renew and event/lifecycle operations share the session row lock. Runtime
+leases use database time; every takeover gets a fresh token. The backend role
+requires SELECT/INSERT/UPDATE/DELETE on session_runtime_owners; browser roles
+have no grants or RLS policies. Multi-instance command forwarding remains pending;
+a command reaching a non-owner currently returns RUNTIME_OWNED_ELSEWHERE.
 
 ## Supabase connection when runtime integration is ready
 

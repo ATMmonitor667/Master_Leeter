@@ -5,6 +5,7 @@ import cors from "@fastify/cors";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
 import { EvaluationQueue, registerReportModule, type ReportJobStore } from "./modules/report/index.js";
 import { startReportRecovery } from "./modules/report/recovery-worker.js";
+import type { RuntimeOwnership } from "./modules/session/runtime-ownership.js";
 import { loadEnv } from "./env.js";
 import { geminiApiKeyFromEnv } from "./lib/gemini.js";
 import { classifierFromEnv, type IntentClassifier } from "./modules/orchestrator/index.js";
@@ -53,6 +54,7 @@ export interface ServerOptions {
   reportJobStore?: ReportJobStore;
   consentStore?: ConsentStore;
   lifecycle?: SessionLifecycle;
+  runtimeOwnership?: RuntimeOwnership;
   closeStorage?: () => Promise<void>;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
@@ -113,6 +115,7 @@ export function buildServer(opts: ServerOptions) {
     eventLog,
     evaluationQueue,
     ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
+    ...(opts.runtimeOwnership ? { runtimeOwnership: opts.runtimeOwnership } : {}),
     ...(opts.runner ? { runner: opts.runner } : {}),
     ...(opts.classifier ? { classifier: opts.classifier } : {}),
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),

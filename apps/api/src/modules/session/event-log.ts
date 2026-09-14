@@ -32,6 +32,8 @@ export interface AppendRequest {
   occurredAt?: string;
   /** Browser sequence for candidate events; stored atomically with the evidence. */
   clientSeq?: number;
+  /** Server-only fencing token; never accepted from client event payloads. */
+  runtimeToken?: string;
 }
 
 export interface AppendResult {

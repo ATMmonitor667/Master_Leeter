@@ -906,7 +906,7 @@ export class InterviewRuntime {
 
     this.heldTurn = { turn, classification };
     this.reevaluationTimer = this.schedule(() => {
-      void this.onSilenceElapsed();
+      void this.onSilenceElapsed().catch(() => this.clearHeldTurn());
     }, waitMs);
   }
 
@@ -966,6 +966,9 @@ export class InterviewRuntime {
       this.reevaluationTimer = null;
     }
   }
+
+  /** Stop local reevaluation when this process loses session ownership. */
+  dispose(): void { this.clearHeldTurn(); }
 
   // ── The stage-advancement path (M1-2b) ─────────────────────────────────────
 

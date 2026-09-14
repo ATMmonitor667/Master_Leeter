@@ -15,6 +15,7 @@ import { PgSessionLifecycle } from "./pg-lifecycle.js";
 import { createSupabaseStorage } from "../../storage.js";
 import { buildServer } from "../../index.js";
 import { EvaluationQueue } from "../report/index.js";
+import { PgRuntimeOwnership } from "./runtime-ownership.js";
 
 const adminUrl = process.env["TEST_DATABASE_ADMIN_URL"];
 if (!adminUrl && process.env["REQUIRE_DATABASE_TESTS"] === "1") throw new Error("TEST_DATABASE_ADMIN_URL_REQUIRED");
@@ -46,7 +47,7 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     // Temporary cluster role belongs to this run; never change existing roles.
     await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
     roleCreated = true;
-    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql", "007_deletion_tombstones.sql"]) {
+    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql", "007_deletion_tombstones.sql", "008_runtime_ownership.sql"]) {
       await db.query(await readFile(new URL(`../../../migrations/${migration}`, import.meta.url), "utf8"));
     }
     const library = await loadScenarioLibrary(fileURLToPath(new URL("../../../../../content/scenarios/", import.meta.url)));
@@ -99,6 +100,37 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     expect(new Set(results.map((result) => result.id)).size).toBe(1);
     expect((await create(key)).id).not.toBe(results[0]!.id);
     expect(await store.idsForUser(user)).toEqual([results[0]!.id]);
+  });
+
+  it("fences stale runtime writes and transitions across independent pools", async () => {
+    const session = await create();
+    const fresh = new PgDatabase(connection);
+    try {
+      const first = new PgRuntimeOwnership(db);
+      const second = new PgRuntimeOwnership(fresh);
+      const claims = await Promise.all([first.claim(session.id), second.claim(session.id)]);
+      expect(claims.filter(Boolean)).toHaveLength(1);
+      const old = claims.find(Boolean)!;
+      await db.query("UPDATE public.session_runtime_owners SET expires_at=clock_timestamp()-interval '1 second' WHERE session_id=$1", [session.id]);
+      expect(await first.renew(session.id, old)).toBe(false);
+      const replacement = await second.claim(session.id);
+      expect(replacement).toBeTruthy();
+      expect(replacement).not.toBe(old);
+      await first.release(session.id, old);
+      expect(await second.renew(session.id, replacement!)).toBe(true);
+      const log = new PgEventLog(db);
+      await expect(log.append({ ...requestFor(session.id, session.traceId), runtimeToken: old, idempotencyKey: "stale" }))
+        .rejects.toThrow("RUNTIME_OWNERSHIP_LOST");
+      await expect(new PgSessionLifecycle(db).transitionWithEvent(session.id, "ORAL_PROBLEM_DELIVERY", "CLARIFICATION", "stale", old))
+        .rejects.toThrow("RUNTIME_OWNERSHIP_LOST");
+      expect((await store.get(session.id))?.state).toBe("ORAL_PROBLEM_DELIVERY");
+      expect(await log.read(session.id)).toEqual([]);
+      await log.append({ ...requestFor(session.id, session.traceId), runtimeToken: replacement!, idempotencyKey: "current" });
+      await store.end(session.id);
+      expect(await second.renew(session.id, replacement!)).toBe(false);
+      await expect(log.append({ ...requestFor(session.id, session.traceId), runtimeToken: replacement!, idempotencyKey: "after-end" }))
+        .rejects.toThrow("RUNTIME_OWNERSHIP_LOST");
+    } finally { await fresh.close(); }
   });
 
   it("discovers committed report work after restart without a report request", async () => {

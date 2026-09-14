@@ -5,7 +5,7 @@ import type { CreateSessionRequest, InterviewSession, SessionStore } from "./ses
 export interface SessionLifecycle {
   createStarted(req: CreateSessionRequest): Promise<InterviewSession>;
   endWithReport(sessionId: string, rubricId: string, at?: string): Promise<InterviewSession>;
-  transitionWithEvent(sessionId: string, from: InterviewState, to: InterviewState, reason: string): Promise<InterviewSession>;
+  transitionWithEvent(sessionId: string, from: InterviewState, to: InterviewState, reason: string, runtimeToken?: string): Promise<InterviewSession>;
 }
 
 /** Local/test composition. Durable implementations provide real transactions. */

@@ -5,6 +5,7 @@ import type { CreateSessionRequest, InterviewSession } from "./session-store.js"
 import { PgSessionStore } from "./pg-session-store.js";
 import { PgEventLog, type TransactionPool } from "./pg-event-log.js";
 import type { SessionLifecycle } from "./lifecycle.js";
+import { assertRuntimeOwner } from "./runtime-ownership.js";
 
 export class PgSessionLifecycle implements SessionLifecycle {
   constructor(private readonly db: TransactionPool, private readonly now = () => new Date().toISOString()) {}
@@ -44,9 +45,10 @@ export class PgSessionLifecycle implements SessionLifecycle {
     });
   }
 
-  async transitionWithEvent(sessionId: string, from: InterviewState, to: InterviewState, reason: string): Promise<InterviewSession> {
+  async transitionWithEvent(sessionId: string, from: InterviewState, to: InterviewState, reason: string, runtimeToken?: string): Promise<InterviewSession> {
     return this.transaction(async (connection) => {
       await connection.query("SELECT id FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE", [sessionId]);
+      if (runtimeToken) await assertRuntimeOwner(connection, sessionId, runtimeToken);
       const sessions = new PgSessionStore(connection);
       const current = await sessions.get(sessionId);
       if (!current || current.state !== from || current.endedAt) throw new Error("STALE_SESSION_STATE");

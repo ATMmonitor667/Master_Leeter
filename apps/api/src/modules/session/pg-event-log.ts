@@ -1,4 +1,5 @@
 import type { SessionEvent } from "@master-leeter/contracts";
+import { assertRuntimeOwner } from "./runtime-ownership.js";
 import { type AppendRequest, type AppendResult, type EventLog, evidenceHash } from "./event-log.js";
 
 /**
@@ -89,6 +90,7 @@ export class PgEventLog implements EventLog {
     );
     if (!locked.rows[0]) throw new Error("UNKNOWN_SESSION");
     if (locked.rows[0].deleted_at) throw new Error("SESSION_DELETED");
+    if (req.runtimeToken) await assertRuntimeOwner(db, req.sessionId, req.runtimeToken);
     if (locked.rows[0].scenario_version_id !== req.scenarioVersionId) throw new Error("SCENARIO_PIN_MISMATCH");
     return this.appendLocked(db, req);
   }

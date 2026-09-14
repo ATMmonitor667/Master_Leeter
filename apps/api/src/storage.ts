@@ -5,6 +5,7 @@ import { PgDatabase } from "./modules/session/pg-database.js";
 import { PgEventLog, type QueryClient, type TransactionPool } from "./modules/session/pg-event-log.js";
 import { PgSessionLifecycle } from "./modules/session/pg-lifecycle.js";
 import { PgSessionStore } from "./modules/session/pg-session-store.js";
+import { PgRuntimeOwnership } from "./modules/session/runtime-ownership.js";
 
 export interface StorageDatabase extends TransactionPool { close(): Promise<void> }
 
@@ -15,6 +16,7 @@ const tableRequirements = [
   ["session_reports", ["SELECT", "INSERT", "UPDATE", "DELETE"]],
   ["socket_tickets", ["SELECT", "INSERT", "DELETE"]],
   ["consent_grants", ["SELECT", "INSERT", "DELETE"]],
+  ["session_runtime_owners", ["SELECT", "INSERT", "UPDATE", "DELETE"]],
 ] as const;
 
 export async function assertDurableSchema(db: QueryClient): Promise<void> {
@@ -58,6 +60,7 @@ export async function createSupabaseStorage(
     sessionStore: new PgSessionStore(db),
     eventLog: new PgEventLog(db),
     lifecycle: new PgSessionLifecycle(db),
+    runtimeOwnership: new PgRuntimeOwnership(db),
     socketTickets: new PgSocketTickets(db),
     consentStore: new PgConsentStore(db),
     reportJobStore: new PgReportJobStore(db),

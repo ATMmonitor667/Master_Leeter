@@ -11,6 +11,31 @@ Before resuming: git status --short --branch; git log -5 --oneline.
 Read this file, docs/PRODUCTION_ITERATIONS.md and docs/SUPABASE_AUTH.md.
 Inspect any AGENTS.md instructions. Preserve unrelated edits.
 
+CHECKPOINT RESULT — FENCED RUNTIME OWNERSHIP (2026-09-14)
+- Migration 008 adds private session_runtime_owners with RLS and browser revokes.
+  PgRuntimeOwnership locks the parent session for claim/renew, uses database time,
+  assigns a fresh UUID fencing token per acquisition, and refuses expired renewal
+  or ownership of ended/deleted sessions. Stale release cannot remove a new owner.
+- PgEventLog validates server-only runtimeToken within its append transaction;
+  PgSessionLifecycle validates it before stage mutation under the same row lock.
+- The storage bundle injects ownership. Session runtime creation is coalesced;
+  runtime/checkpoint/client-channel writes carry a token. Heartbeats renew leases;
+  lost ownership discards the local runtime and stops its reevaluation timer.
+  Voice delivery records are fenced; tool replies recheck ownership and use the
+  immutable stored scenario instead of requiring active catalogue membership.
+- Two-server tests verify explicit non-owner rejection, expiry/takeover and no
+  duplicate opening. Handle tests cover concurrent claims, database outages and
+  shutdown during acquisition. Live integration adds cross-pool write/transition
+  fencing, rollback and terminal-session checks; execution is pending database CI.
+Validation: workspace typecheck and 733 API tests pass, 15 database tests skipped.
+No Supabase migration, production startup activation, push or deployment performed.
+LIMIT: non-owner HTTP/WS admission returns 409 RUNTIME_OWNED_ELSEWHERE. Commands
+are not yet forwarded to their owner. This is ownership enforcement, NOT completed
+cross-instance routing or durable input processing. Startup remains memory mode.
+NEXT: durable command inbox/outbox and routing to the lease holder, including
+commit-before-dispatch crash recovery and worker completions. Then persistent
+connection/deadline state, live DB acceptance and durable startup activation.
+
 CHECKPOINT RESULT — STORAGE COMPOSITION + REPORT RECOVERY (2026-09-14)
 - Resumed codex-production-02b3-supabase-runtime at cd8f8af. The working tree
   was on the older codex branch; previous unfinished storage edits were absent.

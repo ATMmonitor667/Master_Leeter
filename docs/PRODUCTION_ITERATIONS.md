@@ -63,6 +63,13 @@ readiness claim is implied by completion of this foundation.
 
 ## I02 — Identity, ownership and durable sessions
 
+Runtime ownership checkpoint (2026-09-14): private expiring ownership tokens now
+fence runtime events, checkpoints, candidate-channel writes and stage transitions.
+The injected bundle renews ownership and rejects non-owner commands explicitly;
+takeover discards stale local runtime state. 733 API tests and workspace typecheck
+pass; 15 real database tests remain pending. Durable command routing, connection
+deadlines and startup activation still remain, so I02 is not yet complete.
+
 2026-09-14 checkpoint: complete repository composition is available for explicit
 integration injection, with schema/privilege readiness and pool cleanup. Injected
 report stores recover queued/expired jobs in bounded background batches without

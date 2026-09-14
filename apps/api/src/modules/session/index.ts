@@ -27,6 +27,7 @@ import {
 } from "./session-store.js";
 import { registerEventsSocket } from "./ws.js";
 import type { SessionLifecycle } from "./lifecycle.js";
+import { RuntimeOwnerHandles, type RuntimeOwnership } from "./runtime-ownership.js";
 
 /**
  * Session module — session lifecycle, the app WebSocket, and the event log.
@@ -88,6 +89,7 @@ export interface SessionModuleOptions {
   /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
   evaluationQueue?: { enqueue(sessionId: string, rubricId: string): Promise<unknown> };
   lifecycle?: SessionLifecycle;
+  runtimeOwnership?: RuntimeOwnership;
   /**
    * Shared across every session in the process, deliberately.
    *
@@ -114,7 +116,6 @@ export async function registerSessionModule(
 ): Promise<void> {
   const store = opts.store ?? new InMemorySessionStore();
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
-  const channel = new SessionChannel({ sessions: store, eventLog });
   const questionBank = opts.questionBank ?? new FileQuestionBank(opts.library);
 
   /**
@@ -177,8 +178,57 @@ export async function registerSessionModule(
    * remaining" for the whole interview — and the gate's wrap-up rule reads it.
    */
   const liveSessions = new Map<string, InterviewSession>();
+  const owners = opts.runtimeOwnership ? new RuntimeOwnerHandles(opts.runtimeOwnership, (id) => {
+    runtimes.get(id)?.dispose();
+    runtimes.delete(id);
+    liveSessions.delete(id);
+  }) : undefined;
+  const channel = new SessionChannel({ sessions: store, eventLog: owners ? {
+    read: (id, seq) => eventLog.read(id, seq),
+    latestSeq: (id) => eventLog.latestSeq(id),
+    latestClientSeq: (id) => eventLog.latestClientSeq(id),
+    append: async (req) => {
+      const token = await owners.ensure(req.sessionId);
+      if (!token) throw new Error("RUNTIME_OWNERSHIP_LOST");
+      return eventLog.append({ ...req, runtimeToken: token });
+    },
+  } : eventLog });
+  const ownershipTimer = owners ? setInterval(() => { void owners.heartbeat(); }, 10_000) : undefined;
+  ownershipTimer?.unref();
+  app.addHook("onClose", async () => {
+    if (ownershipTimer) clearInterval(ownershipTimer);
+    await owners?.close();
+    for (const runtime of runtimes.values()) runtime.dispose();
+  });
+
+  // Until command routing exists, reject commands on a non-owner explicitly.
+  // Never return success for a voice command that this process cannot handle.
+  if (owners) app.addHook("preHandler", async (req, reply) => {
+    const id = (req.params as { id?: string }).id;
+    if (!id || !req.routeOptions.url?.includes("/interview-sessions/:id")) return;
+    if (req.method !== "POST" && !req.routeOptions.url.endsWith("/events")) return;
+    const session = await store.get(id);
+    if (!session || session.endedAt) return;
+    try {
+      if (!await owners.ensure(id)) return reply.code(409).send({ error: "RUNTIME_OWNED_ELSEWHERE" });
+    } catch {
+      return reply.code(503).send({ error: "RUNTIME_OWNERSHIP_UNAVAILABLE" });
+    }
+  });
+
+  const pendingRuntimes = new Map<string, Promise<InterviewRuntime | null>>();
 
   async function runtimeFor(sessionId: string, beforeSeq?: number): Promise<InterviewRuntime | null> {
+    const pending = pendingRuntimes.get(sessionId);
+    if (pending) return pending;
+    const task = createRuntime(sessionId, beforeSeq).finally(() => pendingRuntimes.delete(sessionId));
+    pendingRuntimes.set(sessionId, task);
+    return task;
+  }
+
+  async function createRuntime(sessionId: string, beforeSeq?: number): Promise<InterviewRuntime | null> {
+    const runtimeToken = await owners?.ensure(sessionId);
+    if (owners && !runtimeToken) return null;
     const existing = runtimes.get(sessionId);
     if (existing) return existing;
 
@@ -203,7 +253,10 @@ export async function registerSessionModule(
       policy: session.policy,
       scenarioVersionId: session.scenarioVersionId,
       traceId: session.traceId,
-      events: eventLog,
+      events: runtimeToken ? { append: async (req) => {
+        if (!await owners!.verify(sessionId, runtimeToken)) throw new Error("RUNTIME_OWNERSHIP_LOST");
+        return eventLog.append({ ...req, runtimeToken });
+      } } : eventLog,
       remainingSeconds: () => remainingSeconds(liveSessions.get(session.id) ?? liveSession ?? session, Date.now()),
       // Without this the runtime silently falls back to the rule stub, and
       // every session runs on `stub-rules-v1` while CLASSIFIER_MODEL is read by
@@ -211,10 +264,12 @@ export async function registerSessionModule(
       // interviewer that never notices a complexity claim.
       ...(opts.classifier ? { classifier: opts.classifier } : {}),
       // A decision reached by the re-evaluation timer has no caller awaiting it.
-      onAuthorized: (result) => deliver(session.id, result),
+      onAuthorized: (result) => {
+        void deliverOwned(session.id, result, runtimeToken ?? undefined);
+      },
       ...(opts.lifecycle ? {
         commitTransition: async (from: InterviewState, to: InterviewState, reason: string) => {
-          const updated = await opts.lifecycle!.transitionWithEvent(session.id, from, to, reason);
+          const updated = await opts.lifecycle!.transitionWithEvent(session.id, from, to, reason, runtimeToken ?? undefined);
           liveSession = updated;
           liveSessions.set(session.id, updated);
           pushToSession(session.id, {
@@ -248,6 +303,7 @@ export async function registerSessionModule(
       return null;
     }
 
+    if (runtimeToken && !await owners!.verify(sessionId, runtimeToken)) return null;
     runtimes.set(session.id, runtime);
     return runtime;
   }
@@ -282,10 +338,21 @@ export async function registerSessionModule(
 
     try {
       const result = await runtime.ingest(event);
-      deliver(event.sessionId, result);
+      if (runtimes.get(event.sessionId) === runtime) await deliverOwned(event.sessionId, result);
     } catch (err) {
       app.log.error({ sessionId: event.sessionId, err }, "orchestrator ingest failed");
     }
+  }
+
+  async function deliverOwned(sessionId: string, result: { decision: unknown; utterance: unknown }, expectedToken?: string): Promise<void> {
+    if (owners) {
+      try {
+        if (expectedToken && !await owners.verify(sessionId, expectedToken)) return;
+        const token = await owners.ensure(sessionId);
+        if (!token || (expectedToken && token !== expectedToken)) return;
+      } catch { return; }
+    }
+    deliver(sessionId, result);
   }
 
   /**
@@ -749,7 +816,7 @@ export async function registerSessionModule(
       return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
     }
 
-    const scenario = opts.library.get(session.scenarioVersionId);
+    const scenario = await store.pinnedScenario(session.id);
     const runtime = runtimes.get(id);
     if (!scenario || !runtime) {
       // No live orchestrator means no authorization to check against, and an
@@ -758,6 +825,10 @@ export async function registerSessionModule(
     }
 
     const voice = runtime.voiceContext();
+    const deliveryToken = await owners?.ensure(id);
+    if (owners && (!deliveryToken || runtimes.get(id) !== runtime)) {
+      return reply.code(409).send({ error: "RUNTIME_OWNERSHIP_LOST" });
+    }
 
     const result = await executeVoiceTool(
       { name: body.data.name, args: body.data.args },
@@ -780,11 +851,15 @@ export async function registerSessionModule(
             payload: { ...entry, utteranceId: voice.utteranceId },
             traceId: session.traceId,
             idempotencyKey: `delivery:${voice.utteranceId ?? "none"}:${entry.kind}`,
+            ...(deliveryToken ? { runtimeToken: deliveryToken } : {}),
           });
         },
       },
     );
 
+    if (deliveryToken && !await owners!.verify(id, deliveryToken)) {
+      return reply.code(409).send({ error: "RUNTIME_OWNERSHIP_LOST" });
+    }
     if (!result.ok) {
       app.log.info({ sessionId: id, tool: body.data.name, refusal: result.refusal }, "voice tool refused");
       // 200 with a refusal, not an HTTP error: the model needs to read this and
