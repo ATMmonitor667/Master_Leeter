@@ -31,6 +31,7 @@ export { InMemoryReportJobStore, type ReportClaim, type ReportJob, type ReportJo
  * separation the whole scoring design rests on has broken.
  */
 export class EvaluationQueue {
+  private readonly active = new Map<string, Promise<void>>();
   constructor(
     private readonly eventLog: EventLog,
     private readonly evaluator: Evaluator = new BaselineEvaluator(),
@@ -41,13 +42,13 @@ export class EvaluationQueue {
   /** Idempotent: enqueuing a session already evaluated returns the existing job. */
   async enqueue(sessionId: string, rubricId: string): Promise<ReportJob> {
     const job = await this.jobs.enqueue(sessionId, rubricId, this.now());
-    if (job.status === "QUEUED" || job.status === "RUNNING") void this.process(sessionId);
+    if (job.status === "QUEUED" || job.status === "RUNNING") this.background(sessionId);
     return job;
   }
 
   async get(sessionId: string): Promise<ReportJob | null> {
     const job = await this.jobs.get(sessionId);
-    if (job?.status === "QUEUED" || job?.status === "RUNNING") void this.process(sessionId);
+    if (job?.status === "QUEUED" || job?.status === "RUNNING") this.background(sessionId);
     return job;
   }
 
@@ -60,6 +61,29 @@ export class EvaluationQueue {
    */
   async forget(sessionId: string): Promise<boolean> {
     return this.jobs.delete(sessionId);
+  }
+
+  /** Claim atomically in the store; concurrent workers may discover the same IDs. */
+  async recover(limit = 10): Promise<void> {
+    const ids = await this.jobs.recoverable(this.now(), limit);
+    const results = await Promise.allSettled(ids.map((id) => this.run(id)));
+    if (results.some((result) => result.status === "rejected")) throw new Error("REPORT_RECOVERY_FAILED");
+  }
+
+  async drain(): Promise<void> { await Promise.allSettled([...this.active.values()]); }
+
+  private background(sessionId: string): void {
+    // A DB outage must not become an unhandled rejection. The durable job stays
+    // eligible for the next recovery pass, which reports errors to the operator.
+    void this.run(sessionId).catch(() => {});
+  }
+
+  private run(sessionId: string): Promise<void> {
+    const existing = this.active.get(sessionId);
+    if (existing) return existing;
+    const task = this.process(sessionId).finally(() => this.active.delete(sessionId));
+    this.active.set(sessionId, task);
+    return task;
   }
 
   /**
@@ -96,10 +120,10 @@ export class EvaluationQueue {
       if (events.length === 0) throw new Error("no events for session");
       const report = await this.evaluator.evaluate(events, claim.job.rubricId);
       await this.jobs.complete(sessionId, claim.token, report, this.now());
-    } catch (err) {
+    } catch {
       // A failed evaluation never affects the completed interview. The job is
       // retryable from the same immutable events.
-      await this.jobs.fail(sessionId, claim.token, (err as Error).message, this.now());
+      await this.jobs.fail(sessionId, claim.token, "EVALUATION_FAILED", this.now());
     }
   }
 }

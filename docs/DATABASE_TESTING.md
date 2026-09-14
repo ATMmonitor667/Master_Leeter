@@ -36,6 +36,14 @@ terminal state, immutable pin/event triggers and RLS with an unprivileged role.
 Configure this job as a required branch-protection check before merging releases.
 Fresh-pool reconstruction tests storage, not full API/voice restart recovery.
 
+The suite also constructs the full repository bundle over a fresh pool and
+checks server cleanup and report discovery after restart. The bundle factory in
+`apps/api/src/storage.ts` performs read-only schema/privilege checks before
+composition; production startup activation still awaits runtime ownership,
+command routing and durable deadlines. Injected report stores start a bounded
+recovery worker, so queued/expired work does not depend on browser polling.
+On Windows with limited free memory, run Vitest with `--maxWorkers=2 --minWorkers=1`.
+
 ## Supabase connection when runtime integration is ready
 
 Use the server/pooler PostgreSQL connection from the project's Connect panel,

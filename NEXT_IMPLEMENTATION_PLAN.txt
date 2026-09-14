@@ -1,5 +1,5 @@
 MASTER LEETER — RESUMABLE IMPLEMENTATION HANDOFF
-Updated: 2026-09-12
+Updated: 2026-09-14
 
 READ THIS FIRST
 User owns deployment, pushing and merging. After each verified checkpoint,
@@ -10,6 +10,36 @@ untracked CODE_REVIEW_2026-09-12.txt without an explicit reason.
 Before resuming: git status --short --branch; git log -5 --oneline.
 Read this file, docs/PRODUCTION_ITERATIONS.md and docs/SUPABASE_AUTH.md.
 Inspect any AGENTS.md instructions. Preserve unrelated edits.
+
+CHECKPOINT RESULT — STORAGE COMPOSITION + REPORT RECOVERY (2026-09-14)
+- Resumed codex-production-02b3-supabase-runtime at cd8f8af. The working tree
+  was on the older codex branch; previous unfinished storage edits were absent.
+- apps/api/src/storage.ts composes sessions, events, lifecycle, socket tickets,
+  consent and report jobs over one checked database pool. Checks critical schema
+  fields and each required table privilege plus redaction EXECUTE. Pool cleanup
+  occurs on readiness failure and server close; errors expose safe codes only.
+- The bundle is available for explicit integration injection, NOT selected by
+  production startup. Runtime ownership/routing and durable deadlines remain
+  prerequisites. No env files changed and no Supabase migrations were applied.
+- ReportJobStore now discovers bounded queued/expired jobs. EvaluationQueue
+  recovers them without a browser request, deduplicates local processing, retains
+  database claim fencing, and sanitizes evaluator failures. buildServer starts
+  recovery when a report store is injected and drains it before closing storage.
+- recovery-worker.ts polls without overlapping batches and retries discovery
+  outages. Queued jobs survive failed claims; FAILED evaluations still require
+  explicit retry (automatic provider backoff/caps remain future I05 work).
+- storage.test.ts and report/recovery.test.ts cover lifecycle cleanup, missing
+  schema/privileges, recovery limits, competing workers, expired claims, privacy
+  and shutdown. pg-integration.test.ts adds full-bundle restart and durable
+  report discovery acceptance for CI.
+Validation: workspace typecheck passes; 729 API tests pass, 14 live database
+tests skipped. Full suite needed --maxWorkers=2 --minWorkers=1 after an unrestricted
+run exhausted local memory. Docker CLI is installed, but default and desktop-linux
+engine probes hung even outside the sandbox; both probes were stopped. No live
+database or cloud acceptance is claimed. git diff --check passes.
+NEXT: fenced runtime ownership AND command routing/outbox, persistent connection
+and deadline state, then startup selection of the bundle. Run database CI and
+project-specific Supabase acceptance before claiming durable production readiness.
 
 CHECKPOINT RESULT — I02b.3a REPOSITORY BOUNDARY + PIN RECOVERY (2026-09-13)
 Branch: codex-production-02b3-supabase-runtime, based on main e7f2dcb.

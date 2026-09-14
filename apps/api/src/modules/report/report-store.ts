@@ -19,6 +19,7 @@ export interface ReportClaim { token: string; job: ReportJob }
 export interface ReportJobStore {
   enqueue(sessionId: string, rubricId: string, queuedAt: string): Promise<ReportJob>;
   get(sessionId: string): Promise<ReportJob | null>;
+  recoverable(now: string, limit: number): Promise<string[]>;
   claim(sessionId: string, now: string, leaseExpiresAt: string): Promise<ReportClaim | null>;
   complete(sessionId: string, token: string, report: SessionReport, completedAt: string): Promise<ReportJob | null>;
   fail(sessionId: string, token: string, error: string, completedAt: string): Promise<ReportJob | null>;
@@ -55,6 +56,15 @@ export class InMemoryReportJobStore implements ReportJobStore {
   async get(sessionId: string): Promise<ReportJob | null> {
     const job = this.jobs.get(sessionId);
     return job ? this.public(job) : null;
+  }
+
+  async recoverable(now: string, limit: number): Promise<string[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("INVALID_RECOVERY_LIMIT");
+    return [...this.jobs.values()]
+      .filter((job) => job.status === "QUEUED" ||
+        (job.status === "RUNNING" && (!job.leaseExpiresAt || job.leaseExpiresAt <= now)))
+      .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.sessionId.localeCompare(b.sessionId))
+      .slice(0, limit).map((job) => job.sessionId);
   }
 
   async claim(sessionId: string, now: string, leaseExpiresAt: string): Promise<ReportClaim | null> {

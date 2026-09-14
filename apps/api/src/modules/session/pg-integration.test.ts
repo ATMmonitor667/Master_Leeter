@@ -12,6 +12,9 @@ import { PgReportJobStore } from "../report/pg-report-store.js";
 import type { SessionReport } from "../report/evaluator.js";
 import { PgConsentStore } from "../privacy/pg-consent-store.js";
 import { PgSessionLifecycle } from "./pg-lifecycle.js";
+import { createSupabaseStorage } from "../../storage.js";
+import { buildServer } from "../../index.js";
+import { EvaluationQueue } from "../report/index.js";
 
 const adminUrl = process.env["TEST_DATABASE_ADMIN_URL"];
 if (!adminUrl && process.env["REQUIRE_DATABASE_TESTS"] === "1") throw new Error("TEST_DATABASE_ADMIN_URL_REQUIRED");
@@ -64,6 +67,31 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     userId, scenario, mode: "MOCK", idempotencyKey: key,
   });
 
+  it("serves persisted sessions and resumes code from a fresh server over the full bundle", async () => {
+    const session = await create();
+    const firstStorage = await createSupabaseStorage(connection);
+    const first = buildServer({ library: new Map(), ...firstStorage });
+    await first.ready();
+    try {
+      await firstStorage.eventLog.append({
+        sessionId: session.id, scenarioVersionId: session.scenarioVersionId,
+        type: "CODE_DELTA", actor: "CANDIDATE", traceId: session.traceId,
+        payload: { revision: 7, text: "def solve(): return 42" },
+        clientSeq: 4, idempotencyKey: "bundle-restart-code",
+      });
+    } finally { await first.close(); }
+    const secondStorage = await createSupabaseStorage(connection);
+    const second = buildServer({ library: new Map(), ...secondStorage });
+    await second.ready();
+    try {
+      const response = await second.inject({ method: "GET", url: `/v1/interview-sessions/${session.id}` });
+      expect(response.statusCode).toBe(200);
+      expect(await secondStorage.eventLog.latestClientSeq(session.id)).toBe(4);
+      expect((await secondStorage.eventLog.read(session.id))[0]?.payload)
+        .toEqual({ revision: 7, text: "def solve(): return 42" });
+    } finally { await second.close(); }
+  });
+
   it("deduplicates concurrent creates per user without cross-user collisions", async () => {
     const user = randomUUID();
     const key = randomUUID();
@@ -71,6 +99,22 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     expect(new Set(results.map((result) => result.id)).size).toBe(1);
     expect((await create(key)).id).not.toBe(results[0]!.id);
     expect(await store.idsForUser(user)).toEqual([results[0]!.id]);
+  });
+
+  it("discovers committed report work after restart without a report request", async () => {
+    const lifecycle = new PgSessionLifecycle(db);
+    const session = await lifecycle.createStarted({ userId: randomUUID(), scenario,
+      mode: "MOCK", idempotencyKey: randomUUID() });
+    await lifecycle.endWithReport(session.id, scenario.version.rubricId);
+    const jobs = new PgReportJobStore(db);
+    expect(await jobs.recoverable(new Date().toISOString(), 100)).toContain(session.id);
+    const fresh = new PgDatabase(connection);
+    try {
+      const recovery = new EvaluationQueue(new PgEventLog(fresh), undefined, undefined, new PgReportJobStore(fresh));
+      await recovery.recover(100);
+      expect((await jobs.get(session.id))?.status).toBe("READY");
+      expect(await jobs.recoverable(new Date().toISOString(), 100)).not.toContain(session.id);
+    } finally { await fresh.close(); }
   });
 
   it("persists pins and reconstructs code/notes through a fresh pool", async () => {

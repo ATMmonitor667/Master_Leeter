@@ -50,6 +50,18 @@ export class PgReportJobStore implements ReportJobStore {
     return result.rows[0] ? toJob(result.rows[0]) : null;
   }
 
+  async recoverable(now: string, limit: number): Promise<string[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("INVALID_RECOVERY_LIMIT");
+    const result = await this.db.query<{ session_id: string }>(
+      `SELECT r.session_id FROM public.session_reports r
+       JOIN public.interview_sessions s ON s.id=r.session_id
+       WHERE s.deleted_at IS NULL AND s.ended_at IS NOT NULL AND
+         (r.status='QUEUED' OR (r.status='RUNNING' AND r.lease_expires_at <= $1::timestamptz))
+       ORDER BY r.created_at, r.session_id LIMIT $2`, [now, limit],
+    );
+    return result.rows.map((row) => row.session_id);
+  }
+
   async claim(sessionId: string, now: string, leaseExpiresAt: string): Promise<ReportClaim | null> {
     const token = randomUUID();
     const result = await this.db.query<ReportRow>(

@@ -266,7 +266,7 @@ describe("evaluation queue", () => {
     await queue.enqueue("00000000-0000-4000-8000-0000000000aa", "rubric-coding-v1");
     const job = await queue.settled("00000000-0000-4000-8000-0000000000aa");
     expect(job?.status).toBe("FAILED");
-    expect(job?.error).toMatch(/no events/);
+    expect(job?.error).toBe("EVALUATION_FAILED");
     expect(job?.attempts).toBe(1);
   });
 

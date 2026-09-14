@@ -63,6 +63,13 @@ readiness claim is implied by completion of this foundation.
 
 ## I02 — Identity, ownership and durable sessions
 
+2026-09-14 checkpoint: complete repository composition is available for explicit
+integration injection, with schema/privilege readiness and pool cleanup. Injected
+report stores recover queued/expired jobs in bounded background batches without
+browser polling. Workspace typecheck and 729 API tests pass; 14 database tests
+remain unexecuted locally. Production startup activation, fenced runtime ownership,
+command routing and durable deadlines remain open. See NEXT_IMPLEMENTATION_PLAN.txt.
+
 I02b.2 adds the pg driver, verified remote TLS configuration, an opt-in real
 PostgreSQL test harness and a dedicated PostgreSQL 16 CI job. Local API result:
 698 passed, six database tests skipped without a configured server; typecheck
