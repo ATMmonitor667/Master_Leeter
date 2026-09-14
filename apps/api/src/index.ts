@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets } from "./modules/auth/index.js";
+import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
 import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
 import { loadEnv } from "./env.js";
 import { geminiApiKeyFromEnv } from "./lib/gemini.js";
@@ -47,6 +47,7 @@ export interface ServerOptions {
   webOrigin?: string;
   eventLog?: EventLog & { redact?(sessionId: string): Promise<number> };
   sessionStore?: SessionStore;
+  socketTickets?: SocketTicketStore;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -78,7 +79,7 @@ export function buildServer(opts: ServerOptions) {
 
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const store = opts.sessionStore ?? new InMemorySessionStore();
-  registerAccessControl(app, { sessions: store, webOrigin, tickets: new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
+  registerAccessControl(app, { sessions: store, webOrigin, tickets: opts.socketTickets ?? new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
   const evaluationQueue = new EvaluationQueue(eventLog);
 
   // Decorated on the root instance, not inside the plugins: Fastify

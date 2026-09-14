@@ -7,6 +7,7 @@ import { PgSessionStore } from "./pg-session-store.js";
 import { PgEventLog } from "./pg-event-log.js";
 import { loadScenarioLibrary, type LoadedScenario } from "../scenario/loader.js";
 import { reconstruct } from "./resume.js";
+import { PgSocketTickets } from "../auth/pg-socket-tickets.js";
 
 const adminUrl = process.env["TEST_DATABASE_ADMIN_URL"];
 if (!adminUrl && process.env["REQUIRE_DATABASE_TESTS"] === "1") throw new Error("TEST_DATABASE_ADMIN_URL_REQUIRED");
@@ -38,7 +39,7 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     // Temporary cluster role belongs to this run; never change existing roles.
     await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
     roleCreated = true;
-    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql"]) {
+    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql"]) {
       await db.query(await readFile(new URL(`../../../migrations/${migration}`, import.meta.url), "utf8"));
     }
     const library = await loadScenarioLibrary(fileURLToPath(new URL("../../../../../content/scenarios/", import.meta.url)));
@@ -112,6 +113,26 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     await expect(log.append({ ...base, payload: { text: "collision" }, idempotencyKey: "another-key", clientSeq: 0 }))
       .rejects.toThrow("CLIENT_SEQUENCE_CONFLICT");
     expect(await log.latestSeq(session.id)).toBe(0);
+  });
+
+  it("shares and atomically consumes socket tickets across repository instances", async () => {
+    const session = await create();
+    const other = await create();
+    const now = Date.now();
+    const principal = { userId: session.userId, expiresAt: now + 60_000 };
+    const issuer = new PgSocketTickets(db, () => now);
+    const first = await issuer.issue(session.id, principal);
+    const replacement = await issuer.issue(session.id, principal);
+    const fresh = new PgDatabase(connection);
+    const consumer = new PgSocketTickets(fresh, () => now);
+    try {
+      expect(await consumer.take(first, session.id)).toBeNull();
+      expect(await consumer.take(replacement, other.id)).toBeNull();
+      expect(await consumer.take(replacement, session.id)).toEqual(principal);
+      expect(await issuer.take(replacement, session.id)).toBeNull();
+    } finally {
+      await fresh.close();
+    }
   });
 
   it("keeps pause increments atomic and completed sessions terminal", async () => {

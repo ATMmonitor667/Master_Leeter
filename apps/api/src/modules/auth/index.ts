@@ -59,11 +59,16 @@ export function authenticatorFromEnv(env: NodeJS.ProcessEnv): Authenticator | un
 }
 
 interface Ticket { sessionId: string; principal: Principal; expiresAt: number }
-/** One pending ticket per user/session. Process-local until distributed storage. */
-export class SocketTickets {
+export interface SocketTicketStore {
+  issue(sessionId: string, principal: Principal): Promise<string>;
+  take(token: string, sessionId: string): Promise<Principal | null>;
+}
+
+/** One pending ticket per user/session for explicit local/test memory mode. */
+export class SocketTickets implements SocketTicketStore {
   private readonly tickets = new Map<string, Ticket>();
   constructor(private readonly now = Date.now) {}
-  issue(sessionId: string, principal: Principal): string {
+  async issue(sessionId: string, principal: Principal): Promise<string> {
     for (const [key, value] of this.tickets) {
       if (value.expiresAt <= this.now() || (value.sessionId === sessionId && value.principal.userId === principal.userId)) this.tickets.delete(key);
     }
@@ -73,7 +78,7 @@ export class SocketTickets {
     this.tickets.set(this.hash(token), { sessionId, principal, expiresAt: Math.min(this.now() + 30_000, principal.expiresAt) });
     return token;
   }
-  take(token: string, sessionId: string): Principal | null {
+  async take(token: string, sessionId: string): Promise<Principal | null> {
     if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
     const key = this.hash(token);
     const entry = this.tickets.get(key);
@@ -95,7 +100,7 @@ export function userIdFor(request: FastifyRequest): string {
 }
 
 export function registerAccessControl(app: FastifyInstance, opts: {
-  authenticator?: Authenticator; sessions: SessionStore; webOrigin: string; tickets: SocketTickets;
+  authenticator?: Authenticator; sessions: SessionStore; webOrigin: string; tickets: SocketTicketStore;
 }): void {
   app.decorateRequest("principal", null);
   app.addHook("preHandler", async (req, reply) => {
@@ -113,7 +118,7 @@ export function registerAccessControl(app: FastifyInstance, opts: {
         // fresh ticket obtained through authenticated HTTP may open this route.
         if (origin !== opts.webOrigin || !id) return reply.code(403).send({ error: "ORIGIN_NOT_ALLOWED" });
         const query = z.object({ ticket: z.string().max(100) }).strict().safeParse(req.query);
-        req.principal = query.success ? opts.tickets.take(query.data.ticket, id) : null;
+        req.principal = query.success ? await opts.tickets.take(query.data.ticket, id) : null;
         if (!req.principal) throw new AuthError("UNAUTHORIZED");
       } else {
         const match = /^Bearer ([^\s]+)$/i.exec(req.headers.authorization ?? "");
@@ -140,6 +145,6 @@ export function registerAccessControl(app: FastifyInstance, opts: {
     if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
     if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
     const principal = req.principal ?? { userId: userIdFor(req), expiresAt: Date.now() + 55 * 60_000 };
-    return reply.header("Cache-Control", "no-store").send({ ticket: opts.tickets.issue(id, principal) });
+    return reply.header("Cache-Control", "no-store").send({ ticket: await opts.tickets.issue(id, principal) });
   });
 }

@@ -74,6 +74,24 @@ stage/session updates.
 NEXT: make lifecycle transitions/outbox records transactional, then persist the
 remaining consent/report/job/ticket/deletion stores before enabling durable mode.
 
+CHECKPOINT RESULT — I02b.3d SHARED SOCKET TICKETS (2026-09-13)
+- Access control now depends on an async SocketTicketStore interface; local/test
+  mode retains the memory implementation and buildServer accepts injection.
+- PgSocketTickets stores only SHA-256 token hashes, replaces the previous pending
+  ticket per user/session, caps the table under a transaction advisory lock and
+  consumes a matching ticket atomically with DELETE RETURNING.
+- Migration 004 creates the private ticket table with expiry and uniqueness
+  constraints, RLS enabled and all browser/public privileges revoked.
+- Protocol tests cover hashing, capacity rollback and atomic consume. The live
+  integration suite covers replacement, wrong-session refusal, cross-pool
+  redemption and one-use behavior; it remains skipped without the disposable
+  PostgreSQL harness.
+Validation: API typecheck and all 711 API tests pass; eight live database tests
+remain skipped. Startup still uses memory tickets because durable mode is not
+yet complete or selectable.
+NEXT: persist report jobs/results and consent, then add lifecycle/outbox and
+deletion coordination before assembling the Supabase runtime bundle.
+
 BASELINE
 Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
 Question bank: d1c9354. Authentication: dc5a1a7. Hardening: 259f60a.
