@@ -4,8 +4,15 @@ import type { CreateSessionRequest, InterviewSession, SessionStore } from "./ses
 
 export interface SessionLifecycle {
   createStarted(req: CreateSessionRequest): Promise<InterviewSession>;
-  endWithReport(sessionId: string, rubricId: string, at?: string): Promise<InterviewSession>;
+  endWithReport(sessionId: string, rubricId: string, at?: string, expectedClientSeq?: number): Promise<InterviewSession>;
   transitionWithEvent(sessionId: string, from: InterviewState, to: InterviewState, reason: string, runtimeToken?: string): Promise<InterviewSession>;
+}
+
+export class FinalInputsPendingError extends Error {
+  constructor(readonly expectedClientSeq: number, readonly durableClientSeq: number) {
+    super(`Final inputs are pending: expected ${expectedClientSeq}, durable ${durableClientSeq}`);
+    this.name = "FinalInputsPendingError";
+  }
 }
 
 /** Local/test composition. Durable implementations provide real transactions. */
@@ -31,14 +38,18 @@ export class InMemorySessionLifecycle implements SessionLifecycle {
     return session;
   }
 
-  async endWithReport(sessionId: string, rubricId: string, at?: string): Promise<InterviewSession> {
+  async endWithReport(sessionId: string, rubricId: string, at?: string, expectedClientSeq = -1): Promise<InterviewSession> {
+    const durableClientSeq = await this.events.latestClientSeq(sessionId);
+    if (durableClientSeq < expectedClientSeq) {
+      throw new FinalInputsPendingError(expectedClientSeq, durableClientSeq);
+    }
     const session = await this.sessions.end(sessionId, at);
     await this.events.append({
       sessionId: session.id,
       type: "SESSION_ENDED",
       actor: "SYSTEM",
       scenarioVersionId: session.scenarioVersionId,
-      payload: {},
+      payload: { sealedClientSeq: durableClientSeq },
       traceId: session.traceId,
       idempotencyKey: `session-ended:${session.id}`,
     });

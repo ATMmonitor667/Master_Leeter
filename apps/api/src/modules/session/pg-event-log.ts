@@ -89,12 +89,13 @@ export class PgEventLog implements EventLog {
       req.type !== "RUNTIME_CHECKPOINT" || req.actor !== "SYSTEM" || !req.runtimeToken ||
       req.idempotencyKey !== `runtime-checkpoint:event:${req.completedInputSeq}`
     )) throw new Error("INVALID_INPUT_COMPLETION");
-    const locked = await db.query<{ id: string; scenario_version_id: string; deleted_at: Date | string | null }>(
-      "SELECT id, scenario_version_id, deleted_at FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE",
+    const locked = await db.query<{ id: string; scenario_version_id: string; deleted_at: Date | string | null; ended_at: Date | string | null }>(
+      "SELECT id, scenario_version_id, deleted_at, ended_at FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE",
       [req.sessionId],
     );
     if (!locked.rows[0]) throw new Error("UNKNOWN_SESSION");
     if (locked.rows[0].deleted_at) throw new Error("SESSION_DELETED");
+    if (locked.rows[0].ended_at && req.type !== "SESSION_ENDED") throw new Error("SESSION_ENDED");
     if (req.runtimeToken) await assertRuntimeOwner(db, req.sessionId, req.runtimeToken);
     if (locked.rows[0].scenario_version_id !== req.scenarioVersionId) throw new Error("SCENARIO_PIN_MISMATCH");
     return this.appendLocked(db, req);

@@ -51,6 +51,8 @@ export interface SessionStore {
   findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null>;
   idsForUser(userId: string): Promise<string[]>;
   get(id: string): Promise<InterviewSession | null>;
+  /** Started sessions whose server-owned interview budget has elapsed. */
+  dueForCompletion(at?: string, limit?: number): Promise<InterviewSession[]>;
   /** Immutable private scenario snapshot used to rebuild a runtime after restart. */
   pinnedScenario(id: string): Promise<LoadedScenario | null>;
   /** Idempotent. Ending an ended session returns it unchanged. */
@@ -126,6 +128,14 @@ export class InMemorySessionStore implements SessionStore {
 
   async get(id: string): Promise<InterviewSession | null> {
     return this.tombstones.has(id) ? null : this.sessions.get(id) ?? null;
+  }
+
+  async dueForCompletion(at = this.now(), limit = 100): Promise<InterviewSession[]> {
+    const nowMs = Date.parse(at);
+    return [...this.sessions.values()]
+      .filter((session) => !this.tombstones.has(session.id) && !session.endedAt &&
+        Boolean(session.startedAt) && remainingSeconds(session, nowMs) === 0)
+      .slice(0, limit);
   }
 
   async pinnedScenario(id: string): Promise<LoadedScenario | null> {

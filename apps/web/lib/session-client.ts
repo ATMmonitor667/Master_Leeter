@@ -46,6 +46,8 @@ export interface SessionClientOptions {
   newId?: () => string;
   onServerMessage?: (msg: ServerMessage) => void;
   onConnectionChange?: (connected: boolean) => void;
+  /** Includes debounced edits and sent events that have not been acknowledged. */
+  onPendingChange?: (pending: number) => void;
 }
 
 export interface TransportHandlers {
@@ -59,6 +61,13 @@ interface OutboxEntry {
   attempts: number;
 }
 
+interface AckWaiter {
+  targetClientSeq: number;
+  resolve: (clientSeq: number) => void;
+  reject: (error: Error) => void;
+  timer: unknown;
+}
+
 let idCounter = 0;
 const defaultNewId = () => `id-${Date.now()}-${idCounter++}`;
 
@@ -69,6 +78,8 @@ export class SessionClient {
   private clientSeq = 0;
   private codeRevision = 0;
   private lastAckedSeq = -1;
+  private lastAckedClientSeq = -1;
+  private readonly ackWaiters = new Set<AckWaiter>();
 
   private pendingCode: string | null = null;
   private pendingNotes: string | null = null;
@@ -140,7 +151,7 @@ export class SessionClient {
   }
 
   get pendingCount(): number {
-    return this.outbox.size;
+    return this.outbox.size + Number(this.pendingCode !== null) + Number(this.pendingNotes !== null);
   }
 
   /**
@@ -151,11 +162,13 @@ export class SessionClient {
    */
   codeChanged(text: string): void {
     this.pendingCode = text;
+    this.notifyPending();
     this.scheduleFlush();
   }
 
   notesChanged(text: string): void {
     this.pendingNotes = text;
+    this.notifyPending();
     this.scheduleFlush();
   }
 
@@ -178,6 +191,33 @@ export class SessionClient {
       this.enqueue("NOTE_DELTA", { text: this.pendingNotes });
       this.pendingNotes = null;
     }
+    this.notifyPending();
+  }
+
+  /**
+   * Flush all local edits and wait until the server has acknowledged every
+   * client event through that point. The returned cursor is sent with the end
+   * request so the server can seal the exact durable input set atomically.
+   */
+  flushAndWaitForAcknowledgement(timeoutMs = 10_000): Promise<number> {
+    this.flush();
+    const targetClientSeq = this.clientSeq - 1;
+    if (targetClientSeq <= this.lastAckedClientSeq || !this.hasPendingThrough(targetClientSeq)) {
+      return Promise.resolve(targetClientSeq);
+    }
+
+    return new Promise((resolve, reject) => {
+      const waiter: AckWaiter = {
+        targetClientSeq,
+        resolve,
+        reject,
+        timer: this.setTimer(() => {
+          this.ackWaiters.delete(waiter);
+          reject(new Error("Your latest changes have not reached the server yet. Reconnect and try again."));
+        }, timeoutMs),
+      };
+      this.ackWaiters.add(waiter);
+    });
   }
 
   requestRun(input: string): number {
@@ -224,7 +264,14 @@ export class SessionClient {
   speechFinal(transcript: string, occurredAtMs?: number): void {
     const text = transcript.trim();
     if (!text) return;
-    this.enqueue("SPEECH_FINAL", { transcript: text, finalized: true }, occurredAtMs);
+    const endedAt = occurredAtMs ?? this.now();
+    this.enqueue("SPEECH_FINAL", {
+      segmentId: this.newId(),
+      speaker: "CANDIDATE",
+      transcript: text,
+      finalized: true,
+      endedAt: new Date(endedAt).toISOString(),
+    }, endedAt);
   }
 
   private enqueue(
@@ -242,6 +289,7 @@ export class SessionClient {
     };
 
     this.outbox.set(event.idempotencyKey, { event, attempts: 0 });
+    this.notifyPending();
     this.trySend(event);
   }
 
@@ -274,9 +322,12 @@ export class SessionClient {
     switch (msg.kind) {
       case "ACK": {
         this.lastAckedSeq = Math.max(this.lastAckedSeq, msg.seq);
+        this.lastAckedClientSeq = Math.max(this.lastAckedClientSeq, msg.clientSeq);
         for (const [key, entry] of this.outbox) {
           if (entry.event.clientSeq === msg.clientSeq) this.outbox.delete(key);
         }
+        this.notifyPending();
+        this.resolveAckWaiters();
         break;
       }
       case "REPLAY_FROM": {
@@ -299,5 +350,25 @@ export class SessionClient {
   /** Last server sequence acknowledged. Sent on reconnect to resume. */
   get resumeFrom(): number {
     return this.lastAckedSeq;
+  }
+
+  private hasPendingThrough(targetClientSeq: number): boolean {
+    for (const entry of this.outbox.values()) {
+      if (entry.event.clientSeq <= targetClientSeq) return true;
+    }
+    return false;
+  }
+
+  private resolveAckWaiters(): void {
+    for (const waiter of this.ackWaiters) {
+      if (this.hasPendingThrough(waiter.targetClientSeq)) continue;
+      this.clearTimer(waiter.timer);
+      this.ackWaiters.delete(waiter);
+      waiter.resolve(waiter.targetClientSeq);
+    }
+  }
+
+  private notifyPending(): void {
+    this.opts.onPendingChange?.(this.pendingCount);
   }
 }

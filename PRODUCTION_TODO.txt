@@ -19,7 +19,10 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [ ] I02b Durable storage, atomic lifecycle, replay and cross-process recovery.
 [~] I03 production code implemented on codex-production-03-preparation; automated,
     live Supabase/Gemini and human conversational acceptance remain open.
-[ ] I04 Minimal live codepad/notes, automatic transcription and resilient completion.
+[~] I04 core code implemented on codex-production-04-live-experience: minimal
+    codepad/notes UI, provider input transcription, voice action/reconnect path,
+    acknowledged saves, atomic final cursor seal, late-write rejection and server
+    deadline/abandonment completion. Real 45-minute and device acceptance remain.
 [ ] I05 Separate 0-100 solution/transcript AI graders and evidence-based reports.
 [ ] I06 Security/cost/recovery hardening, release checks and owner-assisted pilot.
 Full per-iteration tasks, acceptance and owner dependencies:
@@ -63,9 +66,12 @@ DATA / RECOVERY
 [ ] P10 Single session owner, fenced leases, cross-instance commands, durable jobs.
 
 INTERVIEW / EXECUTION / REPORTS
-[ ] P11 Transcription independent of captions; audible-completion and preflight.
-[ ] P12 45-minute voice lifecycle, GoAway/resumption/compression, live verification.
-[ ] P13 Durable deadlines, silent-candidate expiry, finalization and abandonment.
+[~] P11 Provider transcription is independent of captions and completion waits for
+    playback drain; full device preflight and human audio acceptance remain.
+[~] P12 Fresh-token voice reconnect is implemented; provider GoAway/resumption,
+    context compression and a real 45-minute verification remain.
+[~] P13 Durable server deadline discovery, atomic finalization, late-write rejection
+    and abandoned-tab completion are implemented; cloud race drills remain.
 [ ] P14 Sandbox provider spike: actual enforced isolation/resource/cleanup tests.
 [ ] P15 Actual CodeRunner adapter and correct test harness for all five scenarios.
 [ ] P16 Runner queues, fairness, admission, idempotency and recovery.

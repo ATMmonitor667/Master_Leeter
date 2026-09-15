@@ -4,7 +4,7 @@ import { PgReportJobStore } from "../report/pg-report-store.js";
 import type { CreateSessionRequest, InterviewSession } from "./session-store.js";
 import { PgSessionStore } from "./pg-session-store.js";
 import { PgEventLog, type TransactionPool } from "./pg-event-log.js";
-import type { SessionLifecycle } from "./lifecycle.js";
+import { FinalInputsPendingError, type SessionLifecycle } from "./lifecycle.js";
 import { assertRuntimeOwner } from "./runtime-ownership.js";
 
 export class PgSessionLifecycle implements SessionLifecycle {
@@ -27,8 +27,17 @@ export class PgSessionLifecycle implements SessionLifecycle {
     });
   }
 
-  async endWithReport(sessionId: string, rubricId: string, at = this.now()): Promise<InterviewSession> {
+  async endWithReport(sessionId: string, rubricId: string, at = this.now(), expectedClientSeq = -1): Promise<InterviewSession> {
     return this.transaction(async (connection) => {
+      await connection.query("SELECT id FROM public.interview_sessions WHERE id=$1::uuid FOR UPDATE", [sessionId]);
+      const durable = await connection.query<{ max: number | null }>(
+        "SELECT MAX(client_seq) AS max FROM public.session_events WHERE session_id=$1::uuid",
+        [sessionId],
+      );
+      const durableClientSeq = durable.rows[0]?.max ?? -1;
+      if (durableClientSeq < expectedClientSeq) {
+        throw new FinalInputsPendingError(expectedClientSeq, durableClientSeq);
+      }
       const sessions = new PgSessionStore(connection);
       const session = await sessions.end(sessionId, at);
       await new PgEventLog(this.db).appendInTransaction(connection, {
@@ -36,7 +45,7 @@ export class PgSessionLifecycle implements SessionLifecycle {
         type: "SESSION_ENDED",
         actor: "SYSTEM",
         scenarioVersionId: session.scenarioVersionId,
-        payload: {},
+        payload: { sealedClientSeq: durableClientSeq },
         traceId: session.traceId,
         idempotencyKey: `session-ended:${session.id}`,
       });

@@ -96,6 +96,7 @@ export interface VoiceSessionOptions {
   apiBase: string;
   /** Append these to the session log — they are M4-2's timing input. */
   onSpeechBoundary?: (boundary: SpeechBoundary) => void;
+  onTranscript?: (transcript: { text: string; final: boolean }) => void;
   onStatus?: (status: VoiceStatus) => void;
   onError?: (err: Error) => void;
   /** Optional device from enumerateDevices. Omitted means the system default. */
@@ -116,6 +117,14 @@ export class VoiceSession {
   private voice: RealtimeVoice | null = null;
   private playback: PlaybackScheduler | null = null;
   private status: VoiceStatus = "IDLE";
+  private stopping = false;
+  private replacingVoice = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private captureRate = 0;
+  private mutedState = false;
+  private providerTurnComplete = false;
+  private pendingSpeech: SpeechAuthorization | null = null;
 
   constructor(private readonly opts: VoiceSessionOptions) {}
 
@@ -124,15 +133,14 @@ export class VoiceSession {
   }
 
   get muted(): boolean {
-    return this.voice?.isMuted ?? false;
+    return this.mutedState;
   }
 
   async start(): Promise<void> {
+    this.stopping = false;
     this.setStatus("CONNECTING");
 
     try {
-      const credential = await this.mintCredential();
-
       // Permission first, because the sample rate of the graph should match the
       // device rather than forcing a resample on an already-resampled signal.
       this.stream = await navigator.mediaDevices.getUserMedia({
@@ -146,17 +154,41 @@ export class VoiceSession {
           autoGainControl: true,
         },
       });
+      for (const track of this.stream.getAudioTracks()) {
+        track.onended = () => {
+          if (!this.stopping) this.fail(new Error("Microphone disconnected. Choose a microphone and reconnect."));
+        };
+      }
 
       this.context = new AudioContext();
-      const captureRate = this.context.sampleRate;
+      this.captureRate = this.context.sampleRate;
 
       this.playback = new PlaybackScheduler({
-        sink: new WebAudioSink(this.context, (source) => this.playback?.release(source)),
+        sink: new WebAudioSink(this.context, (source) => {
+          this.playback?.release(source);
+          this.completeSpeechIfDrained();
+        }),
       });
 
-      this.voice = new RealtimeVoice({
+      await this.connectProvider();
+      await this.startCapture(this.context, this.stream);
+    } catch (err) {
+      this.fail(err instanceof Error ? err : new Error(String(err)));
+      throw err;
+    }
+  }
+
+  private async connectProvider(): Promise<void> {
+    const credential = await this.mintCredential();
+    if (this.stopping) return;
+
+    this.replacingVoice = true;
+    this.voice?.disconnect();
+    this.replacingVoice = false;
+
+    const voice = new RealtimeVoice({
         credential,
-        captureRate,
+        captureRate: this.captureRate,
         connect: (handlers) => {
           const socket = new WebSocket(credential.wsUrl);
           socket.onopen = () => handlers.onOpen();
@@ -175,6 +207,7 @@ export class VoiceSession {
           };
         },
         onSpeechBoundary: (boundary) => this.opts.onSpeechBoundary?.(boundary),
+        onInputTranscript: (transcript) => this.opts.onTranscript?.(transcript),
         // Every tool call goes to the server. The client answers none of them:
         // the tools read pinned scenario content and check the gate's
         // authorization, neither of which may live here.
@@ -192,27 +225,30 @@ export class VoiceSession {
           return (await res.json()) as Record<string, unknown>;
         },
         onModelAudio: (pcm) => {
+          this.providerTurnComplete = false;
           this.playback?.enqueue(pcm);
           this.setStatus("SPEAKING");
         },
         onSpeechComplete: () => {
-          this.setStatus("LISTENING");
-          // Tells the server the authorization window is closed. Fire and
-          // forget: a lost report costs a stale window, not a broken session.
-          void apiFetch(
-            `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
-            { method: "POST", keepalive: true },
-          ).catch(() => {});
+          this.providerTurnComplete = true;
+          this.completeSpeechIfDrained();
         },
         onBargeIn: () => {
           // Immediate and total. Chunks arrive faster than real time, so a
           // barge-in that only stopped future audio would keep talking over the
           // candidate for however much was already scheduled.
           this.playback?.stop();
+          this.providerTurnComplete = false;
+          this.reportSpeechOutcome("INTERRUPTED");
           this.setStatus("LISTENING");
         },
         onReady: () => {
+          this.reconnectAttempts = 0;
           this.setStatus("LISTENING");
+          if (this.pendingSpeech) {
+            voice.requestSpeech(this.pendingSpeech);
+            this.pendingSpeech = null;
+          }
           // Opens the interview. Until the model can be spoken through there is
           // nothing to deliver the brief to, so this is the moment — not session
           // creation, which would spend the authorization on silence.
@@ -221,15 +257,51 @@ export class VoiceSession {
             { method: "POST" },
           ).catch(() => {});
         },
-        onError: (err) => this.fail(err),
+        onDisconnected: () => {
+          if (!this.stopping && !this.replacingVoice) {
+            this.scheduleReconnect(new Error("Voice connection ended. Reconnecting…"));
+          }
+        },
+        onError: (err) => this.scheduleReconnect(err),
       });
+    voice.setMuted(this.mutedState);
+    this.voice = voice;
+    voice.connect();
+  }
 
-      this.voice.connect();
-      await this.startCapture(this.context, this.stream);
-    } catch (err) {
-      this.fail(err instanceof Error ? err : new Error(String(err)));
-      throw err;
-    }
+  private scheduleReconnect(error: Error): void {
+    if (this.stopping || this.reconnectTimer) return;
+    this.playback?.stop();
+    this.providerTurnComplete = false;
+    this.reportSpeechOutcome("INTERRUPTED");
+    this.setStatus("CONNECTING");
+    this.opts.onError?.(error);
+    const delay = Math.min(30_000, 1_000 * 2 ** Math.min(this.reconnectAttempts++, 5));
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connectProvider().catch((err: unknown) => {
+        this.scheduleReconnect(err instanceof Error ? err : new Error(String(err)));
+      });
+    }, delay);
+  }
+
+  private completeSpeechIfDrained(): void {
+    if (!this.providerTurnComplete || this.playback?.isPlaying) return;
+    this.providerTurnComplete = false;
+    this.setStatus("LISTENING");
+    this.reportSpeechOutcome("COMPLETED");
+  }
+
+  private reportSpeechOutcome(outcome: "COMPLETED" | "INTERRUPTED"): void {
+    void apiFetch(
+      `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ outcome }),
+        keepalive: true,
+      },
+    ).catch(() => {});
   }
 
   /**
@@ -240,10 +312,15 @@ export class VoiceSession {
    * model fetches that through the relay above, under the same check.
    */
   speak(authorization: SpeechAuthorization): void {
-    this.voice?.requestSpeech(authorization);
+    if (this.voice?.isReady) {
+      this.voice.requestSpeech(authorization);
+      return;
+    }
+    this.pendingSpeech = authorization;
   }
 
   setMuted(muted: boolean): void {
+    this.mutedState = muted;
     this.voice?.setMuted(muted);
     // Mute the track too. Stopping frames at the VAD would still leave the
     // browser's capture indicator on, which reads as being recorded while muted.
@@ -251,6 +328,9 @@ export class VoiceSession {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.playback?.stop();
     this.voice?.disconnect();
     this.worklet?.disconnect();
@@ -262,6 +342,7 @@ export class VoiceSession {
     this.stream = null;
     this.worklet = null;
     this.voice = null;
+    this.pendingSpeech = null;
     this.playback = null;
     this.setStatus("IDLE");
   }

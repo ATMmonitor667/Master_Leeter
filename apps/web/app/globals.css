@@ -255,7 +255,7 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .workspace-stage { color: var(--muted); font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 .workspace-grid { flex: 1; display: grid; grid-template-columns: minmax(0,1.75fr) minmax(330px,.85fr); width: 100%; gap: 1px; min-width: 0; min-height: 0; background: var(--border); }
 .workspace-pane { min-width: 0; min-height: 0; background: var(--bg-soft); }
-.workspace-side { display: grid; grid-template-rows: minmax(190px,.9fr) minmax(130px,.58fr) minmax(230px,1.08fr); gap: 1px; min-width: 0; min-height: 0; background: var(--border); }
+.workspace-side { display: grid; grid-template-rows: minmax(240px,1fr) minmax(180px,.75fr); gap: 1px; min-width: 0; min-height: 0; background: var(--border); }
 .workspace-card { min-width: 0; min-height: 0; background: var(--panel); }
 .panel-label { display: flex; align-items: center; justify-content: flex-start; min-height: 38px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--bg-soft); color: var(--muted); font: 700 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
 .panel-label::before { content: ""; width: 6px; height: 6px; margin-right: 7px; border-radius: 2px; background: var(--border-strong); }
@@ -277,6 +277,11 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .terminal-output { flex: 1; min-height: 0; margin: 0; padding: 11px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #090c11; color: var(--muted-strong); font: 12px/1.5 var(--mono); white-space: pre-wrap; }
 .caption-header { display: flex; align-items: center; justify-content: space-between; min-height: 38px; border-bottom: 1px solid var(--border); background: var(--bg-soft); }
 .caption-header .panel-label { flex: 1; border-bottom: 0; }
+.caption-state { margin-right: 10px; color: var(--muted); font: 700 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.caption-state.listening { color: var(--ok); }
+.save-state { margin-left: auto; color: var(--muted); font-size: 9px; letter-spacing: .06em; text-transform: none; }
+.save-state.saving { color: var(--blue); }
+.save-state.offline { color: var(--warn); }
 .caption-body { flex: 1; min-height: 0; padding: 10px 12px; overflow-y: auto; background: var(--panel); font: 12px/1.55 var(--mono); }
 .workspace-loading { opacity: .55; filter: saturate(.6); }
 
@@ -355,7 +360,7 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
   .workspace-header-right { flex-wrap: wrap; }
   .workspace-grid { grid-template-columns: 1fr; }
   .workspace-pane { min-height: 62vh; }
-  .workspace-side { grid-template-rows: 300px 220px 360px; }
+  .workspace-side { grid-template-rows: 300px 220px; }
   .score-orb { width: 120px; height: 120px; }
   .landing-hero { min-height: auto; }
   .hero-console { min-height: 460px; }

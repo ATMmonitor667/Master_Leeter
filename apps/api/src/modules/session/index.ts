@@ -14,7 +14,7 @@ import { type LoadedScenario } from "../scenario/loader.js";
 import { type QuestionBank, FileQuestionBank, QuestionBankError, chooseQuestion } from "../scenario/question-bank.js";
 import { SessionChannel } from "./channel.js";
 import { InMemoryEventLog, type EventLog } from "./event-log.js";
-import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
+import { isAbandoned, type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
 import { reconstruct } from "./resume.js";
 import { buildSessionReview } from "./review.js";
 import { enqueueRun, handleRunRequestedEvent, type RunContext } from "./runs.js";
@@ -26,7 +26,7 @@ import {
   remainingSeconds,
 } from "./session-store.js";
 import { registerEventsSocket } from "./ws.js";
-import type { SessionLifecycle } from "./lifecycle.js";
+import { FinalInputsPendingError, type SessionLifecycle } from "./lifecycle.js";
 import { RuntimeOwnerHandles, type RuntimeOwnership } from "./runtime-ownership.js";
 
 /**
@@ -78,6 +78,11 @@ const RunBody = z.object({
   source: z.string().max(200_000),
   revision: z.number().int().nonnegative(),
   input: z.string().max(100_000).default(""),
+});
+
+const EndBody = z.object({
+  /** Highest browser event acknowledged before requesting the atomic seal. */
+  finalClientSeq: z.number().int().min(-1).default(-1),
 });
 
 export interface SessionModuleOptions {
@@ -195,9 +200,11 @@ export async function registerSessionModule(
     },
   } : eventLog });
   const ownershipTimer = owners ? setInterval(() => { void owners.heartbeat(); }, 10_000) : undefined;
+  let completionTimer: ReturnType<typeof setInterval> | undefined;
   ownershipTimer?.unref();
   app.addHook("onClose", async () => {
     if (ownershipTimer) clearInterval(ownershipTimer);
+    if (completionTimer) clearInterval(completionTimer);
     await owners?.close();
     for (const runtime of runtimes.values()) runtime.dispose();
   });
@@ -218,6 +225,7 @@ export async function registerSessionModule(
   });
 
   const pendingRuntimes = new Map<string, Promise<InterviewRuntime | null>>();
+  const dispatchTails = new Map<string, Promise<void>>();
 
   async function runtimeFor(sessionId: string, beforeSeq?: number): Promise<InterviewRuntime | null> {
     const pending = pendingRuntimes.get(sessionId);
@@ -329,7 +337,18 @@ export async function registerSessionModule(
    * candidate's connection. A quiet interviewer is a degraded interview, a lost
    * event log is an unrecoverable one.
    */
-  async function dispatch(event: SessionEvent, replayExisting = false): Promise<void> {
+  function dispatch(event: SessionEvent, replayExisting = false): Promise<void> {
+    const previous = dispatchTails.get(event.sessionId) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(() => dispatchOne(event, replayExisting));
+    dispatchTails.set(event.sessionId, current);
+    const cleanup = () => {
+      if (dispatchTails.get(event.sessionId) === current) dispatchTails.delete(event.sessionId);
+    };
+    void current.then(cleanup, cleanup);
+    return current;
+  }
+
+  async function dispatchOne(event: SessionEvent, replayExisting = false): Promise<void> {
     const runtime = await runtimeFor(event.sessionId, replayExisting ? undefined : event.seq);
     if (!runtime) return;
 
@@ -560,14 +579,33 @@ export async function registerSessionModule(
     return reply.send({ sessionId: id, entries });
   });
 
-  app.post("/interview-sessions/:id/end", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    try {
+  const finalizing = new Map<string, Promise<InterviewSession>>();
+
+  async function finalizeSession(id: string, expectedClientSeq = -1): Promise<InterviewSession> {
+    const existing = finalizing.get(id);
+    if (existing) return existing;
+
+    const work = (async () => {
       const beforeEnd = await store.get(id);
       if (!beforeEnd) throw new SessionNotFoundError(id);
+      // ACK means the input is durable, while this tail means its live derived
+      // state has also settled. Seal only after both, otherwise the final input
+      // can be present in evidence while its checkpoint is rejected as late.
+      for (;;) {
+        const tail = dispatchTails.get(id);
+        if (!tail) break;
+        await tail.catch(() => {});
+        if (dispatchTails.get(id) === tail) break;
+      }
       const rubricId = opts.library.get(beforeEnd.scenarioVersionId)?.version.rubricId ?? "rubric-coding-v1";
+      if (!opts.lifecycle) {
+        const durableClientSeq = await eventLog.latestClientSeq(id);
+        if (durableClientSeq < expectedClientSeq) {
+          throw new FinalInputsPendingError(expectedClientSeq, durableClientSeq);
+        }
+      }
       const session = opts.lifecycle
-        ? await opts.lifecycle.endWithReport(id, rubricId)
+        ? await opts.lifecycle.endWithReport(id, rubricId, undefined, expectedClientSeq)
         : await store.end(id);
 
       if (!opts.lifecycle) {
@@ -576,36 +614,83 @@ export async function registerSessionModule(
           type: "SESSION_ENDED",
           actor: "SYSTEM",
           scenarioVersionId: session.scenarioVersionId,
-          payload: {},
+          payload: { sealedClientSeq: await eventLog.latestClientSeq(id) },
           traceId: session.traceId,
           idempotencyKey: `session-ended:${session.id}`,
         });
       }
 
-      // Let the orchestrator settle its final observation pass before the
-      // evaluator reads the log, then drop it. Without this the last code delta
-      // of a session can lose its snapshot to the process moving on.
       const runtime = runtimes.get(session.id);
       if (runtime) {
         await runtime.settled();
+        runtime.dispose();
         runtimes.delete(session.id);
         liveSessions.delete(session.id);
       }
       channel.forget(session.id);
+      dispatchTails.delete(session.id);
       mintLimiter.forget(session.id);
+      leases.delete(session.id);
 
-      // Fire and forget. The live phase must complete regardless of evaluator
-      // health, so this is deliberately not awaited and its failure cannot
-      // affect the response (ADR-004).
       const scenario = opts.library.get(session.scenarioVersionId);
       if (opts.evaluationQueue) {
         void opts.evaluationQueue.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1")
           .catch((err: unknown) => app.log.error({ sessionId: session.id, err }, "report job enqueue failed"));
       }
 
+      return session;
+    })().finally(() => finalizing.delete(id));
+
+    finalizing.set(id, work);
+    return work;
+  }
+
+  let completionSweepRunning = false;
+  completionTimer = setInterval(() => {
+    if (completionSweepRunning) return;
+    completionSweepRunning = true;
+    void (async () => {
+      const now = new Date();
+      const due = await store.dueForCompletion(now.toISOString());
+      const ids = new Set(due.map((session) => session.id));
+      for (const [id, lease] of leases) {
+        if (isAbandoned(lease, now.getTime())) ids.add(id);
+      }
+
+      for (const id of ids) {
+        try {
+          await finalizeSession(id);
+          pushToSession(id, {
+            kind: "ERROR",
+            code: "SESSION_ENDED",
+            message: "Interview time is complete. Your report is being prepared.",
+          });
+        } catch (err) {
+          if (!(err instanceof SessionNotFoundError)) {
+            app.log.error({ sessionId: id, err }, "automatic session completion failed");
+          }
+        }
+      }
+    })().finally(() => { completionSweepRunning = false; });
+  }, 5_000);
+  completionTimer.unref();
+
+  app.post("/interview-sessions/:id/end", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = EndBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
+    try {
+      const session = await finalizeSession(id, body.data.finalClientSeq);
       return reply.send({ sessionId: session.id, endedAt: session.endedAt });
     } catch (err) {
       if (err instanceof SessionNotFoundError) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+      if (err instanceof FinalInputsPendingError) {
+        return reply.code(409).send({
+          error: "FINAL_INPUTS_PENDING",
+          expectedClientSeq: err.expectedClientSeq,
+          durableClientSeq: err.durableClientSeq,
+        });
+      }
       throw err;
     }
   });

@@ -121,6 +121,12 @@ export class SessionChannel {
         this.lastClientSeq.set(event.sessionId, durableLastClientSeq);
         return { accepted: false, messages: [{ kind: "REPLAY_FROM", seq: durableLastClientSeq + 1 }] };
       }
+      if ((err as Error).message === "SESSION_ENDED") {
+        return {
+          accepted: false,
+          messages: [{ kind: "ERROR", code: "SESSION_ENDED", message: event.sessionId }],
+        };
+      }
       throw err;
     }
 

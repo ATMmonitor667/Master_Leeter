@@ -95,9 +95,13 @@ export interface RealtimeVoiceOptions {
   onSpeechBoundary?: (boundary: SpeechBoundary) => void;
   /** Model audio, already decoded. The shell schedules playback. */
   onModelAudio?: (pcm: Int16Array) => void;
+  /** Candidate transcription emitted from the same provider audio stream. */
+  onInputTranscript?: (transcript: { text: string; final: boolean }) => void;
   /** The candidate spoke over the interviewer. Stop playback immediately. */
   onBargeIn?: () => void;
   onReady?: () => void;
+  /** The provider socket closed and a fresh short-lived credential is required. */
+  onDisconnected?: () => void;
   onError?: (err: Error) => void;
   /** The interviewer finished speaking. Closes the server's authorization. */
   onSpeechComplete?: () => void;
@@ -151,6 +155,7 @@ export class RealtimeVoice {
       onClose: () => {
         this.ready = false;
         this.interviewerSpeaking = false;
+        this.opts.onDisconnected?.();
       },
       onError: (err) => this.opts.onError?.(err),
     });
@@ -359,11 +364,24 @@ export class RealtimeVoice {
     }
 
     const content = serverContent(msg);
+    const interimTranscript = content?.["interimInputTranscription"] ?? content?.["interim_input_transcription"];
+    const finalTranscript = content?.["inputTranscription"] ?? content?.["input_transcription"];
+    const interimText = transcriptText(interimTranscript);
+    const finalText = transcriptText(finalTranscript);
+    if (interimText) this.opts.onInputTranscript?.({ text: interimText, final: false });
+    if (finalText) this.opts.onInputTranscript?.({ text: finalText, final: true });
+
     if (content?.["turnComplete"] === true || content?.["turn_complete"] === true) {
       this.interviewerSpeaking = false;
       this.opts.onSpeechComplete?.();
     }
   }
+}
+
+function transcriptText(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const text = (value as Record<string, unknown>)["text"];
+  return typeof text === "string" ? text.trim() : "";
 }
 
 /**

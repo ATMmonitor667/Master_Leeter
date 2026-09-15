@@ -16,14 +16,16 @@ export function CodeEditor({
   value,
   language,
   onChange,
+  saveState = "saved",
 }: {
   value: string;
   language: string;
   onChange: (text: string) => void;
+  saveState?: "saved" | "saving" | "offline";
 }) {
   return (
     <div className="editor-shell">
-      <PanelLabel><span>{language} · solution.py</span><span className="panel-shortcut">Ctrl ↵ to run</span></PanelLabel>
+      <PanelLabel><span>{language} · solution.py</span><span className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "offline" ? "Waiting for connection" : "Saving…"}</span></PanelLabel>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Editor
           height="100%"

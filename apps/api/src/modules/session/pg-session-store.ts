@@ -64,6 +64,16 @@ export class PgSessionStore implements SessionStore {
     return rows[0] ? session(rows[0]) : null;
   }
 
+  async dueForCompletion(at = new Date().toISOString(), limit = 100): Promise<InterviewSession[]> {
+    const { rows } = await this.db.query<Row>(`
+      SELECT * FROM public.interview_sessions
+      WHERE deleted_at IS NULL AND ended_at IS NULL AND started_at IS NOT NULL
+        AND started_at + ((expected_seconds + paused_seconds) * interval '1 second') <= $1::timestamptz
+      ORDER BY started_at ASC
+      LIMIT $2`, [at, limit]);
+    return rows.map(session);
+  }
+
   async idsForUser(userId: string): Promise<string[]> {
     const { rows } = await this.db.query<{ id: string }>("SELECT id FROM public.interview_sessions WHERE user_id=$1 AND deleted_at IS NULL ORDER BY created_at,id", [userId]);
     return rows.map((row) => row.id);

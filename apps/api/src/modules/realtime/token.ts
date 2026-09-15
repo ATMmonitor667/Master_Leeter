@@ -198,6 +198,10 @@ export function constrainedSetup(model: string, voice?: string | undefined, tone
      * be — it can only send the model name, which is what `RealtimeVoice` does.
      */
     systemInstruction: { parts: [{ text: interviewerPersona(tone) }] },
+    // Final candidate transcripts come back on the same connection as the
+    // audio. This avoids a second microphone consumer and prevents browser
+    // caption state from becoming a required input to the interview runtime.
+    inputAudioTranscription: {},
     // ADR-001, made structural. See the module comment.
     realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
   };
