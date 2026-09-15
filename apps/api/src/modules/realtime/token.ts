@@ -42,7 +42,8 @@
  * are logged at info level (M7-2, as reduced).
  */
 
-import { DEFAULT_INTERVIEWER_VOICE, INTERVIEWER_PERSONA } from "./persona.js";
+import type { InterviewerTone } from "@master-leeter/contracts";
+import { DEFAULT_INTERVIEWER_VOICE, interviewerPersona } from "./persona.js";
 
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -138,7 +139,7 @@ export interface RealtimeTokenMinter {
   /** Stable identity for the boot log, mirroring `IntentClassifier.id`. */
   readonly id: string;
   configured(): boolean;
-  mint(): Promise<RealtimeCredential>;
+  mint(context?: { tone?: InterviewerTone }): Promise<RealtimeCredential>;
 }
 
 export interface GeminiTokenMinterOptions {
@@ -178,7 +179,7 @@ export function toModelResource(model: string): string {
  * Both wrong shapes fail as a 400 at mint time, which is loud. Worth knowing
  * anyway, because the docs will send you to the wrong one.
  */
-export function constrainedSetup(model: string, voice?: string | undefined) {
+export function constrainedSetup(model: string, voice?: string | undefined, tone: InterviewerTone = "NORMAL") {
   return {
     model: toModelResource(model),
     generationConfig: {
@@ -196,7 +197,7 @@ export function constrainedSetup(model: string, voice?: string | undefined) {
      * here, the client's own `setup` cannot widen what the model is willing to
      * be — it can only send the model name, which is what `RealtimeVoice` does.
      */
-    systemInstruction: { parts: [{ text: INTERVIEWER_PERSONA }] },
+    systemInstruction: { parts: [{ text: interviewerPersona(tone) }] },
     // ADR-001, made structural. See the module comment.
     realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
   };
@@ -233,7 +234,7 @@ export class GeminiTokenMinter implements RealtimeTokenMinter {
     return Boolean(this.opts.apiKey) && Boolean(this.opts.model);
   }
 
-  async mint(): Promise<RealtimeCredential> {
+  async mint(context: { tone?: InterviewerTone } = {}): Promise<RealtimeCredential> {
     if (!this.opts.apiKey) {
       throw new RealtimeTokenError("no realtime API key configured", "NOT_CONFIGURED");
     }
@@ -248,7 +249,7 @@ export class GeminiTokenMinter implements RealtimeTokenMinter {
       uses: 1,
       expireTime: expiresAt,
       newSessionExpireTime: sessionExpiresAt,
-      bidiGenerateContentSetup: constrainedSetup(this.opts.model, this.opts.voice),
+      bidiGenerateContentSetup: constrainedSetup(this.opts.model, this.opts.voice, context.tone ?? "NORMAL"),
     };
 
     let res: Response;

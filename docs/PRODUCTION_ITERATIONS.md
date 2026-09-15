@@ -165,6 +165,24 @@ review; generation failure has an honest, tested fallback.
 Owner needs: Gemini key and account-available model/quotas, resume retention
 approval, synthetic or non-sensitive sample resumes. No OpenAI switch is required.
 
+Implementation checkpoint (branch `codex-production-03-preparation`):
+
+- Added authenticated pasted-resume preparation routes, explicit consent,
+  evidence-linked extraction, candidate fact confirmation, source erasure and
+  account/session deletion coverage.
+- Added a private Supabase migration and durable preparation repository with
+  immutable question/session pins and leases that deduplicate model work across
+  retries and API replicas.
+- Added safe Gemini analysis and scenario restatement adapters. Restatements
+  retain contract evidence, reject private-content matches, and persist the
+  model/prompt/fallback reason; failures use the canonical reviewed wording.
+- Added Extra nice, Normal and Mean voice personas as presentation-only settings,
+  a bounded resume discussion prompt, and a fixed 2700-second session budget.
+- Added the browser preparation/review/erase/start flow. Typechecks pass; tests
+  were intentionally deferred to the separately assigned test pass. Live
+  Supabase migration, model fixtures and conversational review remain acceptance
+  gates before I03 can be marked complete.
+
 ## I04 — Live 45-minute codepad experience
 
 Tasks:

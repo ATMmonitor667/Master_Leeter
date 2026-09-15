@@ -20,6 +20,15 @@ interface CatalogueEntry {
   expectedMinutes: number;
 }
 
+type Tone = "EXTRA_NICE" | "NORMAL" | "MEAN";
+interface ResumeFact { id: string; category: "SKILL" | "PROJECT" | "EXPERIENCE"; claim: string; evidence: string }
+interface Preparation {
+  id: string;
+  status: "ANALYZING" | "REVIEW" | "CONFIRMED" | "READY";
+  analysis: { summary: string; facts: ResumeFact[] } | null;
+  sessionId: string | null;
+}
+
 const API = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
 const MODES = ["LEARNING", "MOCK", "STRICT"] as const;
 const MODE_COPY: Record<(typeof MODES)[number], string> = {
@@ -27,14 +36,24 @@ const MODE_COPY: Record<(typeof MODES)[number], string> = {
   MOCK: "A balanced, realistic interview with evidence-based feedback.",
   STRICT: "Minimal help, longer silences, and a higher bar for intervention.",
 };
+const TONES: Array<{ id: Tone; title: string; description: string }> = [
+  { id: "EXTRA_NICE", title: "Extra nice", description: "Patient and reassuring, with the same interview rules." },
+  { id: "NORMAL", title: "Normal", description: "Neutral, concise, and professional." },
+  { id: "MEAN", title: "Mean", description: "Blunt and demanding, without insults or a scoring penalty." },
+];
 
 export default function Home() {
   const [scenarios, setScenarios] = useState<CatalogueEntry[]>([]);
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
   const [mode, setMode] = useState<(typeof MODES)[number]>("MOCK");
+  const [tone, setTone] = useState<Tone>("NORMAL");
+  const [resumeText, setResumeText] = useState("");
+  const [consent, setConsent] = useState(false);
+  const [preparation, setPreparation] = useState<Preparation | null>(null);
+  const [confirmedFacts, setConfirmedFacts] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
-  const attempt = useRef<{ selection: string; key: string } | null>(null);
+  const preparationKey = useRef<string | null>(null);
 
   useEffect(() => {
     fetch(`${API}/v1/scenarios`)
@@ -47,30 +66,68 @@ export default function Home() {
       .catch(() => setError("Could not reach the API. Is it running on port 4000?"));
   }, []);
 
-  async function start(scenarioRef: string) {
+  async function analyzeResume() {
     setStarting(true);
     setError(null);
     try {
-      const selection = `${scenarioRef}:${mode}`;
-      if (attempt.current?.selection !== selection) attempt.current = { selection, key: crypto.randomUUID() };
-      const res = await apiFetch(`${API}/v1/interview-sessions`, {
+      preparationKey.current ??= crypto.randomUUID();
+      const res = await apiFetch(`${API}/v1/preparations`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          // Stable per attempt, so a retry cannot silently create two sessions.
-          "idempotency-key": attempt.current.key,
+          "idempotency-key": preparationKey.current,
         },
-        body: JSON.stringify({ scenarioRef, mode }),
+        body: JSON.stringify({ resumeText, consent, tone }),
       });
-
-      if (!res.ok) throw new Error(`start failed: ${res.status}`);
-      const { sessionId } = await res.json();
-      window.location.href = `/interview/${sessionId}`;
+      if (!res.ok) throw new Error(`Resume review failed (${res.status}).`);
+      let next = await res.json() as Preparation;
+      for (let poll = 0; next.status === "ANALYZING" && poll < 40; poll += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        const latest = await apiFetch(`${API}/v1/preparations/${next.id}`);
+        if (!latest.ok) throw new Error("Could not read the resume review.");
+        next = await latest.json() as Preparation;
+      }
+      if (next.status === "ANALYZING") throw new Error("Resume review is still running. Try again shortly.");
+      setPreparation(next);
+      setConfirmedFacts(new Set(next.analysis?.facts.map((fact) => fact.id) ?? []));
+      setStarting(false);
     } catch (err) {
       if (err instanceof SignInRequired) { window.location.assign("/login"); return; }
       setError((err as Error).message);
       setStarting(false);
     }
+  }
+
+  async function startPrepared(scenarioRef: string) {
+    if (!preparation) return;
+    setStarting(true);
+    setError(null);
+    try {
+      const reviewed = await apiFetch(`${API}/v1/preparations/${preparation.id}/facts`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirmedFactIds: [...confirmedFacts] }),
+      });
+      if (!reviewed.ok) throw new Error(`Resume confirmation failed (${reviewed.status}).`);
+      const completed = await apiFetch(`${API}/v1/preparations/${preparation.id}/complete`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scenarioRef, mode, language: "python" }),
+      });
+      if (!completed.ok) throw new Error(`Interview preparation failed (${completed.status}).`);
+      const result = await completed.json() as Preparation;
+      if (!result.sessionId) throw new Error("Interview session was not created.");
+      window.location.href = `/interview/${result.sessionId}`;
+    } catch (err) {
+      if (err instanceof SignInRequired) { window.location.assign("/login"); return; }
+      setError((err as Error).message);
+      setStarting(false);
+    }
+  }
+
+  async function eraseResume() {
+    if (!preparation) return;
+    const res = await apiFetch(`${API}/v1/preparations/${preparation.id}/resume`, { method: "DELETE" });
+    if (!res.ok) { setError("Could not erase the resume text."); return; }
+    setResumeText("");
   }
 
   const selected = scenarios.find((scenario) => scenario.ref === selectedRef) ?? null;
@@ -93,7 +150,7 @@ export default function Home() {
           </p>
           <div className="hero-actions">
             <a href="#start" className="primary-button hero-cta">Choose an interview <span>↘</span></a>
-            <span className="hero-note">Original problems · Python · 35–45 min</span>
+            <span className="hero-note">Original problems · Python · 45 min</span>
           </div>
         </div>
         <div className="hero-console" aria-label="Live interview preview">
@@ -122,9 +179,53 @@ export default function Home() {
       <section id="start" className="setup-section" aria-label="Start an interview">
         <div className="section-heading">
           <div><div className="eyebrow">Configure your room</div><h2>Make this one feel real.</h2></div>
-          <p>No question preview. The timer begins after the spoken brief.</p>
+          <p>No question preview. Preparation does not use any of your 45 minutes.</p>
         </div>
         <div className="setup-grid">
+        <div className="setup-card preparation-card">
+          <header className="setup-card-header">
+            <h2>Add resume context</h2>
+            <p>Paste your resume, review every extracted fact, and erase the source text whenever you want.</p>
+          </header>
+          {!preparation ? <>
+            <label className="field-label" htmlFor="resume">Resume text</label>
+            <textarea
+              id="resume"
+              className="resume-input"
+              value={resumeText}
+              maxLength={50000}
+              placeholder="Paste your resume here…"
+              onChange={(event) => { setResumeText(event.target.value); preparationKey.current = null; }}
+              disabled={starting}
+            />
+            <div className="tone-picker" role="radiogroup" aria-label="Interviewer tone">
+              {TONES.map((item) => <button key={item.id} type="button" role="radio" aria-checked={tone === item.id}
+                className={`tone-option${tone === item.id ? " active" : ""}`}
+                onClick={() => { setTone(item.id); preparationKey.current = null; }}>
+                <strong>{item.title}</strong><span>{item.description}</span>
+              </button>)}
+            </div>
+            <label className="consent-row">
+              <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
+              <span>I consent to processing this text to personalize this interview. I can erase it before or after starting.</span>
+            </label>
+            <button className="secondary-button" type="button" onClick={analyzeResume}
+              disabled={starting || !consent || resumeText.trim().length === 0}>
+              {starting ? "Reviewing…" : "Review resume facts"}
+            </button>
+          </> : <div className="fact-review">
+            <div className="review-heading"><strong>Confirm what the interviewer may use</strong><button type="button" onClick={eraseResume}>Erase source text</button></div>
+            <p>{preparation.analysis?.summary}</p>
+            {(preparation.analysis?.facts ?? []).map((fact) => <label className="fact-row" key={fact.id}>
+              <input type="checkbox" checked={confirmedFacts.has(fact.id)} onChange={() => setConfirmedFacts((current) => {
+                const next = new Set(current); next.has(fact.id) ? next.delete(fact.id) : next.add(fact.id); return next;
+              })} />
+              <span><b>{fact.category.toLowerCase()}</b>{fact.claim}<small>Source: “{fact.evidence}”</small></span>
+            </label>)}
+            {preparation.analysis?.facts.length === 0 && <p className="empty-facts">No supported facts were extracted. You can still continue without resume context.</p>}
+          </div>}
+        </div>
+
         <div className="setup-card">
           <header className="setup-card-header">
             <h2>Choose the room</h2>
@@ -181,10 +282,10 @@ export default function Home() {
           <div className="launch-bar">
             <div>
               <span className="launch-label">Ready when you are</span>
-              <strong>{selected ? `${selected.level} · ${selected.expectedMinutes} minutes` : "Choose a session"}</strong>
+              <strong>{selected ? `${selected.level} · 45 minutes` : "Choose a session"}</strong>
             </div>
-            <button className="primary-button launch-button" onClick={() => selected && start(selected.ref)} disabled={!selected || starting}>
-              {starting ? <><span className="button-spinner" /> Opening room…</> : <>Enter interview <span>→</span></>}
+            <button className="primary-button launch-button" onClick={() => selected && startPrepared(selected.ref)} disabled={!selected || !preparation || starting}>
+              {starting ? <><span className="button-spinner" /> Preparing room…</> : <>Enter interview <span>→</span></>}
             </button>
           </div>
         </div>

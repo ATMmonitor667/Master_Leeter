@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { InterviewMode, InterviewPolicy, InterviewState } from "@master-leeter/contracts";
+import type { InterviewerTone, InterviewMode, InterviewPolicy, InterviewState } from "@master-leeter/contracts";
 import { INITIAL_STATE, policyFor } from "../orchestrator/index.js";
 import type { LoadedScenario } from "../scenario/loader.js";
+
+export const DEFAULT_INTERVIEW_SECONDS = 2_700;
 
 /**
  * Session lifecycle (M2-1).
@@ -22,6 +24,7 @@ export interface InterviewSession {
   policy: InterviewPolicy;
   state: InterviewState;
   language: string;
+  interviewerTone?: InterviewerTone;
   traceId: string;
   createdAt: string;
   startedAt: string | null;
@@ -36,6 +39,9 @@ export interface CreateSessionRequest {
   scenario: LoadedScenario;
   mode: InterviewMode;
   language?: string;
+  interviewerTone?: InterviewerTone;
+  /** Preparation is outside this clock. Prepared interviews always pass 2700. */
+  expectedSeconds?: number;
   /** Stable across retries. Two creates with the same key return the same session. */
   idempotencyKey: string;
 }
@@ -97,13 +103,12 @@ export class InMemorySessionStore implements SessionStore {
       policy,
       state: INITIAL_STATE,
       language: req.language ?? "python",
+      interviewerTone: req.interviewerTone ?? "NORMAL",
       traceId: randomUUID(),
       createdAt: this.now(),
       startedAt: null,
       endedAt: null,
-      // The scenario's own estimate wins over the policy default — a 25-minute
-      // scenario should not be given 40 minutes because Mock mode says so.
-      expectedSeconds: req.scenario.version.target.expectedMinutes * 60,
+      expectedSeconds: req.expectedSeconds ?? DEFAULT_INTERVIEW_SECONDS,
       pausedSeconds: 0,
     };
 

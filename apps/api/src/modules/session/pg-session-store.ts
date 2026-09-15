@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { InterviewState } from "@master-leeter/contracts";
 import { INITIAL_STATE, policyFor } from "../orchestrator/index.js";
 import type { QueryClient } from "./pg-event-log.js";
-import { SessionNotFoundError, type CreateSessionRequest, type InterviewSession, type SessionStore } from "./session-store.js";
+import { DEFAULT_INTERVIEW_SECONDS, SessionNotFoundError, type CreateSessionRequest, type InterviewSession, type SessionStore } from "./session-store.js";
 import type { LoadedScenario } from "../scenario/loader.js";
 
 type Row = {
   id: string; user_id: string; scenario_version_id: string; scenario_hash: string;
   mode: InterviewSession["mode"]; policy: InterviewSession["policy"];
   state: InterviewState; language: string; trace_id: string;
+  interviewer_tone: NonNullable<InterviewSession["interviewerTone"]>;
   created_at: Date | string; started_at: Date | string | null; ended_at: Date | string | null;
   expected_seconds: number; paused_seconds: number;
   deleted_at: Date | string | null;
@@ -18,7 +19,7 @@ function session(row: Row): InterviewSession {
   return {
     id: row.id, userId: row.user_id, scenarioVersionId: row.scenario_version_id,
     scenarioHash: row.scenario_hash, mode: row.mode, policy: row.policy,
-    state: row.state, language: row.language, traceId: row.trace_id,
+    state: row.state, language: row.language, interviewerTone: row.interviewer_tone, traceId: row.trace_id,
     createdAt: iso(row.created_at), startedAt: row.started_at ? iso(row.started_at) : null,
     endedAt: row.ended_at ? iso(row.ended_at) : null,
     expectedSeconds: row.expected_seconds, pausedSeconds: row.paused_seconds,
@@ -36,12 +37,13 @@ export class PgSessionStore implements SessionStore {
     const result = await this.db.query<Row>(`
       INSERT INTO public.interview_sessions
       (id, user_id, scenario_version_id, scenario_hash, mode, policy, state,
-       language, trace_id, expected_seconds, idempotency_key, scenario_snapshot)
-      VALUES ($1::uuid,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12::jsonb)
+       language, interviewer_tone, trace_id, expected_seconds, idempotency_key, scenario_snapshot)
+      VALUES ($1::uuid,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13::jsonb)
       ON CONFLICT (user_id, idempotency_key) DO NOTHING RETURNING *`, [
       randomUUID(), req.userId, req.scenario.version.id, req.scenario.contentHash,
       req.mode, JSON.stringify(policyFor(req.mode)), INITIAL_STATE,
-      req.language ?? "python", randomUUID(), req.scenario.version.target.expectedMinutes * 60,
+      req.language ?? "python", req.interviewerTone ?? "NORMAL", randomUUID(),
+      req.expectedSeconds ?? DEFAULT_INTERVIEW_SECONDS,
       req.idempotencyKey, JSON.stringify(req.scenario),
     ]);
     if (result.rows[0]) return session(result.rows[0]);

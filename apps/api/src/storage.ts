@@ -6,6 +6,7 @@ import { PgEventLog, type QueryClient, type TransactionPool } from "./modules/se
 import { PgSessionLifecycle } from "./modules/session/pg-lifecycle.js";
 import { PgSessionStore } from "./modules/session/pg-session-store.js";
 import { PgRuntimeOwnership } from "./modules/session/runtime-ownership.js";
+import { PgPreparationStore } from "./modules/preparation/pg-store.js";
 
 export interface StorageDatabase extends TransactionPool { close(): Promise<void> }
 
@@ -18,6 +19,7 @@ const tableRequirements = [
   ["consent_grants", ["SELECT", "INSERT", "DELETE"]],
   ["session_runtime_owners", ["SELECT", "INSERT", "UPDATE", "DELETE"]],
   ["runtime_inputs", ["SELECT", "INSERT", "UPDATE"]],
+  ["interview_preparations", ["SELECT", "INSERT", "UPDATE"]],
 ] as const;
 
 export async function assertDurableSchema(db: QueryClient): Promise<void> {
@@ -32,9 +34,11 @@ export async function assertDurableSchema(db: QueryClient): Promise<void> {
       AND table_name='session_events' AND column_name='client_seq') AS client_sequence,
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
       AND table_name='session_reports' AND column_name='lease_token') AS report_leases,
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+      AND table_name='interview_sessions' AND column_name='interviewer_tone') AS preparation_tone,
     has_function_privilege(current_user, to_regprocedure('public.redact_session_events(uuid)'), 'EXECUTE') AS redaction`);
   const row = result.rows[0];
-  if (!row || Object.keys(row).length !== accessChecks.length + 4 ||
+  if (!row || Object.keys(row).length !== accessChecks.length + 5 ||
       Object.values(row).some((value) => value !== true)) throw new Error("STORAGE_SCHEMA_INCOMPLETE");
 }
 
@@ -65,6 +69,7 @@ export async function createSupabaseStorage(
     socketTickets: new PgSocketTickets(db),
     consentStore: new PgConsentStore(db),
     reportJobStore: new PgReportJobStore(db),
+    preparationStore: new PgPreparationStore(db),
     closeStorage: () => closing ??= db.close(),
   };
 }

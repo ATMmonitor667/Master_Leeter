@@ -17,7 +17,8 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [x] I02a Supabase email-code sign-in, verified ownership and session-bound sockets.
 [ ] I02a-CLOUD Real sign-in/email/token-expiry acceptance with development project.
 [ ] I02b Durable storage, atomic lifecycle, replay and cross-process recovery.
-[ ] I03 Resume analysis, equivalent question rewrites, tones and 45-minute setup.
+[~] I03 production code implemented on codex-production-03-preparation; automated,
+    live Supabase/Gemini and human conversational acceptance remain open.
 [ ] I04 Minimal live codepad/notes, automatic transcription and resilient completion.
 [ ] I05 Separate 0-100 solution/transcript AI graders and evidence-based reports.
 [ ] I06 Security/cost/recovery hardening, release checks and owner-assisted pilot.

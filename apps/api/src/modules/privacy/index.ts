@@ -4,6 +4,7 @@ import { userIdFor } from "../auth/index.js";
 import type { EvaluationQueue } from "../report/index.js";
 import type { EventLog } from "../session/event-log.js";
 import type { SessionStore } from "../session/session-store.js";
+import type { PreparationStore } from "../preparation/store.js";
 import {
   CURRENT_NOTICE_VERSION,
   ConsentScopeSchema,
@@ -86,6 +87,7 @@ export interface PrivacyModuleOptions {
   sessions: SessionStore;
   evaluationQueue?: EvaluationQueue;
   consentStore?: ConsentStore;
+  preparationStore?: PreparationStore;
 }
 
 export async function registerPrivacyModule(
@@ -97,6 +99,11 @@ export async function registerPrivacyModule(
   const stores: Deletable[] = [
     new ReportStore(opts.evaluationQueue ?? {}),
     new AudioStore(),
+    ...(opts.preparationStore ? [{
+      name: "preparations",
+      deleteForSession: (sessionId: string) => opts.preparationStore!.deleteForSession(sessionId),
+      deleteForUser: (userId: string) => opts.preparationStore!.deleteForUser(userId),
+    }] : []),
   ];
 
   const principal = userIdFor;

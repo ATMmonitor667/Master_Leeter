@@ -7,15 +7,24 @@ import { EvaluationQueue, registerReportModule, type ReportJobStore } from "./mo
 import { startReportRecovery } from "./modules/report/recovery-worker.js";
 import type { RuntimeOwnership } from "./modules/session/runtime-ownership.js";
 import { loadEnv } from "./env.js";
-import { geminiApiKeyFromEnv } from "./lib/gemini.js";
+import { GeminiClient, geminiApiKeyFromEnv } from "./lib/gemini.js";
 import { classifierFromEnv, type IntentClassifier } from "./modules/orchestrator/index.js";
+import {
+  GeminiResumeAnalyzer,
+  GeminiScenarioRestater,
+  InMemoryPreparationStore,
+  registerPreparationModule,
+  type PreparationStore,
+  type ResumeAnalyzer,
+  type ScenarioRestater,
+} from "./modules/preparation/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule, type ConsentStore } from "./modules/privacy/index.js";
 import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
-import { type QuestionBank, QuestionBankError, questionBankFromEnv, questionBankSource } from "./modules/scenario/question-bank.js";
+import { FileQuestionBank, type QuestionBank, QuestionBankError, questionBankFromEnv, questionBankSource } from "./modules/scenario/question-bank.js";
 import {
   InMemoryEventLog,
   InMemorySessionStore,
@@ -24,6 +33,7 @@ import {
   type SessionStore,
   type SessionLifecycle,
 } from "./modules/session/index.js";
+import { createSupabaseStorage } from "./storage.js";
 
 /**
  * Modular monolith (ADR-005).
@@ -55,6 +65,9 @@ export interface ServerOptions {
   consentStore?: ConsentStore;
   lifecycle?: SessionLifecycle;
   runtimeOwnership?: RuntimeOwnership;
+  preparationStore?: PreparationStore;
+  resumeAnalyzer?: ResumeAnalyzer;
+  scenarioRestater?: ScenarioRestater;
   closeStorage?: () => Promise<void>;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
@@ -87,6 +100,7 @@ export function buildServer(opts: ServerOptions) {
 
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const store = opts.sessionStore ?? new InMemorySessionStore();
+  const preparationStore = opts.preparationStore ?? new InMemoryPreparationStore();
   registerAccessControl(app, { sessions: store, webOrigin, tickets: opts.socketTickets ?? new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
   const evaluationQueue = new EvaluationQueue(eventLog, undefined, undefined, opts.reportJobStore);
   let stopRecovery: (() => Promise<void>) | undefined;
@@ -121,6 +135,16 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
+  void app.register(registerPreparationModule, {
+    prefix: "/v1",
+    questionBank: opts.questionBank ?? new FileQuestionBank(opts.library),
+    sessions: store,
+    events: eventLog,
+    ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
+    store: preparationStore,
+    ...(opts.resumeAnalyzer ? { analyzer: opts.resumeAnalyzer } : {}),
+    ...(opts.scenarioRestater ? { restater: opts.scenarioRestater } : {}),
+  });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
   void app.register(registerPrivacyModule, {
     prefix: "/v1",
@@ -128,6 +152,7 @@ export function buildServer(opts: ServerOptions) {
     sessions: store,
     evaluationQueue,
     ...(opts.consentStore ? { consentStore: opts.consentStore } : {}),
+    preparationStore,
   });
 
   return app;
@@ -165,9 +190,29 @@ export async function start(): Promise<void> {
   // without a model key is a supported state.
   const classifier = classifierFromEnv();
 
+  const preparationKey = geminiApiKeyFromEnv();
+  const resumeAnalyzer = preparationKey ? new GeminiResumeAnalyzer(new GeminiClient({
+    apiKey: preparationKey,
+    model: process.env["RESUME_ANALYZER_MODEL"] ?? process.env["OBSERVER_MODEL"] ?? "gemini-3.5-flash",
+    requestTimeoutMs: 15_000,
+  })) : undefined;
+  const scenarioRestater = preparationKey ? new GeminiScenarioRestater(new GeminiClient({
+    apiKey: preparationKey,
+    model: process.env["RESTATEMENT_MODEL"] ?? process.env["OBSERVER_MODEL"] ?? "gemini-3.5-flash",
+    requestTimeoutMs: 15_000,
+  })) : undefined;
+
   // Null when voice is unconfigured. Built once and shared: the token route is
   // the only caller, and the credential it mints is per-request regardless.
   const realtimeTokenMinter = minterFromEnv();
+
+  // Supabase is PostgreSQL. Its direct/pooler connection string activates the
+  // durable repositories; local development may still run explicitly in memory.
+  const databaseUrl = process.env["DATABASE_URL"]?.trim();
+  if (process.env["NODE_ENV"] === "production" && !databaseUrl) {
+    throw new Error("DATABASE_CONFIGURATION");
+  }
+  const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl) : undefined;
 
   const app = buildServer({
     library,
@@ -177,6 +222,9 @@ export async function start(): Promise<void> {
     ...(runner ? { runner } : {}),
     classifier,
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
+    ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
+    ...(scenarioRestater ? { scenarioRestater } : {}),
+    ...(durableStorage ?? {}),
   });
   const port = Number(process.env["API_PORT"] ?? 4000);
 

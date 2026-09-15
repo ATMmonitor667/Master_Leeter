@@ -426,3 +426,28 @@ NEXT PERSON / AGENT:
 5. Then proceed to I02b.3: whole persistence boundary, checkpoints, jobs, privacy
    and shared tickets. Still no server restart recovery or persistent runtime.
 No Supabase secrets are needed for CI; it uses a disposable local test service.
+
+CHECKPOINT RESULT — I03 CODE IMPLEMENTATION
+- Branch: codex-production-03-preparation, based on cd64893.
+- Migration 010 adds private interview_preparations plus immutable tone/duration
+  settings. PgPreparationStore and InMemoryPreparationStore cover retry-safe
+  analysis, fact confirmation, scenario pinning, restatement persistence and
+  resume/preparation deletion.
+- /v1/preparations supports consented pasted text, source-backed fact review,
+  source erasure and completion into one idempotent interview session.
+- Gemini resume analysis treats the resume as untrusted data and drops facts
+  without an exact source quote. Restatement validation rejects contract drift
+  and private-content matches, then falls back to canonical reviewed wording.
+- Extra nice, Normal and Mean are pinned presentation settings; assistance mode
+  remains independent. Realtime credentials receive the server-owned tone
+  persona. Every session now receives exactly 2700 seconds, beginning only on
+  the first state transition after setup.
+- The web setup flow collects consent/resume/tone, shows extracted evidence for
+  explicit confirmation, supports source erasure and completes preparation.
+- Verification performed: contracts, API and web TypeScript checks plus
+  git diff whitespace validation. Per owner direction, no tests were added or
+  run for I03; a separate test pass must cover route ownership/idempotency,
+  migration SQL, injection fixtures, restatement leakage and tone review.
+- Before deployment: apply migrations through 010 to development Supabase, set
+  RESUME_ANALYZER_MODEL and RESTATEMENT_MODEL if defaults are unsuitable, then
+  run one synthetic-resume flow and verify account/session deletion receipts.

@@ -42,6 +42,7 @@ export {
   InMemorySessionStore,
   SessionNotFoundError,
   remainingSeconds,
+  DEFAULT_INTERVIEW_SECONDS,
   type InterviewSession,
   type SessionStore,
 } from "./session-store.js";
@@ -502,7 +503,8 @@ export async function registerSessionModule(
           type: "SESSION_STARTED",
           actor: "SYSTEM",
           scenarioVersionId: session.scenarioVersionId,
-          payload: { mode: session.mode, language: session.language, scenarioHash: session.scenarioHash },
+          payload: { mode: session.mode, language: session.language, scenarioHash: session.scenarioHash,
+            interviewerTone: session.interviewerTone ?? "NORMAL", expectedSeconds: session.expectedSeconds },
           traceId: session.traceId,
           idempotencyKey: `session-started:${session.id}`,
         });
@@ -715,7 +717,7 @@ export async function registerSessionModule(
     }
 
     try {
-      const credential = await opts.realtimeTokenMinter.mint();
+      const credential = await opts.realtimeTokenMinter.mint({ tone: session.interviewerTone ?? "NORMAL" });
 
       app.log.info(
         {
