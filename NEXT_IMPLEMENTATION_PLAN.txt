@@ -587,5 +587,10 @@ I06 FIRST CODE CHECKPOINT — RELEASE BOUNDARY
   or missing API/Supabase settings. Security and private-cache headers are set.
 - Validation: all package typechecks PASS, root production build PASS, compiled
   API startup and five-scenario live/ready smoke PASS. Docker was unavailable.
-- Still open in I06: per-user/global admission and cost caps, provider breakers,
-  operational metrics/alerts, backup/restore and hosted browser/load/pilot gates.
+- Follow-up in the same branch: migration 012 now supplies one-active-account
+  enforcement and atomic shared rate buckets. New-session admission serializes
+  global capacity/monthly account checks, honors the kill switch and keeps
+  idempotent retries free; voice still has a lifetime credential cap.
+- Still open in I06: operational metrics/alerts, evaluator/voice breaker status,
+  backup/restore and hosted browser/load/pilot gates. Migration 012 must be
+  applied before this checkpoint can boot against development Supabase.

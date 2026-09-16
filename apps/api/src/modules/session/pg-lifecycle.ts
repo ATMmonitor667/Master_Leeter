@@ -3,16 +3,25 @@ import type { InterviewState } from "@master-leeter/contracts";
 import { PgReportJobStore } from "../report/pg-report-store.js";
 import type { CreateSessionRequest, InterviewSession } from "./session-store.js";
 import { PgSessionStore } from "./pg-session-store.js";
-import { PgEventLog, type TransactionPool } from "./pg-event-log.js";
+import { PgEventLog, type QueryClient, type TransactionPool } from "./pg-event-log.js";
 import { FinalInputsPendingError, type SessionLifecycle } from "./lifecycle.js";
 import { assertRuntimeOwner } from "./runtime-ownership.js";
+import { AdmissionError, type SessionAdmissionPolicy } from "../admission/index.js";
 
 export class PgSessionLifecycle implements SessionLifecycle {
-  constructor(private readonly db: TransactionPool, private readonly now = () => new Date().toISOString()) {}
+  constructor(
+    private readonly db: TransactionPool,
+    private readonly now = () => new Date().toISOString(),
+    private readonly admission?: SessionAdmissionPolicy,
+  ) {}
 
   async createStarted(req: CreateSessionRequest): Promise<InterviewSession> {
     return this.transaction(async (connection) => {
-      const session = await new PgSessionStore(connection).create(req);
+      const sessions = new PgSessionStore(connection);
+      const existing = await sessions.findByIdempotencyKey(req.userId, req.idempotencyKey);
+      if (existing) return existing;
+      if (this.admission) await this.assertAdmission(connection, req.userId, this.admission);
+      const session = await sessions.create(req);
       await new PgEventLog(this.db).appendInTransaction(connection, {
         sessionId: session.id,
         type: "SESSION_STARTED",
@@ -25,6 +34,26 @@ export class PgSessionLifecycle implements SessionLifecycle {
       });
       return session;
     });
+  }
+
+  /** Serialize paid-session admission across every API replica. */
+  private async assertAdmission(db: QueryClient, userId: string, policy: SessionAdmissionPolicy): Promise<void> {
+    if (!policy.enabled) throw new AdmissionError("ADMISSION_PAUSED");
+    // Transaction-scoped and constant across the deployment. Counts and insert
+    // happen under the same lock, so two replicas cannot both claim the last slot.
+    await db.query("SELECT pg_advisory_xact_lock(506205347141724092::bigint)");
+    const result = await db.query<{ active: number; monthly: number; user_active: boolean }>(`
+      SELECT
+        COUNT(*) FILTER (WHERE deleted_at IS NULL AND ended_at IS NULL)::integer AS active,
+        COUNT(*) FILTER (WHERE user_id=$1 AND created_at >=
+          (date_trunc('month',$2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))::integer AS monthly,
+        COALESCE(bool_or(user_id=$1 AND deleted_at IS NULL AND ended_at IS NULL),false) AS user_active
+      FROM public.interview_sessions`, [userId, this.now()]);
+    const usage = result.rows[0];
+    if (!usage) throw new Error("ADMISSION_QUERY_FAILED");
+    if (usage.user_active) throw new AdmissionError("ACTIVE_SESSION_EXISTS");
+    if (usage.active >= policy.maxActiveInterviews) throw new AdmissionError("GLOBAL_CAPACITY_REACHED");
+    if (usage.monthly >= policy.monthlyInterviewsPerUser) throw new AdmissionError("MONTHLY_QUOTA_REACHED");
   }
 
   async endWithReport(sessionId: string, rubricId: string, at = this.now(), expectedClientSeq = -1): Promise<InterviewSession> {

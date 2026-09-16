@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { runtimeConfig } from "./config.js";
+import { InMemoryRateLimitStore, type RateLimitPolicy, type RateLimitStore } from "./modules/admission/index.js";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
 import { EvaluationQueue, IndependentGeminiEvaluator, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
 import { startReportRecovery } from "./modules/report/recovery-worker.js";
@@ -74,6 +75,9 @@ export interface ServerOptions {
   closeStorage?: () => Promise<void>;
   readinessChecks?: ReadonlyArray<{ name: string; check: () => Promise<void> }>;
   release?: string;
+  rateLimiter?: RateLimitStore;
+  rateLimits?: RateLimitPolicy;
+  maxRealtimeMintsPerSession?: number;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -129,6 +133,35 @@ export function buildServer(opts: ServerOptions) {
   const store = opts.sessionStore ?? new InMemorySessionStore();
   const preparationStore = opts.preparationStore ?? new InMemoryPreparationStore();
   registerAccessControl(app, { sessions: store, webOrigin, tickets: opts.socketTickets ?? new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
+  const rateLimiter = opts.rateLimiter ?? new InMemoryRateLimitStore();
+  const rateLimits = opts.rateLimits ?? {
+    sessionCreatesPerMinute: 5,
+    preparationsPerMinute: 5,
+    realtimeMintsPerMinute: 6,
+    runRequestsPerMinute: 10,
+  };
+  app.addHook("preHandler", async (req, reply) => {
+    if (req.method !== "POST") return;
+    const route = req.routeOptions.url ?? "";
+    const limit = route === "/v1/interview-sessions" ? rateLimits.sessionCreatesPerMinute
+      : route === "/v1/preparations" ? rateLimits.preparationsPerMinute
+        : route === "/v1/interview-sessions/:id/realtime-token" ? rateLimits.realtimeMintsPerMinute
+          : route === "/v1/interview-sessions/:id/runs" ? rateLimits.runRequestsPerMinute
+            : undefined;
+    if (!limit) return;
+    try {
+      const identity = req.principal?.userId ?? `ip:${req.ip}`;
+      const result = await rateLimiter.take(`${req.method}:${route}:${identity}`, limit, 60_000);
+      reply.header("RateLimit-Limit", String(limit));
+      if (!result.allowed) {
+        return reply.code(429).header("Retry-After", String(result.retryAfterSeconds))
+          .send({ error: "RATE_LIMITED", retryAfterSeconds: result.retryAfterSeconds });
+      }
+    } catch {
+      req.log.error({ route }, "rate-limit storage unavailable");
+      return reply.code(503).header("Retry-After", "10").send({ error: "ADMISSION_UNAVAILABLE" });
+    }
+  });
   const evaluationQueue = new EvaluationQueue(
     eventLog,
     opts.evaluator,
@@ -176,6 +209,7 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.runner ? { runner: opts.runner } : {}),
     ...(opts.classifier ? { classifier: opts.classifier } : {}),
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
+    ...(opts.maxRealtimeMintsPerSession ? { maxRealtimeMintsPerSession: opts.maxRealtimeMintsPerSession } : {}),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
   void app.register(registerPreparationModule, {
@@ -259,7 +293,7 @@ export async function start(): Promise<void> {
   // Supabase is PostgreSQL. Its direct/pooler connection string activates the
   // durable repositories; local development may still run explicitly in memory.
   const databaseUrl = config.databaseUrl;
-  const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl) : undefined;
+  const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl, undefined, config.admission) : undefined;
 
   const app = buildServer({
     library,
@@ -268,6 +302,8 @@ export async function start(): Promise<void> {
     production: config.production,
     webOrigin: config.webOrigin,
     release: config.release,
+    rateLimits: config.rateLimits,
+    maxRealtimeMintsPerSession: config.admission.maxRealtimeMintsPerSession,
     ...(durableStorage ? { readinessChecks: [{ name: "storage", check: durableStorage.storageReadiness }] } : {}),
     ...(authenticator ? { authenticator } : {}),
     ...(runner ? { runner } : {}),

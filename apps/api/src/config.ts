@@ -1,7 +1,9 @@
 import { z } from "zod";
+import type { RateLimitPolicy, SessionAdmissionPolicy } from "./modules/admission/index.js";
 
 const Port = z.coerce.number().int().min(1).max(65_535);
 const Duration = z.coerce.number().int().min(0).max(20_000);
+const PositiveLimit = z.coerce.number().int().min(1).max(100_000);
 
 export interface RuntimeConfig {
   nodeEnv: "development" | "test" | "production";
@@ -11,6 +13,8 @@ export interface RuntimeConfig {
   databaseUrl?: string;
   drainGraceMs: number;
   release: string;
+  admission: SessionAdmissionPolicy;
+  rateLimits: RateLimitPolicy;
 }
 
 function validOrigin(value: string | undefined, protocols: readonly string[]): boolean {
@@ -55,6 +59,26 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
   const databaseUrl = env["DATABASE_URL"]?.trim() || undefined;
   if (databaseUrl && !validDatabaseUrl(databaseUrl)) invalid.add("DATABASE_URL");
 
+  const limit = (name: string, fallback: string) => {
+    const parsed = PositiveLimit.safeParse(env[name]?.trim() || fallback);
+    if (!parsed.success) invalid.add(name);
+    return parsed.success ? parsed.data : Number(fallback);
+  };
+  const admissionEnabled = env["ADMISSION_ENABLED"]?.trim() || "true";
+  if (admissionEnabled !== "true" && admissionEnabled !== "false") invalid.add("ADMISSION_ENABLED");
+  const admission: SessionAdmissionPolicy = {
+    enabled: admissionEnabled === "true",
+    maxActiveInterviews: limit("MAX_ACTIVE_INTERVIEWS", "10"),
+    monthlyInterviewsPerUser: limit("MONTHLY_INTERVIEWS_PER_USER", "10"),
+    maxRealtimeMintsPerSession: limit("MAX_REALTIME_MINTS_PER_SESSION", "12"),
+  };
+  const rateLimits: RateLimitPolicy = {
+    sessionCreatesPerMinute: limit("SESSION_CREATES_PER_MINUTE", "5"),
+    preparationsPerMinute: limit("PREPARATIONS_PER_MINUTE", "5"),
+    realtimeMintsPerMinute: limit("REALTIME_MINTS_PER_MINUTE", "6"),
+    runRequestsPerMinute: limit("RUN_REQUESTS_PER_MINUTE", "10"),
+  };
+
   if (production) {
     const required = [
       "DATABASE_URL",
@@ -64,6 +88,14 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
       "REALTIME_MODEL",
       "CLASSIFIER_MODEL",
       "EVALUATOR_MODEL",
+      "ADMISSION_ENABLED",
+      "MAX_ACTIVE_INTERVIEWS",
+      "MONTHLY_INTERVIEWS_PER_USER",
+      "MAX_REALTIME_MINTS_PER_SESSION",
+      "SESSION_CREATES_PER_MINUTE",
+      "PREPARATIONS_PER_MINUTE",
+      "REALTIME_MINTS_PER_MINUTE",
+      "RUN_REQUESTS_PER_MINUTE",
     ] as const;
     for (const name of required) if (!env[name]?.trim()) invalid.add(name);
     if (!(env["SUPABASE_SECRET_KEY"] || env["SUPABASE_SERVICE_ROLE_KEY"])?.trim()) {
@@ -85,5 +117,7 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
     ...(databaseUrl ? { databaseUrl } : {}),
     drainGraceMs: drainResult.success ? drainResult.data : 5_000,
     release: env["RELEASE_SHA"]?.trim().slice(0, 64) || "development",
+    admission,
+    rateLimits,
   };
 }

@@ -314,10 +314,16 @@ Implementation checkpoint (branch `codex-production-06-launch-hardening`):
 - Centralized browser HTTP/WS endpoints. Hosted Vercel builds reject localhost,
   insecure origins, missing Supabase auth or secret browser keys and emit CSP,
   microphone, framing, MIME, referrer, HSTS and private-page cache headers.
+- Migration 012 and the durable admission path serialize new-session decisions
+  across replicas. They enforce one active interview per account, a global
+  active cap, monthly account allowance and an operator kill switch before the
+  session/start event commit. Account create/preparation/voice/run bursts use
+  atomic Supabase rate buckets; voice credentials retain a session-lifetime cap.
 - Root production build and API/web/contracts typechecks pass. The compiled API
   started locally, exposed five scenarios and passed live/ready smoke requests.
-  The Docker daemon was unavailable, so Linux image, hosted signal/socket and
-  cloud readiness checks remain external acceptance.
+  The Docker daemon was unavailable, so migration 012 execution, Linux image,
+  hosted signal/socket, configured-cap concurrency and cloud readiness checks
+  remain external acceptance.
 
 ## Handoff after every iteration
 

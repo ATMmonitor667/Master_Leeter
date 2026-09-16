@@ -33,9 +33,25 @@ name invalid variables and never include their values.
 | `JUDGE_MODEL` | Optional model-estimated run feedback; it is never described as sandbox execution |
 | `DRAIN_GRACE_MS` | 0–20000 ms for load balancers to observe failed readiness before sockets close |
 | `RELEASE_SHA` | Safe image/commit identifier returned by health probes |
+| `ADMISSION_ENABLED` | Operator kill switch for new interviews; existing interviews continue |
+| `MAX_ACTIVE_INTERVIEWS` | Deployment-wide active-session ceiling, enforced under a Supabase advisory lock |
+| `MONTHLY_INTERVIEWS_PER_USER` | Account interview allowance per UTC calendar month |
+| `MAX_REALTIME_MINTS_PER_SESSION` | Lifetime provider credential cap for one interview |
+| `SESSION_CREATES_PER_MINUTE` | Per-account create-request bucket |
+| `PREPARATIONS_PER_MINUTE` | Per-account resume-analysis request bucket |
+| `REALTIME_MINTS_PER_MINUTE` | Per-account voice credential request bucket |
+| `RUN_REQUESTS_PER_MINUTE` | Per-account run-feedback request bucket |
 
 `ALLOW_INSECURE_DEV=1`, file questions, HTTP origins, in-memory storage and
 development authentication are rejected when `NODE_ENV=production`.
+
+Migration 012 adds a database backstop for one active interview per account and
+atomic rate buckets shared by every API replica. New-session admission takes a
+transaction-scoped Supabase advisory lock, then checks the process kill switch,
+global capacity, the account's active interview and its monthly usage before
+the session and start event commit together. Idempotent create retries retrieve
+their original session before consuming capacity again. Deleting an interview
+does not restore already-spent monthly allowance.
 
 ## Browser build environment
 

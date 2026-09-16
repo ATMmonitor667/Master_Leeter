@@ -29,6 +29,7 @@ import {
 import { registerEventsSocket } from "./ws.js";
 import { FinalInputsPendingError, type SessionLifecycle } from "./lifecycle.js";
 import { RuntimeOwnerHandles, type RuntimeOwnership } from "./runtime-ownership.js";
+import { AdmissionError } from "../admission/index.js";
 
 /**
  * Session module — session lifecycle, the app WebSocket, and the event log.
@@ -120,6 +121,7 @@ export interface SessionModuleOptions {
    * runs without voice exactly as it runs without a runner.
    */
   realtimeTokenMinter?: RealtimeTokenMinter;
+  maxRealtimeMintsPerSession?: number;
 }
 
 export async function registerSessionModule(
@@ -169,7 +171,7 @@ export async function registerSessionModule(
   const leases = new Map<string, LeaseState>();
 
   /** Caps realtime credential minting per session. Cleared when the session ends. */
-  const mintLimiter = new MintLimiter();
+  const mintLimiter = new MintLimiter(opts.maxRealtimeMintsPerSession);
   // Handles are reported by the browser and read back here at mint time. The
   // mint route never reads a handle out of its own request body — see
   // VoiceResumptionStore for why that distinction is the whole point.
@@ -549,6 +551,16 @@ export async function registerSessionModule(
         language: session.language,
       });
     } catch (err) {
+      if (err instanceof AdmissionError) {
+        const status = err.code === "ACTIVE_SESSION_EXISTS" ? 409 : err.code === "ADMISSION_PAUSED" ? 503 : 429;
+        const message = err.code === "ACTIVE_SESSION_EXISTS"
+          ? "Finish your active interview before starting another."
+          : err.code === "MONTHLY_QUOTA_REACHED"
+            ? "Your interview allowance has been used for this month."
+            : "Interview capacity is temporarily unavailable. Please retry later.";
+        return reply.code(status).header("Retry-After", status === 409 ? "0" : "60")
+          .send({ error: err.code, message });
+      }
       if (err instanceof QuestionBankError) {
         app.log.warn({ code: err.code }, "question bank could not supply a validated question");
         return reply.code(503).send({ error: "QUESTION_BANK_UNAVAILABLE", message: "Interview questions are temporarily unavailable. Please retry shortly." });

@@ -28,9 +28,10 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [~] I05 Independent 0-100 solution/transcript Gemini graders, fenced partial
     checkpoints/retries and separate evidence-backed report cards implemented.
     Migration, calibration fixtures and live/human grading acceptance remain.
-[~] I06 release artifact/config/readiness/shutdown and browser deployment guards
-    implemented on codex-production-06-launch-hardening; cost/admission limits,
-    monitoring, hosted drills and owner-assisted pilot remain.
+[~] I06 release boundary plus durable global/account admission, kill switch,
+    provider-route rates and voice credential caps implemented on
+    codex-production-06-launch-hardening; monitoring, backup/restore, hosted
+    drills and owner-assisted pilot remain.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md
 Question bank setup (no cloud data has been written):
