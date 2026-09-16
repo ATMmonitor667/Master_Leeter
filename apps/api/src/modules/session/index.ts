@@ -508,7 +508,10 @@ export async function registerSessionModule(
       if (!session) {
         const scenario = body.data.scenarioRef
           ? await questionBank.get(body.data.scenarioRef)
-          : chooseQuestion(await questionBank.listActive());
+          : chooseQuestion(
+              await questionBank.listActive(),
+              await store.scenarioVersionIdsForUser(userId),
+            );
         if (!scenario) {
           return reply.code(body.data.scenarioRef ? 404 : 503).send({ error: body.data.scenarioRef ? "UNKNOWN_SCENARIO" : "QUESTION_BANK_EMPTY" });
         }

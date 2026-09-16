@@ -50,6 +50,8 @@ export interface SessionStore {
   create(req: CreateSessionRequest): Promise<InterviewSession>;
   findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null>;
   idsForUser(userId: string): Promise<string[]>;
+  /** Question versions previously assigned to this account, excluding deleted sessions. */
+  scenarioVersionIdsForUser(userId: string): Promise<string[]>;
   get(id: string): Promise<InterviewSession | null>;
   /** Started sessions whose server-owned interview budget has elapsed. */
   dueForCompletion(at?: string, limit?: number): Promise<InterviewSession[]>;
@@ -147,6 +149,12 @@ export class InMemorySessionStore implements SessionStore {
   /** Every session belonging to a user. Drives account-scope deletion (M7-3). */
   async idsForUser(userId: string): Promise<string[]> {
     return [...this.sessions.values()].filter((s) => s.userId === userId && !this.tombstones.has(s.id)).map((s) => s.id);
+  }
+
+  async scenarioVersionIdsForUser(userId: string): Promise<string[]> {
+    return [...new Set([...this.sessions.values()]
+      .filter((session) => session.userId === userId && !this.tombstones.has(session.id))
+      .map((session) => session.scenarioVersionId))];
   }
 
   async end(id: string, at?: string): Promise<InterviewSession> {

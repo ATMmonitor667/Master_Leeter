@@ -330,6 +330,10 @@ Implementation checkpoint (branch `codex-production-06-launch-hardening`):
 - Added a Render staging blueprint with manual deployment, owner-supplied
   secrets and admission disabled until migration 012 and hosted acceptance pass.
   Render commit identity feeds the API's safe release status automatically.
+- Automatic question selection now reads account history from either session
+  store and prefers an unseen question family. Explicit choices are preserved,
+  deleted-session history is not retained for rotation, and reuse resumes only
+  after every active family has been assigned.
 - Root production build and API/web/contracts typechecks pass. The compiled API
   started locally, exposed five scenarios and passed live/ready smoke requests.
   The Docker daemon was unavailable, so migration 012 execution, a successful

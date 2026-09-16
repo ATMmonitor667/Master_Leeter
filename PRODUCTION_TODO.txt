@@ -106,7 +106,8 @@ PRODUCT / PRIVACY / OPERATIONS
 
 LAUNCH / GROWTH
 [ ] P27 Invite 5–10 users; observe ten full interviews and fix activation failures.
-[ ] P28 Expand to 12–20 reviewed original/licensed scenarios for repeat use.
+[~] P28 Account-aware repetition avoidance is implemented; expand to 12–20
+    reviewed original/licensed scenarios for repeat use.
 [ ] P29 Meet public-beta reliability, capacity, quality and cost thresholds.
 [ ] P30 Landing/demo/FAQ, measured activation funnel and two acquisition cohorts.
 [ ] P31 Gradual public signup, first-48-hour monitoring and operational ownership.

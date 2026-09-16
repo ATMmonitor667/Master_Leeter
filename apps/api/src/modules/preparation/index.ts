@@ -187,7 +187,10 @@ async function completePreparation(
   } else {
     scenario = body.scenarioRef
       ? await opts.questionBank.get(body.scenarioRef)
-      : chooseQuestion(await opts.questionBank.listActive());
+      : chooseQuestion(
+          await opts.questionBank.listActive(),
+          await opts.sessions.scenarioVersionIdsForUser(record.userId),
+        );
     if (!scenario || scenario.version.status !== "ACTIVE") throw new Error("NO_ACTIVE_QUESTIONS");
     record = await store.pinScenario(record.id, scenario.version.id, scenario.contentHash);
   }

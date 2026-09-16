@@ -599,6 +599,9 @@ I06 FIRST CODE CHECKPOINT — RELEASE BOUNDARY
   readiness/liveness and packaged scenarios, and stops it through Docker. A
   manual-deploy Render staging blueprint carries owner-entered secrets and keeps
   admission disabled until migration and hosted acceptance complete.
+- Follow-up: normal and resume-prepared interviews prefer an account-unseen
+  question family from durable session history, then allow reuse only after the
+  active catalogue is exhausted. Explicit question choices remain authoritative.
 - Still open in I06: backup/restore and rollback automation, hosted browser/load
   gates, alert delivery and the invite pilot. Migration 012 must be applied
   before this checkpoint can boot against development Supabase; the CI artifact

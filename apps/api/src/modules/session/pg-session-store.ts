@@ -79,6 +79,14 @@ export class PgSessionStore implements SessionStore {
     return rows.map((row) => row.id);
   }
 
+  async scenarioVersionIdsForUser(userId: string): Promise<string[]> {
+    const { rows } = await this.db.query<{ scenario_version_id: string }>(
+      "SELECT DISTINCT scenario_version_id FROM public.interview_sessions WHERE user_id=$1 AND deleted_at IS NULL",
+      [userId],
+    );
+    return rows.map((row) => row.scenario_version_id);
+  }
+
   /** Private server-only pin; never put this object in a browser response. */
   async pinnedScenario(id: string): Promise<LoadedScenario | null> {
     const { rows } = await this.db.query<{ scenario_snapshot: LoadedScenario | null }>(

@@ -25,9 +25,21 @@ export class FileQuestionBank implements QuestionBank {
   async get(refOrId: string): Promise<LoadedScenario | null> { return resolveScenario(this.library, refOrId); }
 }
 
-export function chooseQuestion(questions: LoadedScenario[]): LoadedScenario | null {
+/** Prefer a question family the account has not seen; reuse only after exhaustion. */
+export function chooseQuestion(
+  questions: LoadedScenario[],
+  previousVersionIds: Iterable<string> = [],
+): LoadedScenario | null {
   const active = questions.filter((question) => question.version.status === "ACTIVE");
-  return active.length ? active[randomInt(active.length)]! : null;
+  if (!active.length) return null;
+  const previousFamilies = new Set([...previousVersionIds].map(questionFamily));
+  const unused = active.filter((question) => !previousFamilies.has(questionFamily(question.version.id)));
+  const candidates = unused.length ? unused : active;
+  return candidates[randomInt(candidates.length)]!;
+}
+
+function questionFamily(versionId: string): string {
+  return versionId.split("@", 1)[0] ?? versionId;
 }
 
 const RowSchema = z.object({
