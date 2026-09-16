@@ -334,6 +334,10 @@ Implementation checkpoint (branch `codex-production-06-launch-hardening`):
   store and prefers an unseen question family. Explicit choices are preserved,
   deleted-session history is not retained for rotation, and reuse resumes only
   after every active family has been assigned.
+- Added bounded HTTPS delivery for a closed redacted alert schema. Final report
+  failure, report-recovery outages and realtime circuit openings carry safe
+  release/incident fields; redirect refusal, retry limits and shutdown draining
+  prevent silent loss or secret forwarding. Hosted paging drills remain open.
 - Root production build and API/web/contracts typechecks pass. The compiled API
   started locally, exposed five scenarios and passed live/ready smoke requests.
   The Docker daemon was unavailable, so migration 012 execution, a successful

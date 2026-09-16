@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { runtimeConfig } from "./config.js";
 import { ProviderCircuit } from "./lib/provider-circuit.js";
+import { WebhookAlertSink, type OperationalAlert, type OperationalAlertSink } from "./lib/operational-alerts.js";
 import { InMemoryRateLimitStore, type RateLimitPolicy, type RateLimitStore } from "./modules/admission/index.js";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
 import { EvaluationQueue, IndependentGeminiEvaluator, MAX_REPORT_ATTEMPTS, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
@@ -81,6 +82,7 @@ export interface ServerOptions {
   maxRealtimeMintsPerSession?: number;
   realtimeCircuit?: ProviderCircuit;
   status?: () => Record<string, unknown>;
+  alertSink?: OperationalAlertSink;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -135,6 +137,14 @@ export function buildServer(opts: ServerOptions) {
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const store = opts.sessionStore ?? new InMemorySessionStore();
   const preparationStore = opts.preparationStore ?? new InMemoryPreparationStore();
+  const pendingAlerts = new Set<Promise<void>>();
+  const publishAlert = (alert: OperationalAlert) => {
+    if (!opts.alertSink) return;
+    const work = opts.alertSink.publish(alert)
+      .catch(() => app.log.error({ alert: alert.kind }, "operational alert delivery failed"));
+    pendingAlerts.add(work);
+    void work.finally(() => pendingAlerts.delete(work));
+  };
   registerAccessControl(app, { sessions: store, webOrigin, tickets: opts.socketTickets ?? new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
   const rateLimiter = opts.rateLimiter ?? new InMemoryRateLimitStore();
   const rateLimits = opts.rateLimits ?? {
@@ -173,7 +183,10 @@ export function buildServer(opts: ServerOptions) {
     (sessionId) => store.pinnedScenario(sessionId),
     (sessionId, attempts, code) => {
       const details = { sessionId, attempts, code };
-      if (attempts >= MAX_REPORT_ATTEMPTS) app.log.error(details, "report evaluation attempts exhausted");
+      if (attempts >= MAX_REPORT_ATTEMPTS) {
+        app.log.error(details, "report evaluation attempts exhausted");
+        publishAlert({ kind: "REPORT_EVALUATION_EXHAUSTED", ...details });
+      }
       else app.log.warn(details, "report evaluation failed; retry remains");
     },
   );
@@ -182,12 +195,14 @@ export function buildServer(opts: ServerOptions) {
     stopRecovery = startReportRecovery(() => evaluationQueue.recover(), (consecutiveFailures) => {
       if (consecutiveFailures === 1 || consecutiveFailures % 12 === 0) {
         app.log.error({ consecutiveFailures }, "report recovery unavailable; pending work will be retried");
+        publishAlert({ kind: "REPORT_RECOVERY_UNAVAILABLE", consecutiveFailures });
       }
     });
   });
   app.addHook("onClose", async () => {
     await stopRecovery?.();
     await evaluationQueue.drain();
+    await Promise.allSettled([...pendingAlerts]);
     await opts.closeStorage?.();
   });
 
@@ -227,6 +242,8 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
     ...(opts.maxRealtimeMintsPerSession ? { maxRealtimeMintsPerSession: opts.maxRealtimeMintsPerSession } : {}),
     ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
+    onRealtimeCircuitOpen: (sessionId, failureKind) =>
+      publishAlert({ kind: "REALTIME_CIRCUIT_OPEN", sessionId, failureKind }),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
   void app.register(registerPreparationModule, {
@@ -307,6 +324,11 @@ export async function start(): Promise<void> {
   // the only caller, and the credential it mints is per-request regardless.
   const realtimeTokenMinter = minterFromEnv();
   const realtimeCircuit = new ProviderCircuit(3, 60_000);
+  const alertSink = config.alertWebhookUrl ? new WebhookAlertSink({
+    url: config.alertWebhookUrl,
+    release: config.release,
+    ...(config.alertWebhookToken ? { token: config.alertWebhookToken } : {}),
+  }) : undefined;
 
   // Supabase is PostgreSQL. Its direct/pooler connection string activates the
   // durable repositories; local development may still run explicitly in memory.
@@ -331,6 +353,7 @@ export async function start(): Promise<void> {
       classifier: classifier instanceof GeminiClassifier ? classifier.operationalStatus().circuit : "FALLBACK",
       evaluator: evaluator ? evaluator.operationalStatus().circuit : "FALLBACK",
       runFeedback: runner ? "AVAILABLE_MODEL_ESTIMATE" : "UNAVAILABLE",
+      alerts: alertSink ? "WEBHOOK" : "LOG_ONLY",
     }),
     ...(durableStorage ? { readinessChecks: [{ name: "storage", check: durableStorage.storageReadiness }] } : {}),
     ...(authenticator ? { authenticator } : {}),
@@ -340,6 +363,7 @@ export async function start(): Promise<void> {
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
     ...(scenarioRestater ? { scenarioRestater } : {}),
     ...(evaluator ? { evaluator } : {}),
+    ...(alertSink ? { alertSink } : {}),
     ...(durableStorage ?? {}),
   });
   const port = config.port;

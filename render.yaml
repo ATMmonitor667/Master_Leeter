@@ -51,3 +51,7 @@ services:
         sync: false
       - key: EVALUATOR_MODEL
         sync: false
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: ALERT_WEBHOOK_TOKEN
+        sync: false

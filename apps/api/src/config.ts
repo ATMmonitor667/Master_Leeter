@@ -13,6 +13,8 @@ export interface RuntimeConfig {
   databaseUrl?: string;
   drainGraceMs: number;
   release: string;
+  alertWebhookUrl?: string;
+  alertWebhookToken?: string;
   admission: SessionAdmissionPolicy;
   rateLimits: RateLimitPolicy;
 }
@@ -30,6 +32,13 @@ function validDatabaseUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
     return ["postgres:", "postgresql:"].includes(parsed.protocol) && Boolean(parsed.hostname) && parsed.pathname.length > 1;
+  } catch { return false; }
+}
+
+function validWebhookUrl(value: string, protocols: readonly string[]): boolean {
+  try {
+    const parsed = new URL(value);
+    return protocols.includes(parsed.protocol) && !parsed.username && !parsed.password && !parsed.hash;
   } catch { return false; }
 }
 
@@ -58,6 +67,13 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
 
   const databaseUrl = env["DATABASE_URL"]?.trim() || undefined;
   if (databaseUrl && !validDatabaseUrl(databaseUrl)) invalid.add("DATABASE_URL");
+
+  const alertWebhookUrl = env["ALERT_WEBHOOK_URL"]?.trim() || undefined;
+  const alertWebhookToken = env["ALERT_WEBHOOK_TOKEN"]?.trim() || undefined;
+  if (alertWebhookUrl && !validWebhookUrl(alertWebhookUrl, production ? ["https:"] : ["http:", "https:"])) {
+    invalid.add("ALERT_WEBHOOK_URL");
+  }
+  if (alertWebhookToken && !alertWebhookUrl) invalid.add("ALERT_WEBHOOK_URL");
 
   const limit = (name: string, fallback: string) => {
     const parsed = PositiveLimit.safeParse(env[name]?.trim() || fallback);
@@ -120,6 +136,8 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
       env["RELEASE_SHA"]?.trim().slice(0, 64) ||
       env["RENDER_GIT_COMMIT"]?.trim().slice(0, 64) ||
       "development",
+    ...(alertWebhookUrl ? { alertWebhookUrl } : {}),
+    ...(alertWebhookToken ? { alertWebhookToken } : {}),
     admission,
     rateLimits,
   };

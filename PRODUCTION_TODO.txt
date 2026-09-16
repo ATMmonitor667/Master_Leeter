@@ -32,8 +32,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
     provider-route rates and voice credential caps implemented on
     codex-production-06-launch-hardening. Safe capability status, provider
     breakers, alertable redacted signals, exact-image CI and a staging blueprint
-    are implemented; alert delivery, backup/restore, hosted drills and the
-    owner-assisted pilot remain.
+    are implemented. Redacted critical webhook delivery is implemented;
+    configured paging drills, backup/restore, hosted checks and the owner-assisted
+    pilot remain.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md
 Question bank setup (no cloud data has been written):
@@ -96,7 +97,8 @@ PRODUCT / PRIVACY / OPERATIONS
 [ ] P19 Retention/consent/export/delete, append-only design, restore erasure ledger.
 [ ] P20 Onboarding, dashboard/history, recovery UX, settings and accessibility.
 [ ] P21 Atomic credits/capacity, provider-cost enforcement, caps and kill switch.
-[ ] P22 Redacted diagnostics, alerts, service status and user support.
+[~] P22 Redacted diagnostics, service status and bounded critical webhook alerts
+    are implemented; configure escalation and prove delivery on staging.
 [ ] P23 Real DB/queue, browser, two-instance, load and human voice acceptance.
 [~] P24 Production CI builds/smokes the API image; migration execution,
     compatibility and hosted release evidence remain.

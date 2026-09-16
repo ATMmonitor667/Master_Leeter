@@ -602,7 +602,10 @@ I06 FIRST CODE CHECKPOINT — RELEASE BOUNDARY
 - Follow-up: normal and resume-prepared interviews prefer an account-unseen
   question family from durable session history, then allow reuse only after the
   active catalogue is exhausted. Explicit question choices remain authoritative.
+- Follow-up: report exhaustion/recovery and realtime circuit-open events now use
+  an optional bounded HTTPS webhook with a closed redacted payload, transient
+  retries and shutdown drain. Staging still has to prove delivery and escalation.
 - Still open in I06: backup/restore and rollback automation, hosted browser/load
-  gates, alert delivery and the invite pilot. Migration 012 must be applied
+  gates, alert paging drills and the invite pilot. Migration 012 must be applied
   before this checkpoint can boot against development Supabase; the CI artifact
   job must also pass on GitHub because no local Docker daemon was available.

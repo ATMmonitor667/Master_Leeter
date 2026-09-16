@@ -124,6 +124,7 @@ export interface SessionModuleOptions {
   realtimeTokenMinter?: RealtimeTokenMinter;
   maxRealtimeMintsPerSession?: number;
   realtimeCircuit?: ProviderCircuit;
+  onRealtimeCircuitOpen?: (sessionId: string, failureKind: string) => void;
 }
 
 export async function registerSessionModule(
@@ -864,6 +865,7 @@ export async function registerSessionModule(
       const kind = err instanceof RealtimeTokenError ? err.kind : "PROVIDER_ERROR";
 
       realtimeCircuit.failure(kind === "RATE_LIMITED");
+      if (realtimeCircuit.state() === "OPEN") opts.onRealtimeCircuitOpen?.(id, kind);
       // Provider bodies can contain request fragments. Keep routine diagnostics
       // to an opaque session id and typed failure kind.
       app.log.error({ sessionId: id, kind }, "realtime token mint failed");

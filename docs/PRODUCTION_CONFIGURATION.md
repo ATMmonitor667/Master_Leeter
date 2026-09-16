@@ -45,6 +45,8 @@ name invalid variables and never include their values.
 | `JUDGE_MODEL` | Optional model-estimated run feedback; it is never described as sandbox execution |
 | `DRAIN_GRACE_MS` | 0–20000 ms for load balancers to observe failed readiness before sockets close |
 | `RELEASE_SHA` | Safe image/commit identifier returned by health probes; Render's `RENDER_GIT_COMMIT` is used when absent |
+| `ALERT_WEBHOOK_URL` | Optional HTTPS endpoint for redacted critical operations alerts |
+| `ALERT_WEBHOOK_TOKEN` | Optional Bearer credential; valid only with the webhook URL and never logged |
 | `ADMISSION_ENABLED` | Operator kill switch for new interviews; existing interviews continue |
 | `MAX_ACTIVE_INTERVIEWS` | Deployment-wide active-session ceiling, enforced under a Supabase advisory lock |
 | `MONTHLY_INTERVIEWS_PER_USER` | Account interview allowance per UTC calendar month |

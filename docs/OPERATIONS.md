@@ -28,19 +28,32 @@ one probe is admitted before the breaker closes.
 
 ## Alert signals
 
+Set `ALERT_WEBHOOK_URL` and, when required by the receiver,
+`ALERT_WEBHOOK_TOKEN` to deliver critical events directly. The endpoint must be
+HTTPS in production. Delivery uses a five-second timeout, refuses redirects and
+retries transient network, 408, 429 and 5xx failures three times. Shutdown waits
+for deliveries already in flight. `/health/status` reports `WEBHOOK` or
+`LOG_ONLY` without exposing the destination or credential.
+
+Webhook bodies use a closed schema containing the event kind, severity,
+timestamp, release and only the safe fields listed below. They cannot carry
+transcripts, source, resume text, provider bodies, database URLs or credentials.
+Keep host/log alerts as the fallback for delivery failures and signals that do
+not yet have direct webhook routing.
+
 Configure the host/log service to alert the operator on these structured events:
 
 | Signal | Suggested action |
 |---|---|
 | readiness 503 for two probe intervals | Stop routing new traffic; inspect Supabase connectivity/schema |
 | `rate-limit storage unavailable` | Treat admission as failed closed; inspect database availability |
-| `report recovery unavailable` | Inspect database/job leases; the log is throttled after the first failure |
-| `report evaluation attempts exhausted` | Inspect provider quota/model/schema and the cited opaque session ID |
-| `realtime token mint failed` or voice circuit `OPEN` | Inspect Gemini quota and account/model availability |
+| `report recovery unavailable` | Webhook on first and every twelfth consecutive failure; inspect database/job leases |
+| `report evaluation attempts exhausted` | Webhook after the final attempt; inspect provider quota/model/schema and the cited opaque session ID |
+| `realtime token mint failed` or voice circuit `OPEN` | Webhook when the circuit opens; inspect Gemini quota and account/model availability |
 | `automatic session completion failed` | Inspect lifecycle/storage before deadlines accumulate |
 | `shutdown failed` | Verify the previous instance released ownership and report jobs |
 
-Alert delivery, escalation contact and log retention are hosting decisions and
-must be configured on staging before the invite pilot. A log line in source is
+The escalation contact and log retention remain hosting decisions and must be
+configured on staging before the invite pilot. Code-level webhook delivery is
 not evidence that paging works; force each failure and record the delivered
 alert without opening candidate content.
