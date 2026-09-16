@@ -17,10 +17,24 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [x] I02a Supabase email-code sign-in, verified ownership and session-bound sockets.
 [ ] I02a-CLOUD Real sign-in/email/token-expiry acceptance with development project.
 [ ] I02b Durable storage, atomic lifecycle, replay and cross-process recovery.
-[ ] I03 Resume analysis, equivalent question rewrites, tones and 45-minute setup.
-[ ] I04 Minimal live codepad/notes, automatic transcription and resilient completion.
-[ ] I05 Separate 0-100 solution/transcript AI graders and evidence-based reports.
-[ ] I06 Security/cost/recovery hardening, release checks and owner-assisted pilot.
+[~] I03 production code implemented on codex-production-03-preparation; automated,
+    live Supabase/Gemini and human conversational acceptance remain open.
+[~] I04 core code implemented on codex-production-04-live-experience: minimal
+    codepad/notes UI, provider input transcription, voice action/reconnect path,
+    acknowledged saves, atomic final cursor seal, late-write rejection and server
+    deadline/abandonment completion, GoAway rotation, provider resumption/context
+    compression, audio preflight/device recovery and final spoken-turn drain.
+    Real 45-minute browser/device/cloud acceptance remains.
+[~] I05 Independent 0-100 solution/transcript Gemini graders, fenced partial
+    checkpoints/retries and separate evidence-backed report cards implemented.
+    Migration, calibration fixtures and live/human grading acceptance remain.
+[~] I06 release boundary plus durable global/account admission, kill switch,
+    provider-route rates and voice credential caps implemented on
+    codex-production-06-launch-hardening. Safe capability status, provider
+    breakers, alertable redacted signals, exact-image CI and a staging blueprint
+    are implemented. Redacted critical webhook delivery is implemented;
+    configured paging drills, backup/restore, hosted checks and the owner-assisted
+    pilot remain.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md
 Question bank setup (no cloud data has been written):
@@ -49,8 +63,10 @@ RECOMMENDED HOSTING
 
 FOUNDATION / ACCESS
 [ ] P01 Production specification, provider/budget decisions, documentation audit.
-[ ] P02 Reproducible Linux API/worker artifacts, contracts, assets, start scripts.
-[ ] P03 Typed config, production validation, readiness, browser endpoint setup.
+[~] P02 Reproducible Linux API artifact, contracts, assets and start script are
+    implemented; worker artifact/start path and a successful CI image run remain.
+[~] P03 Typed config, production validation, readiness and browser endpoints are
+    implemented; hosted configuration and probe evidence remain.
 [ ] P04 Managed authentication, accounts and token refresh.
 [ ] P05 Ownership on every HTTP/WS route and single-use socket tickets.
 [ ] P06 Origins, input limits, rate limits, browser headers and abuse controls.
@@ -62,9 +78,15 @@ DATA / RECOVERY
 [ ] P10 Single session owner, fenced leases, cross-instance commands, durable jobs.
 
 INTERVIEW / EXECUTION / REPORTS
-[ ] P11 Transcription independent of captions; audible-completion and preflight.
-[ ] P12 45-minute voice lifecycle, GoAway/resumption/compression, live verification.
-[ ] P13 Durable deadlines, silent-candidate expiry, finalization and abandonment.
+[~] P11 Provider transcription is independent of captions; completion waits for
+    playback drain and a bounded final candidate transcript drain. Browser audio
+    preflight plus microphone/speaker switching and recovery are implemented;
+    human hardware acceptance remains.
+[~] P12 Fresh-token reconnect, provider GoAway rotation, server-held resumption
+    handles and context compression are implemented. A real 45-minute provider
+    verification remains.
+[~] P13 Durable server deadline discovery, atomic finalization, late-write rejection
+    and abandoned-tab completion are implemented; cloud race drills remain.
 [ ] P14 Sandbox provider spike: actual enforced isolation/resource/cleanup tests.
 [ ] P15 Actual CodeRunner adapter and correct test harness for all five scenarios.
 [ ] P16 Runner queues, fairness, admission, idempotency and recovery.
@@ -75,15 +97,19 @@ PRODUCT / PRIVACY / OPERATIONS
 [ ] P19 Retention/consent/export/delete, append-only design, restore erasure ledger.
 [ ] P20 Onboarding, dashboard/history, recovery UX, settings and accessibility.
 [ ] P21 Atomic credits/capacity, provider-cost enforcement, caps and kill switch.
-[ ] P22 Redacted diagnostics, alerts, service status and user support.
+[~] P22 Redacted diagnostics, service status and bounded critical webhook alerts
+    are implemented; configure escalation and prove delivery on staging.
 [ ] P23 Real DB/queue, browser, two-instance, load and human voice acceptance.
-[ ] P24 Production CI/release gates, protocol compatibility and migrations.
-[ ] P25 Protected staging + Vercel integration + API/worker/domain configuration.
+[~] P24 Production CI builds/smokes the API image; migration execution,
+    compatibility and hosted release evidence remain.
+[~] P25 Render staging blueprint and Vercel configuration are documented;
+    provisioning, protection, worker/domain wiring and hosted evidence remain.
 [ ] P26 Backup restore, deployment rollback and incident rehearsal.
 
 LAUNCH / GROWTH
 [ ] P27 Invite 5–10 users; observe ten full interviews and fix activation failures.
-[ ] P28 Expand to 12–20 reviewed original/licensed scenarios for repeat use.
+[~] P28 Account-aware repetition avoidance is implemented; expand to 12–20
+    reviewed original/licensed scenarios for repeat use.
 [ ] P29 Meet public-beta reliability, capacity, quality and cost thresholds.
 [ ] P30 Landing/demo/FAQ, measured activation funnel and two acquisition cohorts.
 [ ] P31 Gradual public signup, first-48-hour monitoring and operational ownership.

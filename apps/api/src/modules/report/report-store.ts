@@ -1,0 +1,136 @@
+import { randomUUID } from "node:crypto";
+import type { EvaluationProgress, SessionReport } from "./evaluator.js";
+
+export type ReportStatus = "QUEUED" | "RUNNING" | "READY" | "FAILED";
+
+export interface ReportJob {
+  sessionId: string;
+  status: ReportStatus;
+  rubricId: string;
+  report: SessionReport | null;
+  progress: EvaluationProgress;
+  error: string | null;
+  attempts: number;
+  queuedAt: string;
+  completedAt: string | null;
+}
+
+export interface ReportClaim { token: string; job: ReportJob }
+
+export interface ReportJobStore {
+  enqueue(sessionId: string, rubricId: string, queuedAt: string): Promise<ReportJob>;
+  get(sessionId: string): Promise<ReportJob | null>;
+  recoverable(now: string, limit: number): Promise<string[]>;
+  claim(sessionId: string, now: string, leaseExpiresAt: string): Promise<ReportClaim | null>;
+  complete(sessionId: string, token: string, report: SessionReport, completedAt: string): Promise<ReportJob | null>;
+  saveProgress(sessionId: string, token: string, progress: EvaluationProgress): Promise<ReportJob | null>;
+  fail(sessionId: string, token: string, error: string, completedAt: string): Promise<ReportJob | null>;
+  delete(sessionId: string): Promise<boolean>;
+}
+
+export const MAX_REPORT_ATTEMPTS = 3;
+export function reportRetryAt(job: Pick<ReportJob, "attempts" | "completedAt">): number {
+  if (!job.completedAt) return 0;
+  const delay = Math.min(60_000, 5_000 * 2 ** Math.max(0, job.attempts - 1));
+  return Date.parse(job.completedAt) + delay;
+}
+
+interface StoredJob extends ReportJob {
+  leaseToken: string | null;
+  leaseExpiresAt: string | null;
+}
+
+export class InMemoryReportJobStore implements ReportJobStore {
+  private readonly jobs = new Map<string, StoredJob>();
+
+  async enqueue(sessionId: string, rubricId: string, queuedAt: string): Promise<ReportJob> {
+    const existing = this.jobs.get(sessionId);
+    if (existing && existing.status !== "FAILED") return this.public(existing);
+    const job: StoredJob = {
+      sessionId,
+      status: "QUEUED",
+      rubricId,
+      report: null,
+      progress: existing?.progress ?? {},
+      error: null,
+      attempts: existing?.attempts ?? 0,
+      queuedAt,
+      completedAt: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+    };
+    this.jobs.set(sessionId, job);
+    return this.public(job);
+  }
+
+  async get(sessionId: string): Promise<ReportJob | null> {
+    const job = this.jobs.get(sessionId);
+    return job ? this.public(job) : null;
+  }
+
+  async recoverable(now: string, limit: number): Promise<string[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("INVALID_RECOVERY_LIMIT");
+    return [...this.jobs.values()]
+      .filter((job) => job.status === "QUEUED" ||
+        (job.status === "RUNNING" && (!job.leaseExpiresAt || job.leaseExpiresAt <= now)) ||
+        (job.status === "FAILED" && job.attempts < MAX_REPORT_ATTEMPTS && reportRetryAt(job) <= Date.parse(now)))
+      .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.sessionId.localeCompare(b.sessionId))
+      .slice(0, limit).map((job) => job.sessionId);
+  }
+
+  async claim(sessionId: string, now: string, leaseExpiresAt: string): Promise<ReportClaim | null> {
+    const job = this.jobs.get(sessionId);
+    const recoverableFailure = job?.status === "FAILED" && job.attempts < MAX_REPORT_ATTEMPTS && reportRetryAt(job) <= Date.parse(now);
+    if (!job || (job.status !== "QUEUED" && !recoverableFailure &&
+        !(job.status === "RUNNING" && (!job.leaseExpiresAt || job.leaseExpiresAt <= now)))) return null;
+    job.status = "RUNNING";
+    job.attempts += 1;
+    job.error = null;
+    job.completedAt = null;
+    job.leaseToken = randomUUID();
+    job.leaseExpiresAt = leaseExpiresAt;
+    return { token: job.leaseToken, job: this.public(job) };
+  }
+
+  async complete(sessionId: string, token: string, report: SessionReport, completedAt: string): Promise<ReportJob | null> {
+    const job = this.claimed(sessionId, token);
+    if (!job) return null;
+    job.status = "READY";
+    job.report = structuredClone(report);
+    job.error = null;
+    job.completedAt = completedAt;
+    job.leaseToken = null;
+    job.leaseExpiresAt = null;
+    return this.public(job);
+  }
+
+  async saveProgress(sessionId: string, token: string, progress: EvaluationProgress): Promise<ReportJob | null> {
+    const job = this.claimed(sessionId, token);
+    if (!job) return null;
+    job.progress = structuredClone(progress);
+    return this.public(job);
+  }
+
+  async fail(sessionId: string, token: string, error: string, completedAt: string): Promise<ReportJob | null> {
+    const job = this.claimed(sessionId, token);
+    if (!job) return null;
+    job.status = "FAILED";
+    job.error = error;
+    job.completedAt = completedAt;
+    job.leaseToken = null;
+    job.leaseExpiresAt = null;
+    return this.public(job);
+  }
+
+  async delete(sessionId: string): Promise<boolean> { return this.jobs.delete(sessionId); }
+
+  private claimed(sessionId: string, token: string): StoredJob | null {
+    const job = this.jobs.get(sessionId);
+    return job?.status === "RUNNING" && job.leaseToken === token ? job : null;
+  }
+
+  private public(job: StoredJob): ReportJob {
+    const { leaseToken: _token, leaseExpiresAt: _expires, ...result } = job;
+    return structuredClone(result);
+  }
+}

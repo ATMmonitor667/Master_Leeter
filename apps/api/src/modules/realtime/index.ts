@@ -31,7 +31,10 @@ export {
   DEFAULT_INTERVIEWER_VOICE,
   INTERVIEWER_PERSONA,
   PERSONA_PROHIBITIONS,
+  interviewerPersona,
 } from "./persona.js";
+
+export { VoiceResumptionStore } from "./resumption.js";
 
 export {
   VOICE_TOOLS,

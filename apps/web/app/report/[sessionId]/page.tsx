@@ -3,7 +3,7 @@
 import { use, useCallback, useEffect, useState } from "react";
 import { DimensionCard } from "../../../components/DimensionCard";
 import ConstellationField from "../../../components/ui/constellation-field";
-import type { SessionReport } from "../../../lib/report";
+import type { IndependentGrade, SessionReport } from "../../../lib/report";
 import { apiFetch } from "../../../lib/auth";
 
 /**
@@ -20,7 +20,6 @@ import { apiFetch } from "../../../lib/auth";
  *     scores observable interview behaviour, and the copy says so plainly.
  */
 
-const API = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
 const POLL_MS = 1500;
 
 type State =
@@ -35,7 +34,7 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
 
   const fetchReport = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await apiFetch(`${API}/v1/interview-sessions/${sessionId}/report`);
+      const res = await apiFetch(`/v1/interview-sessions/${sessionId}/report`);
 
       if (res.status === 202) {
         const body = await res.json();
@@ -125,11 +124,11 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
             It is evidence for your next practice session, not a prediction of an employer&apos;s decision.
           </p>
         </div>
-        <div className="score-orb" aria-label={`Overall score ${report.overall.toFixed(2)}`}>
+        <div className="score-orb" aria-label={`Behavior index ${report.overall.toFixed(2)} out of 4`}>
           <span className="score-ring" aria-hidden="true" />
           <div>
             <div className="score-value">{report.overall.toFixed(2)}</div>
-            <div className="score-label">Overall</div>
+            <div className="score-label">Behavior / 4</div>
           </div>
         </div>
       </header>
@@ -143,16 +142,24 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
         <span className="meta-mono">{report.rubricId} · v{report.rubricVersion}</span>
       </div>
 
+      {(report.solutionGrade || report.transcriptGrade) && (
+        <><p className="grader-note">Solution quality and interview reasoning are graded independently and are never combined into one score.</p>
+          <section className="grader-grid" aria-label="Independent grader results">
+            {report.solutionGrade && <GradeCard title="Solution quality" grade={report.solutionGrade} />}
+            {report.transcriptGrade && <GradeCard title="Interview reasoning" grade={report.transcriptGrade} />}
+          </section></>
+      )}
+
       <section className="report-highlights" aria-label="Session highlights">
         <div className="highlight-card positive">
           <span className="highlight-label">Strongest signal</span>
           <strong>{strongest?.dimension.replaceAll("_", " ") ?? "Not enough evidence"}</strong>
-          <span>{strongest ? `${strongest.score.toFixed(1)} / 5` : "—"}</span>
+          <span>{strongest ? `${strongest.score.toFixed(1)} / 4` : "—"}</span>
         </div>
         <div className="highlight-card focus">
           <span className="highlight-label">Best next focus</span>
           <strong>{focus?.dimension.replaceAll("_", " ") ?? "Gather more evidence"}</strong>
-          <span>{focus ? `${focus.score.toFixed(1)} / 5` : "—"}</span>
+          <span>{focus ? `${focus.score.toFixed(1)} / 4` : "—"}</span>
         </div>
         <div className="highlight-card neutral">
           <span className="highlight-label">Interview footprint</span>
@@ -218,5 +225,32 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
       <h2>{title}</h2>
       {children}
     </section>
+  );
+}
+
+function GradeCard({ title, grade }: { title: string; grade: IndependentGrade }) {
+  return (
+    <article className="grader-card">
+      <header>
+        <div><span className="highlight-label">Independent AI grader</span><h2>{title}</h2></div>
+        <div className="grader-score">{grade.score === null ? "—" : Math.round(grade.score)}<small>/100</small></div>
+      </header>
+      <p>{grade.summary}</p>
+      <div className="grader-confidence">Confidence {Math.round(grade.confidence * 100)}% · {grade.status === "SCORED" ? "model-estimated" : "insufficient evidence"}</div>
+      <dl className="grader-dimensions">
+        {grade.dimensions.map((dimension) => (
+          <div key={dimension.key}><dt>{dimension.key.replace(/([A-Z])/g, " $1")}</dt><dd>{dimension.score === null ? "—" : Math.round(dimension.score)}</dd></div>
+        ))}
+      </dl>
+      {(grade.strengths.length > 0 || grade.improvements.length > 0) && <div className="grader-feedback">
+        <div><strong>Supported strengths</strong><ul>{grade.strengths.map((item) => <li key={item}>{item}</li>)}</ul></div>
+        <div><strong>Next improvements</strong><ul>{grade.improvements.map((item) => <li key={item}>{item}</li>)}</ul></div>
+      </div>}
+      {grade.evidence.length > 0 && (
+        <ul className="grader-evidence">
+          {grade.evidence.map((item) => <li key={`${item.seq}:${item.claim}`}><span>#{item.seq}</span> {item.claim}{item.quote ? <q>{item.quote}</q> : null}</li>)}
+        </ul>
+      )}
+    </article>
   );
 }

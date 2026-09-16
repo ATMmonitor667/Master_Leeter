@@ -1,17 +1,28 @@
 import type { FastifyInstance } from "fastify";
 import { scenarioRef } from "../scenario/loader.js";
 import type { EventLog } from "../session/event-log.js";
+import type { SessionStore } from "../session/session-store.js";
 import { BaselineEvaluator, type Evaluator, type SessionReport } from "./evaluator.js";
+import { InMemoryReportJobStore, MAX_REPORT_ATTEMPTS, reportRetryAt, type ReportJob, type ReportJobStore } from "./report-store.js";
+
+const REPORT_LEASE_MS = 3 * 60_000;
 
 export { extractFacts, momentsFor, type EvidenceMoment, type SessionFacts } from "./evidence.js";
 export {
   BaselineEvaluator,
   weightedOverall,
   type DimensionScore,
+  type EvaluationContext,
+  type EvaluationProgress,
   type Evaluator,
+  type GradeCitation,
+  type GradeDimension,
+  type IndependentGrade,
   type SessionReport,
 } from "./evaluator.js";
 export { CODING_RUBRIC_V1, rubricById, weightSum, type Rubric, type RubricDimension } from "./rubric.js";
+export { InMemoryReportJobStore, MAX_REPORT_ATTEMPTS, type ReportClaim, type ReportJob, type ReportJobStore, type ReportStatus } from "./report-store.js";
+export { IndependentGeminiEvaluator, SOLUTION_PROMPT_VERSION, TRANSCRIPT_PROMPT_VERSION } from "./independent-evaluator.js";
 
 /**
  * Report module — post-session evaluation.
@@ -21,19 +32,6 @@ export { CODING_RUBRIC_V1, rubricById, weightSum, type Rubric, type RubricDimens
  * evaluate observable interview behavior only.
  */
 
-export type ReportStatus = "QUEUED" | "RUNNING" | "READY" | "FAILED";
-
-export interface ReportJob {
-  sessionId: string;
-  status: ReportStatus;
-  rubricId: string;
-  report: SessionReport | null;
-  error: string | null;
-  attempts: number;
-  queuedAt: string;
-  completedAt: string | null;
-}
-
 /**
  * Evaluation queue.
  *
@@ -42,37 +40,32 @@ export interface ReportJob {
  * separation the whole scoring design rests on has broken.
  */
 export class EvaluationQueue {
-  private readonly jobs = new Map<string, ReportJob>();
-
+  private readonly active = new Map<string, Promise<void>>();
   constructor(
     private readonly eventLog: EventLog,
     private readonly evaluator: Evaluator = new BaselineEvaluator(),
     private readonly now: () => string = () => new Date().toISOString(),
+    private readonly jobs: ReportJobStore = new InMemoryReportJobStore(),
+    private readonly scenarioFor?: ((sessionId: string) => ReturnType<SessionStore["pinnedScenario"]>) | undefined,
+    private readonly onFailure?: ((sessionId: string, attempts: number, code: string) => void) | undefined,
   ) {}
 
   /** Idempotent: enqueuing a session already evaluated returns the existing job. */
-  enqueue(sessionId: string, rubricId: string): ReportJob {
-    const existing = this.jobs.get(sessionId);
-    if (existing && existing.status !== "FAILED") return existing;
-
-    const job: ReportJob = {
-      sessionId,
-      status: "QUEUED",
-      rubricId,
-      report: null,
-      error: null,
-      attempts: existing?.attempts ?? 0,
-      queuedAt: this.now(),
-      completedAt: null,
-    };
-
-    this.jobs.set(sessionId, job);
-    void this.process(job);
+  async enqueue(sessionId: string, rubricId: string): Promise<ReportJob> {
+    const job = await this.jobs.enqueue(sessionId, rubricId, this.now());
+    if (job.status === "QUEUED" || job.status === "RUNNING") this.background(sessionId);
     return job;
   }
 
-  get(sessionId: string): ReportJob | null {
-    return this.jobs.get(sessionId) ?? null;
+  async get(sessionId: string): Promise<ReportJob | null> {
+    const job = await this.jobs.get(sessionId);
+    // Provider failures are retried from checkpointed grader progress. Bound the
+    // attempts so a polling report page cannot create an unbounded cost loop.
+    if (job?.status === "QUEUED" || job?.status === "RUNNING" ||
+        (job?.status === "FAILED" && job.attempts < MAX_REPORT_ATTEMPTS && reportRetryAt(job) <= Date.parse(this.now()))) {
+      this.background(sessionId);
+    }
+    return job;
   }
 
   /**
@@ -82,8 +75,31 @@ export class EvaluationQueue {
    * meaningless once they are redacted. Deleting one destroys nothing that the
    * event log does not already hold.
    */
-  forget(sessionId: string): boolean {
+  async forget(sessionId: string): Promise<boolean> {
     return this.jobs.delete(sessionId);
+  }
+
+  /** Claim atomically in the store; concurrent workers may discover the same IDs. */
+  async recover(limit = 10): Promise<void> {
+    const ids = await this.jobs.recoverable(this.now(), limit);
+    const results = await Promise.allSettled(ids.map((id) => this.run(id)));
+    if (results.some((result) => result.status === "rejected")) throw new Error("REPORT_RECOVERY_FAILED");
+  }
+
+  async drain(): Promise<void> { await Promise.allSettled([...this.active.values()]); }
+
+  private background(sessionId: string): void {
+    // A DB outage must not become an unhandled rejection. The durable job stays
+    // eligible for the next recovery pass, which reports errors to the operator.
+    void this.run(sessionId).catch(() => {});
+  }
+
+  private run(sessionId: string): Promise<void> {
+    const existing = this.active.get(sessionId);
+    if (existing) return existing;
+    const task = this.process(sessionId).finally(() => this.active.delete(sessionId));
+    this.active.set(sessionId, task);
+    return task;
   }
 
   /**
@@ -92,42 +108,66 @@ export class EvaluationQueue {
    * This is why the log is append-only: improving the rubric re-scores every
    * past session without re-running a single interview.
    */
-  async regenerate(sessionId: string, rubricId: string): Promise<ReportJob> {
-    this.jobs.delete(sessionId);
-    const job = this.enqueue(sessionId, rubricId);
-    await this.settled(sessionId);
-    return this.jobs.get(sessionId) ?? job;
+  async regenerate(sessionId: string, rubricId: string, wait = true): Promise<ReportJob> {
+    await this.jobs.delete(sessionId);
+    const job = await this.enqueue(sessionId, rubricId);
+    if (wait) await this.settled(sessionId);
+    return (await this.jobs.get(sessionId)) ?? job;
   }
 
   /** Test/observability helper — resolves once the job is no longer in flight. */
   async settled(sessionId: string): Promise<ReportJob | null> {
     for (let i = 0; i < 200; i++) {
-      const job = this.jobs.get(sessionId);
+      const job = await this.jobs.get(sessionId);
       if (job && (job.status === "READY" || job.status === "FAILED")) return job;
       await new Promise((r) => setTimeout(r, 5));
     }
-    return this.jobs.get(sessionId) ?? null;
+    return (await this.jobs.get(sessionId)) ?? null;
   }
 
-  private async process(job: ReportJob): Promise<void> {
-    job.status = "RUNNING";
-    job.attempts += 1;
+  private async process(sessionId: string): Promise<void> {
+    const now = this.now();
+    // Two independent provider calls may each consume their 45-second timeout.
+    // The lease must cover both or a healthy worker can be replaced mid-grade.
+    const leaseExpiresAt = new Date(Date.parse(now) + REPORT_LEASE_MS).toISOString();
+    const claim = await this.jobs.claim(sessionId, now, leaseExpiresAt);
+    if (!claim) return;
 
     try {
-      const events = await this.eventLog.read(job.sessionId);
+      const events = await this.eventLog.read(sessionId);
       if (events.length === 0) throw new Error("no events for session");
-
-      job.report = await this.evaluator.evaluate(events, job.rubricId);
-      job.status = "READY";
-    } catch (err) {
+      const scenario = await this.scenarioFor?.(sessionId);
+      const context = scenario === undefined ? {} : { scenario };
+      const report = this.evaluator.evaluateWithProgress
+        ? await this.evaluator.evaluateWithProgress(
+          events,
+          claim.job.rubricId,
+          context,
+          claim.job.progress,
+          async (progress) => {
+            if (!await this.jobs.saveProgress(sessionId, claim.token, progress)) {
+              throw new Error("REPORT_LEASE_LOST");
+            }
+          },
+        )
+        : await this.evaluator.evaluate(events, claim.job.rubricId, context);
+      await this.jobs.complete(sessionId, claim.token, report, this.now());
+    } catch (error) {
       // A failed evaluation never affects the completed interview. The job is
       // retryable from the same immutable events.
-      job.status = "FAILED";
-      job.error = (err as Error).message;
-    } finally {
-      job.completedAt = this.now();
+      this.onFailure?.(sessionId, claim.job.attempts, evaluationFailureCode(error));
+      await this.jobs.fail(sessionId, claim.token, "EVALUATION_FAILED", this.now());
     }
   }
+}
+
+function evaluationFailureCode(error: unknown): string {
+  if (error instanceof Error && error.message === "EVALUATOR_CIRCUIT_OPEN") return "CIRCUIT_OPEN";
+  if (typeof error === "object" && error !== null && "kind" in error &&
+      ["TIMEOUT", "RATE_LIMITED", "HTTP", "MALFORMED", "NO_KEY"].includes(String(error.kind))) {
+    return `PROVIDER_${String(error.kind)}`;
+  }
+  return error instanceof Error ? error.name : "UNKNOWN";
 }
 
 export interface ReportModuleOptions {
@@ -157,15 +197,16 @@ export async function registerReportModule(
 
   app.get("/interview-sessions/:id/report", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const job = queue.get(id);
+    const job = await queue.get(id);
 
     if (!job) return reply.code(404).send({ error: "NO_REPORT", message: "Session has not been evaluated." });
 
     if (job.status !== "READY") {
       // 202 while in flight: the report is coming, and the client should poll
       // rather than treat this as an error.
-      return reply.code(job.status === "FAILED" ? 500 : 202).send({
-        status: job.status,
+      const retrying = job.status === "FAILED" && job.attempts < MAX_REPORT_ATTEMPTS;
+      return reply.code(job.status === "FAILED" && !retrying ? 500 : 202).send({
+        status: retrying ? "RETRYING" : job.status,
         error: job.error,
         attempts: job.attempts,
       });
@@ -177,8 +218,9 @@ export async function registerReportModule(
   app.post("/interview-sessions/:id/report/regenerate", async (req, reply) => {
     // Author/admin only once auth lands (M2-8).
     const { id } = req.params as { id: string };
-    const job = await queue.regenerate(id, "rubric-coding-v1");
-    return reply.code(job.status === "READY" ? 200 : 500).send({ status: job.status, error: job.error });
+    const job = await queue.regenerate(id, "rubric-coding-v1", false);
+    const status = job.status === "READY" ? 200 : job.status === "FAILED" ? 500 : 202;
+    return reply.code(status).send({ status: job.status, error: job.error });
   });
 }
 

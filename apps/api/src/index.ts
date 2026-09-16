@@ -2,19 +2,42 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets } from "./modules/auth/index.js";
-import { EvaluationQueue, registerReportModule } from "./modules/report/index.js";
+import { runtimeConfig } from "./config.js";
+import { ProviderCircuit } from "./lib/provider-circuit.js";
+import { WebhookAlertSink, type OperationalAlert, type OperationalAlertSink } from "./lib/operational-alerts.js";
+import { InMemoryRateLimitStore, type RateLimitPolicy, type RateLimitStore } from "./modules/admission/index.js";
+import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
+import { EvaluationQueue, IndependentGeminiEvaluator, MAX_REPORT_ATTEMPTS, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
+import { startReportRecovery } from "./modules/report/recovery-worker.js";
+import type { RuntimeOwnership } from "./modules/session/runtime-ownership.js";
 import { loadEnv } from "./env.js";
-import { geminiApiKeyFromEnv } from "./lib/gemini.js";
-import { classifierFromEnv, type IntentClassifier } from "./modules/orchestrator/index.js";
+import { GeminiClient, geminiApiKeyFromEnv } from "./lib/gemini.js";
+import { classifierFromEnv, GeminiClassifier, type IntentClassifier } from "./modules/orchestrator/index.js";
+import {
+  GeminiResumeAnalyzer,
+  GeminiScenarioRestater,
+  InMemoryPreparationStore,
+  registerPreparationModule,
+  type PreparationStore,
+  type ResumeAnalyzer,
+  type ScenarioRestater,
+} from "./modules/preparation/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
-import { registerPrivacyModule } from "./modules/privacy/index.js";
+import { registerPrivacyModule, type ConsentStore } from "./modules/privacy/index.js";
 import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
-import { type QuestionBank, QuestionBankError, questionBankFromEnv, questionBankSource } from "./modules/scenario/question-bank.js";
-import { InMemoryEventLog, InMemorySessionStore, registerSessionModule } from "./modules/session/index.js";
+import { FileQuestionBank, type QuestionBank, QuestionBankError, questionBankFromEnv, questionBankSource } from "./modules/scenario/question-bank.js";
+import {
+  InMemoryEventLog,
+  InMemorySessionStore,
+  registerSessionModule,
+  type EventLog,
+  type SessionStore,
+  type SessionLifecycle,
+} from "./modules/session/index.js";
+import { createSupabaseStorage } from "./storage.js";
 
 /**
  * Modular monolith (ADR-005).
@@ -37,9 +60,29 @@ export interface ServerOptions {
   library: Map<string, LoadedScenario>;
   questionBank?: QuestionBank;
   logger?: boolean;
+  production?: boolean;
   authenticator?: Authenticator;
   webOrigin?: string;
-  eventLog?: InMemoryEventLog;
+  eventLog?: EventLog;
+  sessionStore?: SessionStore;
+  socketTickets?: SocketTicketStore;
+  reportJobStore?: ReportJobStore;
+  evaluator?: Evaluator;
+  consentStore?: ConsentStore;
+  lifecycle?: SessionLifecycle;
+  runtimeOwnership?: RuntimeOwnership;
+  preparationStore?: PreparationStore;
+  resumeAnalyzer?: ResumeAnalyzer;
+  scenarioRestater?: ScenarioRestater;
+  closeStorage?: () => Promise<void>;
+  readinessChecks?: ReadonlyArray<{ name: string; check: () => Promise<void> }>;
+  release?: string;
+  rateLimiter?: RateLimitStore;
+  rateLimits?: RateLimitPolicy;
+  maxRealtimeMintsPerSession?: number;
+  realtimeCircuit?: ProviderCircuit;
+  status?: () => Record<string, unknown>;
+  alertSink?: OperationalAlertSink;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -60,7 +103,29 @@ export function buildServer(opts: ServerOptions) {
     redact: ["req.headers.authorization", "req.headers.apikey", "req.headers.cookie"],
     // Tickets are single-use but still credentials: omit URL queries from logs.
     serializers: { req: (req) => ({ method: req.method, url: req.url.split("?")[0] ?? "", id: req.id, hostname: req.hostname, remoteAddress: req.ip, remotePort: req.socket.remotePort ?? 0 }) },
-  } : false });
+  } : false, bodyLimit: 256_000 });
+
+  let draining = false;
+  app.decorate("beginDrain", () => { draining = true; });
+  app.addHook("onRequest", async (req, reply) => {
+    reply.header("X-Request-Id", req.id);
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (opts.production) reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  });
+  app.addHook("preHandler", async (req, reply) => {
+    if (draining && req.method === "POST" && req.routeOptions.url === "/v1/interview-sessions") {
+      return reply.code(503).header("Retry-After", "10").send({ error: "SERVICE_DRAINING" });
+    }
+  });
+  if (opts.production) app.setErrorHandler((error, req, reply) => {
+    const proposed = typeof error === "object" && error !== null && "statusCode" in error &&
+      typeof error.statusCode === "number" ? error.statusCode : 500;
+    const status = proposed >= 400 && proposed < 500 ? proposed : 500;
+    req.log.error({ requestId: req.id, status, errorType: error instanceof Error ? error.name : typeof error }, "request failed");
+    return reply.code(status).send({ error: status === 500 ? "INTERNAL_ERROR" : "REQUEST_REJECTED", requestId: req.id });
+  });
 
   const webOrigin = opts.webOrigin ?? process.env["WEB_ORIGIN"] ?? "http://localhost:3000";
   void app.register(cors, {
@@ -70,9 +135,76 @@ export function buildServer(opts: ServerOptions) {
   });
 
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
-  const store = new InMemorySessionStore();
-  registerAccessControl(app, { sessions: store, webOrigin, tickets: new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
-  const evaluationQueue = new EvaluationQueue(eventLog);
+  const store = opts.sessionStore ?? new InMemorySessionStore();
+  const preparationStore = opts.preparationStore ?? new InMemoryPreparationStore();
+  const pendingAlerts = new Set<Promise<void>>();
+  const publishAlert = (alert: OperationalAlert) => {
+    if (!opts.alertSink) return;
+    const work = opts.alertSink.publish(alert)
+      .catch(() => app.log.error({ alert: alert.kind }, "operational alert delivery failed"));
+    pendingAlerts.add(work);
+    void work.finally(() => pendingAlerts.delete(work));
+  };
+  registerAccessControl(app, { sessions: store, webOrigin, tickets: opts.socketTickets ?? new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
+  const rateLimiter = opts.rateLimiter ?? new InMemoryRateLimitStore();
+  const rateLimits = opts.rateLimits ?? {
+    sessionCreatesPerMinute: 5,
+    preparationsPerMinute: 5,
+    realtimeMintsPerMinute: 6,
+    runRequestsPerMinute: 10,
+  };
+  app.addHook("preHandler", async (req, reply) => {
+    if (req.method !== "POST") return;
+    const route = req.routeOptions.url ?? "";
+    const limit = route === "/v1/interview-sessions" ? rateLimits.sessionCreatesPerMinute
+      : route === "/v1/preparations" ? rateLimits.preparationsPerMinute
+        : route === "/v1/interview-sessions/:id/realtime-token" ? rateLimits.realtimeMintsPerMinute
+          : route === "/v1/interview-sessions/:id/runs" ? rateLimits.runRequestsPerMinute
+            : undefined;
+    if (!limit) return;
+    try {
+      const identity = req.principal?.userId ?? `ip:${req.ip}`;
+      const result = await rateLimiter.take(`${req.method}:${route}:${identity}`, limit, 60_000);
+      reply.header("RateLimit-Limit", String(limit));
+      if (!result.allowed) {
+        return reply.code(429).header("Retry-After", String(result.retryAfterSeconds))
+          .send({ error: "RATE_LIMITED", retryAfterSeconds: result.retryAfterSeconds });
+      }
+    } catch {
+      req.log.error({ route }, "rate-limit storage unavailable");
+      return reply.code(503).header("Retry-After", "10").send({ error: "ADMISSION_UNAVAILABLE" });
+    }
+  });
+  const evaluationQueue = new EvaluationQueue(
+    eventLog,
+    opts.evaluator,
+    undefined,
+    opts.reportJobStore,
+    (sessionId) => store.pinnedScenario(sessionId),
+    (sessionId, attempts, code) => {
+      const details = { sessionId, attempts, code };
+      if (attempts >= MAX_REPORT_ATTEMPTS) {
+        app.log.error(details, "report evaluation attempts exhausted");
+        publishAlert({ kind: "REPORT_EVALUATION_EXHAUSTED", ...details });
+      }
+      else app.log.warn(details, "report evaluation failed; retry remains");
+    },
+  );
+  let stopRecovery: (() => Promise<void>) | undefined;
+  if (opts.reportJobStore) app.addHook("onReady", async () => {
+    stopRecovery = startReportRecovery(() => evaluationQueue.recover(), (consecutiveFailures) => {
+      if (consecutiveFailures === 1 || consecutiveFailures % 12 === 0) {
+        app.log.error({ consecutiveFailures }, "report recovery unavailable; pending work will be retried");
+        publishAlert({ kind: "REPORT_RECOVERY_UNAVAILABLE", consecutiveFailures });
+      }
+    });
+  });
+  app.addHook("onClose", async () => {
+    await stopRecovery?.();
+    await evaluationQueue.drain();
+    await Promise.allSettled([...pendingAlerts]);
+    await opts.closeStorage?.();
+  });
 
   // Decorated on the root instance, not inside the plugins: Fastify
   // encapsulates decorations per plugin scope, so a decorate() call inside
@@ -80,6 +212,21 @@ export function buildServer(opts: ServerOptions) {
   app.decorate("evaluationQueue", evaluationQueue);
 
   app.get("/health", async () => ({ ok: true, scenarios: opts.library.size }));
+  app.get("/health/live", async () => ({ status: "live", release: opts.release ?? "development" }));
+  app.get("/health/ready", async (_req, reply) => {
+    if (draining) return reply.code(503).send({ status: "draining" });
+    const checks = opts.readinessChecks ?? [];
+    const results = await Promise.allSettled(checks.map((item) => item.check()));
+    const failed = results.flatMap((result, index) => result.status === "rejected"
+      ? [checks[index]?.name ?? "unknown"] : []);
+    if (failed.length) return reply.code(503).send({ status: "unavailable", checks: failed });
+    return reply.send({ status: "ready", scenarios: opts.library.size, release: opts.release ?? "development" });
+  });
+  app.get("/health/status", async () => ({
+    status: "ok",
+    release: opts.release ?? "development",
+    ...(opts.status ? { capabilities: opts.status() } : {}),
+  }));
 
   void app.register(registerSessionModule, {
     prefix: "/v1",
@@ -88,17 +235,35 @@ export function buildServer(opts: ServerOptions) {
     store,
     eventLog,
     evaluationQueue,
+    ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
+    ...(opts.runtimeOwnership ? { runtimeOwnership: opts.runtimeOwnership } : {}),
     ...(opts.runner ? { runner: opts.runner } : {}),
     ...(opts.classifier ? { classifier: opts.classifier } : {}),
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
+    ...(opts.maxRealtimeMintsPerSession ? { maxRealtimeMintsPerSession: opts.maxRealtimeMintsPerSession } : {}),
+    ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
+    onRealtimeCircuitOpen: (sessionId, failureKind) =>
+      publishAlert({ kind: "REALTIME_CIRCUIT_OPEN", sessionId, failureKind }),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
+  void app.register(registerPreparationModule, {
+    prefix: "/v1",
+    questionBank: opts.questionBank ?? new FileQuestionBank(opts.library),
+    sessions: store,
+    events: eventLog,
+    ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
+    store: preparationStore,
+    ...(opts.resumeAnalyzer ? { analyzer: opts.resumeAnalyzer } : {}),
+    ...(opts.scenarioRestater ? { restater: opts.scenarioRestater } : {}),
+  });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
   void app.register(registerPrivacyModule, {
     prefix: "/v1",
     eventLog,
     sessions: store,
     evaluationQueue,
+    ...(opts.consentStore ? { consentStore: opts.consentStore } : {}),
+    preparationStore,
   });
 
   return app;
@@ -108,6 +273,7 @@ export async function start(): Promise<void> {
   // Before anything reads process.env. Called here rather than at import time
   // so importing this module from a test does not pull in a personal .env.local.
   const env = loadEnv();
+  const config = runtimeConfig(process.env);
   const authenticator = authenticatorFromEnv(process.env);
 
   // Scenarios load at boot and fail loudly. A content bug should stop a deploy,
@@ -136,20 +302,71 @@ export async function start(): Promise<void> {
   // without a model key is a supported state.
   const classifier = classifierFromEnv();
 
+  const preparationKey = geminiApiKeyFromEnv();
+  const evaluatorModel = process.env["EVALUATOR_MODEL"];
+  const evaluator = preparationKey && evaluatorModel ? new IndependentGeminiEvaluator(new GeminiClient({
+    apiKey: preparationKey,
+    model: evaluatorModel,
+    requestTimeoutMs: 45_000,
+  })) : undefined;
+  const resumeAnalyzer = preparationKey ? new GeminiResumeAnalyzer(new GeminiClient({
+    apiKey: preparationKey,
+    model: process.env["RESUME_ANALYZER_MODEL"] ?? process.env["OBSERVER_MODEL"] ?? "gemini-3.5-flash",
+    requestTimeoutMs: 15_000,
+  })) : undefined;
+  const scenarioRestater = preparationKey ? new GeminiScenarioRestater(new GeminiClient({
+    apiKey: preparationKey,
+    model: process.env["RESTATEMENT_MODEL"] ?? process.env["OBSERVER_MODEL"] ?? "gemini-3.5-flash",
+    requestTimeoutMs: 15_000,
+  })) : undefined;
+
   // Null when voice is unconfigured. Built once and shared: the token route is
   // the only caller, and the credential it mints is per-request regardless.
   const realtimeTokenMinter = minterFromEnv();
+  const realtimeCircuit = new ProviderCircuit(3, 60_000);
+  const alertSink = config.alertWebhookUrl ? new WebhookAlertSink({
+    url: config.alertWebhookUrl,
+    release: config.release,
+    ...(config.alertWebhookToken ? { token: config.alertWebhookToken } : {}),
+  }) : undefined;
+
+  // Supabase is PostgreSQL. Its direct/pooler connection string activates the
+  // durable repositories; local development may still run explicitly in memory.
+  const databaseUrl = config.databaseUrl;
+  const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl, undefined, config.admission) : undefined;
 
   const app = buildServer({
     library,
     questionBank,
     logger: true,
+    production: config.production,
+    webOrigin: config.webOrigin,
+    release: config.release,
+    rateLimits: config.rateLimits,
+    maxRealtimeMintsPerSession: config.admission.maxRealtimeMintsPerSession,
+    realtimeCircuit,
+    status: () => ({
+      admission: config.admission.enabled ? "OPEN" : "PAUSED",
+      authentication: authenticator ? "AVAILABLE" : "DEVELOPMENT",
+      storage: durableStorage ? "AVAILABLE" : "MEMORY",
+      voice: realtimeTokenMinter ? realtimeCircuit.state() : "UNAVAILABLE",
+      classifier: classifier instanceof GeminiClassifier ? classifier.operationalStatus().circuit : "FALLBACK",
+      evaluator: evaluator ? evaluator.operationalStatus().circuit : "FALLBACK",
+      runFeedback: runner ? "AVAILABLE_MODEL_ESTIMATE" : "UNAVAILABLE",
+      alerts: alertSink ? "WEBHOOK" : "LOG_ONLY",
+    }),
+    ...(durableStorage ? { readinessChecks: [{ name: "storage", check: durableStorage.storageReadiness }] } : {}),
     ...(authenticator ? { authenticator } : {}),
     ...(runner ? { runner } : {}),
     classifier,
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
+    ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
+    ...(scenarioRestater ? { scenarioRestater } : {}),
+    ...(evaluator ? { evaluator } : {}),
+    ...(alertSink ? { alertSink } : {}),
+    ...(durableStorage ?? {}),
   });
-  const port = Number(process.env["API_PORT"] ?? 4000);
+  const port = config.port;
 
   // Names only, never values.
   app.log.info({ files: env.loaded, vars: env.applied }, "environment loaded");
@@ -161,6 +378,7 @@ export async function start(): Promise<void> {
       authentication: authenticator ? "supabase" : "insecure-local-development",
       runner: runner ? "model-judge" : "none",
       classifier: classifier.id,
+      evaluator: evaluator ? `${evaluatorModel}:independent-v1` : "deterministic-baseline",
       realtime: realtimeTokenMinter ? realtimeTokenMinter.id : "none",
     },
     "scenario library loaded",
@@ -173,6 +391,13 @@ export async function start(): Promise<void> {
     app.log.warn(
       "REALTIME_MODEL or REALTIME_API_KEY is not set — voice is DISABLED and " +
         "POST /realtime-token will return 503. Set both in apps/api/.env.local.",
+    );
+  }
+
+  if (!evaluator) {
+    app.log.warn(
+      "EVALUATOR_MODEL or a Gemini API key is not set — reports use the deterministic " +
+        "baseline and will not include independent 0-100 solution/transcript grades.",
     );
   }
 
@@ -206,12 +431,38 @@ export async function start(): Promise<void> {
     );
   }
   await app.listen({ port, host: "0.0.0.0" });
+
+  let shuttingDown = false;
+  const shutdown = async (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.beginDrain();
+    app.log.info({ signal, drainGraceMs: config.drainGraceMs }, "shutdown started");
+    try {
+      await new Promise((resolve) => setTimeout(resolve, config.drainGraceMs));
+      await app.close();
+      app.log.info({ signal }, "shutdown complete");
+    } catch {
+      process.exitCode = 1;
+      app.log.error({ signal }, "shutdown failed");
+    }
+  };
+  process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+  process.once("SIGINT", () => { void shutdown("SIGINT"); });
 }
 
 const entry = (process.argv[1] ?? "").replace(/\\/g, "/");
 if (entry.endsWith("src/index.ts") || entry.endsWith("dist/index.js")) {
   start().catch((err: unknown) => {
-    console.error(err);
+    const message = err instanceof Error ? err.message : "STARTUP_FAILED";
+    const safe = message.startsWith("CONFIGURATION_INVALID:") ||
+      ["STORAGE_SCHEMA_INCOMPLETE", "STORAGE_UNAVAILABLE", "AUTH_CONFIGURATION"].includes(message)
+      ? message : err instanceof QuestionBankError ? `QUESTION_BANK_${err.code}` : "STARTUP_FAILED";
+    console.error(safe);
     process.exit(1);
   });
+}
+
+declare module "fastify" {
+  interface FastifyInstance { beginDrain(): void }
 }

@@ -1,4 +1,5 @@
 import type { SessionEvent } from "@master-leeter/contracts";
+import type { LoadedScenario } from "../scenario/loader.js";
 import { type EvidenceMoment, type SessionFacts, extractFacts, momentsFor } from "./evidence.js";
 import { type Rubric, type RubricDimension, rubricById, weightSum } from "./rubric.js";
 
@@ -39,10 +40,51 @@ export interface SessionReport {
   probesAsked: string[];
   missedOpportunities: string[];
   drills: { communication: string; algorithmic: string; testing: string };
+  /** Independent 0–100 judgements. Omitted on legacy reports. */
+  solutionGrade?: IndependentGrade;
+  transcriptGrade?: IndependentGrade;
 }
 
+export type GradeStatus = "SCORED" | "INSUFFICIENT_EVIDENCE";
+export interface GradeCitation {
+  seq: number;
+  claim: string;
+  quote?: string;
+  codeRevision?: number;
+  segmentId?: string;
+}
+export interface GradeDimension {
+  key: string;
+  score: number | null;
+  rationale: string;
+}
+export interface IndependentGrade {
+  status: GradeStatus;
+  score: number | null;
+  confidence: number;
+  summary: string;
+  strengths: string[];
+  improvements: string[];
+  dimensions: GradeDimension[];
+  evidence: GradeCitation[];
+  model: string;
+  promptVersion: string;
+}
+export interface EvaluationProgress {
+  solutionGrade?: IndependentGrade;
+  transcriptGrade?: IndependentGrade;
+}
+export interface EvaluationContext { scenario?: LoadedScenario | null }
+
 export interface Evaluator {
-  evaluate(events: SessionEvent[], rubricId: string): Promise<SessionReport>;
+  evaluate(events: SessionEvent[], rubricId: string, context?: EvaluationContext): Promise<SessionReport>;
+  evaluateWithProgress?(
+    events: SessionEvent[],
+    rubricId: string,
+    context: EvaluationContext,
+    progress: EvaluationProgress,
+    save: (progress: EvaluationProgress) => Promise<void>,
+  ): Promise<SessionReport>;
 }
 
 const MIN_SCORE = 1;
@@ -131,10 +173,10 @@ export class BaselineEvaluator implements Evaluator {
         const failures = facts.runs.filter((r) => r.status !== "PASSED").length;
         return {
           score: passed ? clamp(4 - failures * 0.3) : 1.5,
-          confidence: 0.85,
+          confidence: 0.55,
           rationale: passed
-            ? `Tests passed after ${failures} failing run${failures === 1 ? "" : "s"}.`
-            : `${facts.runs.length} run(s), none passing.`,
+            ? `The configured run checker reported a pass after ${failures} failing result${failures === 1 ? "" : "s"}; this is not execution proof.`
+            : `${facts.runs.length} run result(s), none reported passing; this is not execution proof.`,
         };
       }
 

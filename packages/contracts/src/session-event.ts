@@ -64,6 +64,8 @@ export const EVENT_TYPES = [
 
   // ── Observer ─────────────────────────────────────────────────────────────
   "CANDIDATE_STATE_UPDATED",
+  /** Compact authoritative runtime state used for restart recovery. */
+  "RUNTIME_CHECKPOINT",
 
   // ── Faults ───────────────────────────────────────────────────────────────
   "CONNECTION_LOST",

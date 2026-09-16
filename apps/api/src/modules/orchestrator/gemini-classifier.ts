@@ -177,6 +177,10 @@ export class GeminiClassifier implements IntentClassifier {
     this.id = `gemini:${opts.model}@v1`;
   }
 
+  operationalStatus(): { circuit: "OPEN" | "CLOSED" } {
+    return { circuit: this.breakerOpen() ? "OPEN" : "CLOSED" };
+  }
+
   async classify(input: ClassifierInput): Promise<TurnClassification> {
     const transcript = input.transcript.trim();
 

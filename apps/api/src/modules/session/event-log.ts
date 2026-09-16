@@ -30,6 +30,12 @@ export interface AppendRequest {
   /** Stable across retries of the same logical event. */
   idempotencyKey: string;
   occurredAt?: string;
+  /** Browser sequence for candidate events; stored atomically with the evidence. */
+  clientSeq?: number;
+  /** Server-only fencing token; never accepted from client event payloads. */
+  runtimeToken?: string;
+  /** Server checkpoint metadata; completion commits in the evidence transaction. */
+  completedInputSeq?: number;
 }
 
 export interface AppendResult {
@@ -44,6 +50,10 @@ export interface EventLog {
   read(sessionId: string, fromSeq?: number): Promise<SessionEvent[]>;
   /** Highest assigned seq, or -1 for an empty session. */
   latestSeq(sessionId: string): Promise<number>;
+  /** Highest committed browser sequence, or -1 before the first client event. */
+  latestClientSeq(sessionId: string): Promise<number>;
+  /** Irreversibly redact payloads and reject all later appends for the session. */
+  redact?(sessionId: string): Promise<number>;
 }
 
 /**
@@ -84,11 +94,21 @@ function sortKeys(value: unknown): unknown {
 export class InMemoryEventLog implements EventLog {
   private readonly events = new Map<string, SessionEvent[]>();
   private readonly byKey = new Map<string, SessionEvent>();
+  private readonly clientSequences = new Map<string, Map<number, SessionEvent>>();
+  private readonly redactedSessions = new Set<string>();
 
   async append(req: AppendRequest): Promise<AppendResult> {
+    if (this.redactedSessions.has(req.sessionId)) throw new Error("SESSION_DELETED");
     const dedupeKey = `${req.sessionId}:${req.idempotencyKey}`;
     const existing = this.byKey.get(dedupeKey);
     if (existing) return { event: existing, duplicate: true };
+
+    if (req.clientSeq !== undefined) {
+      if (!Number.isSafeInteger(req.clientSeq) || req.clientSeq < 0) throw new Error("INVALID_CLIENT_SEQUENCE");
+      if (this.clientSequences.get(req.sessionId)?.has(req.clientSeq)) {
+        throw new Error("CLIENT_SEQUENCE_CONFLICT");
+      }
+    }
 
     const list = this.events.get(req.sessionId) ?? [];
     const event: SessionEvent = {
@@ -106,6 +126,11 @@ export class InMemoryEventLog implements EventLog {
     list.push(event);
     this.events.set(req.sessionId, list);
     this.byKey.set(dedupeKey, event);
+    if (req.clientSeq !== undefined) {
+      const sequences = this.clientSequences.get(req.sessionId) ?? new Map<number, SessionEvent>();
+      sequences.set(req.clientSeq, event);
+      this.clientSequences.set(req.sessionId, sequences);
+    }
 
     return { event, duplicate: false };
   }
@@ -117,6 +142,11 @@ export class InMemoryEventLog implements EventLog {
   async latestSeq(sessionId: string): Promise<number> {
     const list = this.events.get(sessionId);
     return list && list.length > 0 ? list.length - 1 : -1;
+  }
+
+  async latestClientSeq(sessionId: string): Promise<number> {
+    const values = this.clientSequences.get(sessionId)?.keys();
+    return values ? Math.max(-1, ...values) : -1;
   }
 
   /**
@@ -132,6 +162,7 @@ export class InMemoryEventLog implements EventLog {
    * privacy module, which produces a receipt.
    */
   async redact(sessionId: string): Promise<number> {
+    this.redactedSessions.add(sessionId);
     const list = this.events.get(sessionId);
     if (!list) return 0;
 

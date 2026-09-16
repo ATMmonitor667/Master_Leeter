@@ -63,6 +63,26 @@ readiness claim is implied by completion of this foundation.
 
 ## I02 — Identity, ownership and durable sessions
 
+Browser processing-record checkpoint (2026-09-14): input references now commit
+with browser events; completion markers commit with fenced runtime checkpoints.
+Unresolved input discovery is durable and bounded. Automatic reconciliation and
+owner-routed dispatch remain open. Ownership was recovered from the saved stash
+and committed as befbc94 in an isolated production worktree.
+
+Runtime ownership checkpoint (2026-09-14): private expiring ownership tokens now
+fence runtime events, checkpoints, candidate-channel writes and stage transitions.
+The injected bundle renews ownership and rejects non-owner commands explicitly;
+takeover discards stale local runtime state. 733 API tests and workspace typecheck
+pass; 15 real database tests remain pending. Durable command routing, connection
+deadlines and startup activation still remain, so I02 is not yet complete.
+
+2026-09-14 checkpoint: complete repository composition is available for explicit
+integration injection, with schema/privilege readiness and pool cleanup. Injected
+report stores recover queued/expired jobs in bounded background batches without
+browser polling. Workspace typecheck and 729 API tests pass; 14 database tests
+remain unexecuted locally. Production startup activation, fenced runtime ownership,
+command routing and durable deadlines remain open. See NEXT_IMPLEMENTATION_PLAN.txt.
+
 I02b.2 adds the pg driver, verified remote TLS configuration, an opt-in real
 PostgreSQL test harness and a dedicated PostgreSQL 16 CI job. Local API result:
 698 passed, six database tests skipped without a configured server; typecheck
@@ -145,6 +165,24 @@ review; generation failure has an honest, tested fallback.
 Owner needs: Gemini key and account-available model/quotas, resume retention
 approval, synthetic or non-sensitive sample resumes. No OpenAI switch is required.
 
+Implementation checkpoint (branch `codex-production-03-preparation`):
+
+- Added authenticated pasted-resume preparation routes, explicit consent,
+  evidence-linked extraction, candidate fact confirmation, source erasure and
+  account/session deletion coverage.
+- Added a private Supabase migration and durable preparation repository with
+  immutable question/session pins and leases that deduplicate model work across
+  retries and API replicas.
+- Added safe Gemini analysis and scenario restatement adapters. Restatements
+  retain contract evidence, reject private-content matches, and persist the
+  model/prompt/fallback reason; failures use the canonical reviewed wording.
+- Added Extra nice, Normal and Mean voice personas as presentation-only settings,
+  a bounded resume discussion prompt, and a fixed 2700-second session budget.
+- Added the browser preparation/review/erase/start flow. Typechecks pass; tests
+  were intentionally deferred to the separately assigned test pass. Live
+  Supabase migration, model fixtures and conversational review remain acceptance
+  gates before I03 can be marked complete.
+
 ## I04 — Live 45-minute codepad experience
 
 Tasks:
@@ -168,6 +206,25 @@ budget/code; final keystroke and spoken answer included; no submit/run required.
 
 Owner needs: supported-browser device tests, consent copy review and confirmation
 of acceptable voice spend. A mock provider test is not full voice acceptance.
+
+Implementation checkpoint (branch `codex-production-04-live-experience`):
+
+- Added the minimal codepad/notes interview surface, acknowledged revision saves,
+  atomic final-cursor sealing, late-write rejection and server-owned deadline and
+  abandoned-tab completion.
+- Added provider-authoritative interim/final candidate transcription, playback
+  drain before interviewer completion, explicit manual-VAD turn closure, and a
+  bounded final transcript drain before completion seals evidence.
+- Added fresh-token reconnect and proactive GoAway rotation with constrained
+  session resumption and sliding-window context compression. Resumption handles
+  are held server-side per interview and cleared when a session ends.
+- Added microphone permission/input-level preflight, speaker check, live input and
+  output selection, device-change detection and in-place microphone/default-output
+  recovery without resetting the server-owned interview clock.
+- Web/API typechecks and production builds pass. Tests remain intentionally
+  deferred to the separately assigned test pass. The real 45-minute, hardware,
+  Supabase and failure-race procedure in `docs/I04_ACCEPTANCE.md` remains I04's
+  exit gate.
 
 ## I05 — Independent final graders and reports
 
@@ -195,6 +252,29 @@ Acceptance: retries use identical sealed inputs; valid bounded scores; independe
 graders distinguish solution quality from explanation quality; failures recover
 after restart; human reviewers confirm evidence and appropriately cautious claims.
 
+Implementation checkpoint (branch `codex-production-05-independent-graders`):
+
+- Added two structurally separate Gemini calls. The solution grader receives the
+  sealed final code, contract, private reference evidence and reported runs but no
+  transcript. The transcript grader receives attributed candidate turns and only
+  disclosed question context, with no code, run result or solution-grade output.
+- Both produce bounded 0–100 model estimates, confidence, rubric dimensions,
+  actionable feedback and event-sequence citations. Transcript quotes must match
+  the cited candidate turn exactly; solution citations can resolve only to the
+  sealed code or reported-run events. Missing code/transcript is insufficient
+  evidence and never an invented zero.
+- Migration 011 adds fenced per-grader progress. A successful first grader is
+  stored under the report lease; provider failure retries only the missing half,
+  with three bounded attempts and a lease long enough for both model timeouts.
+  Failed durable jobs become claimable after exponential backoff, including
+  after an API restart; report polling exposes this state as retrying.
+- The candidate report shows the two grades separately and explicitly refuses to
+  combine them. The deterministic 1–4 behavior index remains as an auditable
+  event-derived signal and no longer describes predicted run results as execution.
+- API/web typechecks pass. Tests remain assigned to the separate test pass.
+  Development migration, live Gemini runs, adversarial calibration fixtures and
+  human reviewer calibration remain I05 acceptance gates.
+
 Owner needs: grading preferences, review of sample reports, funded inference quota
 and spending caps. Do not promise that scores predict hiring outcomes.
 
@@ -218,6 +298,51 @@ Tasks:
 Acceptance: cloud/provider gates closed, real failure drills pass, no cross-user
 access, score quality approved and cost limits verified. Only then describe the
 application as production-ready.
+
+Implementation checkpoint (branch `codex-production-06-launch-hardening`):
+
+- Added a Node 22 multi-stage API image that runs as a non-root user, resolves
+  compiled shared contracts and includes scenario/parser assets. The API now has
+  an explicit compiled production start command and honors host `PORT`.
+- Added typed production admission config. Hosted API boot rejects memory/auth,
+  file-question, insecure-origin, missing voice/classifier/evaluator and invalid
+  Supabase/database fallbacks before listening, while local development remains
+  explicit and supported.
+- Split liveness/readiness, added live storage readiness, safe release identity,
+  request support IDs, redacted production errors and a bounded SIGTERM drain
+  that refuses new interviews before closing sockets and durable stores.
+- Centralized browser HTTP/WS endpoints. Hosted Vercel builds reject localhost,
+  insecure origins, missing Supabase auth or secret browser keys and emit CSP,
+  microphone, framing, MIME, referrer, HSTS and private-page cache headers.
+- Migration 012 and the durable admission path serialize new-session decisions
+  across replicas. They enforce one active interview per account, a global
+  active cap, monthly account allowance and an operator kill switch before the
+  session/start event commit. Account create/preparation/voice/run bursts use
+  atomic Supabase rate buckets; voice credentials retain a session-lifetime cap.
+- Added shared voice/grader provider breakers with single-probe recovery, safe
+  `/health/status` capability state, request support IDs, redacted failure logs,
+  throttled recovery errors and an exhausted-report alert signal. The operations
+  runbook names the host alerts that still require staging configuration/drills.
+- Added a CI artifact gate that builds and boots the exact Linux API image,
+  verifies its non-root runtime, health endpoints, packaged scenario catalogue
+  and Docker-stop shutdown. The image now supplies its own readiness health
+  check and includes the contracts package runtime dependency links.
+- Added a Render staging blueprint with manual deployment, owner-supplied
+  secrets and admission disabled until migration 012 and hosted acceptance pass.
+  Render commit identity feeds the API's safe release status automatically.
+- Automatic question selection now reads account history from either session
+  store and prefers an unseen question family. Explicit choices are preserved,
+  deleted-session history is not retained for rotation, and reuse resumes only
+  after every active family has been assigned.
+- Added bounded HTTPS delivery for a closed redacted alert schema. Final report
+  failure, report-recovery outages and realtime circuit openings carry safe
+  release/incident fields; redirect refusal, retry limits and shutdown draining
+  prevent silent loss or secret forwarding. Hosted paging drills remain open.
+- Root production build and API/web/contracts typechecks pass. The compiled API
+  started locally, exposed five scenarios and passed live/ready smoke requests.
+  The Docker daemon was unavailable, so migration 012 execution, a successful
+  CI image run, hosted signal/socket, configured-cap concurrency and cloud
+  readiness checks remain external acceptance.
 
 ## Handoff after every iteration
 

@@ -7,6 +7,16 @@ import { PgSessionStore } from "./pg-session-store.js";
 import { PgEventLog } from "./pg-event-log.js";
 import { loadScenarioLibrary, type LoadedScenario } from "../scenario/loader.js";
 import { reconstruct } from "./resume.js";
+import { PgSocketTickets } from "../auth/pg-socket-tickets.js";
+import { PgReportJobStore } from "../report/pg-report-store.js";
+import type { SessionReport } from "../report/evaluator.js";
+import { PgConsentStore } from "../privacy/pg-consent-store.js";
+import { PgSessionLifecycle } from "./pg-lifecycle.js";
+import { createSupabaseStorage } from "../../storage.js";
+import { buildServer } from "../../index.js";
+import { EvaluationQueue } from "../report/index.js";
+import { PgRuntimeOwnership } from "./runtime-ownership.js";
+import { PgRuntimeInputs } from "./runtime-inputs.js";
 
 const adminUrl = process.env["TEST_DATABASE_ADMIN_URL"];
 if (!adminUrl && process.env["REQUIRE_DATABASE_TESTS"] === "1") throw new Error("TEST_DATABASE_ADMIN_URL_REQUIRED");
@@ -38,7 +48,7 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     // Temporary cluster role belongs to this run; never change existing roles.
     await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
     roleCreated = true;
-    for (const migration of ["001_init.sql", "002_session_storage.sql"]) {
+    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql", "007_deletion_tombstones.sql", "008_runtime_ownership.sql", "009_runtime_inputs.sql"]) {
       await db.query(await readFile(new URL(`../../../migrations/${migration}`, import.meta.url), "utf8"));
     }
     const library = await loadScenarioLibrary(fileURLToPath(new URL("../../../../../content/scenarios/", import.meta.url)));
@@ -59,6 +69,31 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     userId, scenario, mode: "MOCK", idempotencyKey: key,
   });
 
+  it("serves persisted sessions and resumes code from a fresh server over the full bundle", async () => {
+    const session = await create();
+    const firstStorage = await createSupabaseStorage(connection);
+    const first = buildServer({ library: new Map(), ...firstStorage });
+    await first.ready();
+    try {
+      await firstStorage.eventLog.append({
+        sessionId: session.id, scenarioVersionId: session.scenarioVersionId,
+        type: "CODE_DELTA", actor: "CANDIDATE", traceId: session.traceId,
+        payload: { revision: 7, text: "def solve(): return 42" },
+        clientSeq: 4, idempotencyKey: "bundle-restart-code",
+      });
+    } finally { await first.close(); }
+    const secondStorage = await createSupabaseStorage(connection);
+    const second = buildServer({ library: new Map(), ...secondStorage });
+    await second.ready();
+    try {
+      const response = await second.inject({ method: "GET", url: `/v1/interview-sessions/${session.id}` });
+      expect(response.statusCode).toBe(200);
+      expect(await secondStorage.eventLog.latestClientSeq(session.id)).toBe(4);
+      expect((await secondStorage.eventLog.read(session.id))[0]?.payload)
+        .toEqual({ revision: 7, text: "def solve(): return 42" });
+    } finally { await second.close(); }
+  });
+
   it("deduplicates concurrent creates per user without cross-user collisions", async () => {
     const user = randomUUID();
     const key = randomUUID();
@@ -66,6 +101,81 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     expect(new Set(results.map((result) => result.id)).size).toBe(1);
     expect((await create(key)).id).not.toBe(results[0]!.id);
     expect(await store.idsForUser(user)).toEqual([results[0]!.id]);
+  });
+
+  it("persists unresolved input references and atomically completes them with checkpoints", async () => {
+    const session = await create();
+    const token = await new PgRuntimeOwnership(db).claim(session.id);
+    const log = new PgEventLog(db);
+    const input = await log.append({ ...requestFor(session.id, session.traceId),
+      idempotencyKey: "input-recovery", clientSeq: 0, runtimeToken: token! });
+    const fresh = new PgDatabase(connection);
+    try {
+      const inputs = new PgRuntimeInputs(fresh);
+      expect(await inputs.pending()).toContainEqual({ sessionId: session.id, inputSeq: input.event.seq });
+      const transaction = await db.connect();
+      const checkpoint = { ...requestFor(session.id, session.traceId), type: "RUNTIME_CHECKPOINT" as const,
+        actor: "SYSTEM" as const, runtimeToken: token!, completedInputSeq: input.event.seq,
+        idempotencyKey: `runtime-checkpoint:event:${input.event.seq}` };
+      try {
+        await transaction.query("BEGIN");
+        await log.appendInTransaction(transaction, checkpoint);
+        await transaction.query("ROLLBACK");
+      } finally { transaction.release(); }
+      expect(await inputs.pending()).toContainEqual({ sessionId: session.id, inputSeq: input.event.seq });
+      expect(await log.read(session.id)).toHaveLength(1);
+      await log.append(checkpoint);
+      expect(await inputs.pending()).not.toContainEqual({ sessionId: session.id, inputSeq: input.event.seq });
+      expect((await log.append(checkpoint)).duplicate).toBe(true);
+      expect(await log.read(session.id)).toHaveLength(2);
+    } finally { await fresh.close(); }
+  });
+
+  it("fences stale runtime writes and transitions across independent pools", async () => {
+    const session = await create();
+    const fresh = new PgDatabase(connection);
+    try {
+      const first = new PgRuntimeOwnership(db);
+      const second = new PgRuntimeOwnership(fresh);
+      const claims = await Promise.all([first.claim(session.id), second.claim(session.id)]);
+      expect(claims.filter(Boolean)).toHaveLength(1);
+      const old = claims.find(Boolean)!;
+      await db.query("UPDATE public.session_runtime_owners SET expires_at=clock_timestamp()-interval '1 second' WHERE session_id=$1", [session.id]);
+      expect(await first.renew(session.id, old)).toBe(false);
+      const replacement = await second.claim(session.id);
+      expect(replacement).toBeTruthy();
+      expect(replacement).not.toBe(old);
+      await first.release(session.id, old);
+      expect(await second.renew(session.id, replacement!)).toBe(true);
+      const log = new PgEventLog(db);
+      await expect(log.append({ ...requestFor(session.id, session.traceId), runtimeToken: old, idempotencyKey: "stale" }))
+        .rejects.toThrow("RUNTIME_OWNERSHIP_LOST");
+      await expect(new PgSessionLifecycle(db).transitionWithEvent(session.id, "ORAL_PROBLEM_DELIVERY", "CLARIFICATION", "stale", old))
+        .rejects.toThrow("RUNTIME_OWNERSHIP_LOST");
+      expect((await store.get(session.id))?.state).toBe("ORAL_PROBLEM_DELIVERY");
+      expect(await log.read(session.id)).toEqual([]);
+      await log.append({ ...requestFor(session.id, session.traceId), runtimeToken: replacement!, idempotencyKey: "current" });
+      await store.end(session.id);
+      expect(await second.renew(session.id, replacement!)).toBe(false);
+      await expect(log.append({ ...requestFor(session.id, session.traceId), runtimeToken: replacement!, idempotencyKey: "after-end" }))
+        .rejects.toThrow("RUNTIME_OWNERSHIP_LOST");
+    } finally { await fresh.close(); }
+  });
+
+  it("discovers committed report work after restart without a report request", async () => {
+    const lifecycle = new PgSessionLifecycle(db);
+    const session = await lifecycle.createStarted({ userId: randomUUID(), scenario,
+      mode: "MOCK", idempotencyKey: randomUUID() });
+    await lifecycle.endWithReport(session.id, scenario.version.rubricId);
+    const jobs = new PgReportJobStore(db);
+    expect(await jobs.recoverable(new Date().toISOString(), 100)).toContain(session.id);
+    const fresh = new PgDatabase(connection);
+    try {
+      const recovery = new EvaluationQueue(new PgEventLog(fresh), undefined, undefined, new PgReportJobStore(fresh));
+      await recovery.recover(100);
+      expect((await jobs.get(session.id))?.status).toBe("READY");
+      expect(await jobs.recoverable(new Date().toISOString(), 100)).not.toContain(session.id);
+    } finally { await fresh.close(); }
   });
 
   it("persists pins and reconstructs code/notes through a fresh pool", async () => {
@@ -97,6 +207,140 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     expect(await log.latestSeq(session.id)).toBe(31);
     await expect(log.append({ ...base, actor: "INVALID" as "CANDIDATE", payload: {}, idempotencyKey: "failed-insert" })).rejects.toThrow();
     expect((await log.append({ ...base, payload: {}, idempotencyKey: "after-rollback" })).event.seq).toBe(32);
+  });
+
+  it("persists browser sequence progress and rejects reuse with another key", async () => {
+    const session = await create();
+    const log = new PgEventLog(db);
+    const base = { sessionId: session.id, scenarioVersionId: scenario.version.id, actor: "CANDIDATE" as const, type: "NOTE_DELTA" as const, traceId: session.traceId };
+    const first = await log.append({ ...base, payload: { text: "first" }, idempotencyKey: "client-0", clientSeq: 0 });
+    expect(first.duplicate).toBe(false);
+    const fresh = new PgDatabase(connection);
+    try { expect(await new PgEventLog(fresh).latestClientSeq(session.id)).toBe(0); }
+    finally { await fresh.close(); }
+    expect((await log.append({ ...base, payload: { text: "retry" }, idempotencyKey: "client-0", clientSeq: 0 })).duplicate).toBe(true);
+    await expect(log.append({ ...base, payload: { text: "collision" }, idempotencyKey: "another-key", clientSeq: 0 }))
+      .rejects.toThrow("CLIENT_SEQUENCE_CONFLICT");
+    expect(await log.latestSeq(session.id)).toBe(0);
+  });
+
+  it("shares and atomically consumes socket tickets across repository instances", async () => {
+    const session = await create();
+    const other = await create();
+    const now = Date.now();
+    const principal = { userId: session.userId, expiresAt: now + 60_000 };
+    const issuer = new PgSocketTickets(db, () => now);
+    const first = await issuer.issue(session.id, principal);
+    const replacement = await issuer.issue(session.id, principal);
+    const fresh = new PgDatabase(connection);
+    const consumer = new PgSocketTickets(fresh, () => now);
+    try {
+      expect(await consumer.take(first, session.id)).toBeNull();
+      expect(await consumer.take(replacement, other.id)).toBeNull();
+      expect(await consumer.take(replacement, session.id)).toEqual(principal);
+      expect(await issuer.take(replacement, session.id)).toBeNull();
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("recovers expired report work and fences the stale worker", async () => {
+    const session = await create();
+    const jobs = new PgReportJobStore(db);
+    const t0 = "2026-09-13T00:00:00.000Z";
+    await jobs.enqueue(session.id, "rubric-coding-v1", t0);
+    const first = await jobs.claim(session.id, t0, "2026-09-13T00:00:10.000Z");
+    expect(first).not.toBeNull();
+    expect(await jobs.claim(session.id, "2026-09-13T00:00:05.000Z", "2026-09-13T00:00:15.000Z")).toBeNull();
+    const fresh = new PgDatabase(connection);
+    const replacement = await new PgReportJobStore(fresh)
+      .claim(session.id, "2026-09-13T00:00:11.000Z", "2026-09-13T00:00:21.000Z");
+    await fresh.close();
+    expect(replacement).not.toBeNull();
+    const report: SessionReport = {
+      sessionId: session.id,
+      scenarioVersionId: session.scenarioVersionId,
+      rubricId: "rubric-coding-v1",
+      rubricVersion: 1,
+      generatedAt: "2026-09-13T00:00:12.000Z",
+      overall: 50,
+      dimensions: [],
+      hintsUsed: [],
+      probesAsked: [],
+      missedOpportunities: [],
+      drills: { communication: "practice", algorithmic: "practice", testing: "practice" },
+    };
+    expect(await jobs.complete(session.id, first!.token, report, report.generatedAt)).toBeNull();
+    expect((await jobs.complete(session.id, replacement!.token, report, report.generatedAt))?.status).toBe("READY");
+    expect((await new PgReportJobStore(db).get(session.id))?.report).toEqual(report);
+  });
+
+  it("persists consent history across pools and removes it for account deletion", async () => {
+    const userId = randomUUID();
+    const first = new PgConsentStore(db);
+    await first.record(userId, {
+      scope: "TRANSCRIPT",
+      granted: true,
+      decidedAt: "2026-09-13T00:00:00.000Z",
+      noticeVersion: "consent-2026-08-1",
+    });
+    await first.record(userId, {
+      scope: "TRANSCRIPT",
+      granted: false,
+      decidedAt: "2026-09-13T00:01:00.000Z",
+      noticeVersion: "consent-2026-08-1",
+    });
+    const fresh = new PgDatabase(connection);
+    try {
+      const restored = new PgConsentStore(fresh);
+      expect((await restored.get(userId)).grants.map((grant) => grant.granted)).toEqual([true, false]);
+      expect(await restored.deleteForUser(userId)).toBe(2);
+      expect((await first.get(userId)).grants).toEqual([]);
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("tombstones before redaction and refuses resurrection", async () => {
+    const session = await create();
+    const log = new PgEventLog(db);
+    await log.append({ ...requestFor(session.id, session.traceId), idempotencyKey: "private-before-delete" });
+    await store.end(session.id);
+    await store.tombstone(session.id, "2026-09-13T00:00:00.000Z");
+    expect(await log.redact(session.id)).toBe(1);
+    expect(await store.get(session.id)).toBeNull();
+    expect((await log.read(session.id))[0]?.payload).toEqual({ redacted: true });
+    await expect(log.append({ ...requestFor(session.id, session.traceId), idempotencyKey: "resurrection" }))
+      .rejects.toThrow("SESSION_DELETED");
+    await expect(db.query("UPDATE public.session_events SET payload='{}'::jsonb WHERE session_id=$1", [session.id])).rejects.toThrow();
+  });
+
+  it("commits lifecycle evidence and the report outbox atomically", async () => {
+    const lifecycle = new PgSessionLifecycle(db, () => "2026-09-13T00:10:00.000Z");
+    const session = await lifecycle.createStarted({
+      userId: randomUUID(),
+      scenario,
+      mode: "MOCK",
+      idempotencyKey: randomUUID(),
+    });
+    expect((await new PgEventLog(db).read(session.id)).map((event) => event.type)).toEqual(["SESSION_STARTED"]);
+    const transitioned = await lifecycle.transitionWithEvent(
+      session.id,
+      "ORAL_PROBLEM_DELIVERY",
+      "CLARIFICATION",
+      "brief delivered",
+    );
+    expect(transitioned.state).toBe("CLARIFICATION");
+    await expect(lifecycle.transitionWithEvent(session.id, "ORAL_PROBLEM_DELIVERY", "CLARIFICATION", "stale"))
+      .rejects.toThrow("STALE_SESSION_STATE");
+    const ended = await lifecycle.endWithReport(session.id, scenario.version.rubricId);
+    expect(ended.endedAt).toBe("2026-09-13T00:10:00.000Z");
+    expect((await new PgEventLog(db).read(session.id)).map((event) => event.type)).toEqual([
+      "SESSION_STARTED",
+      "STATE_TRANSITIONED",
+      "SESSION_ENDED",
+    ]);
+    expect(await new PgReportJobStore(db).get(session.id)).toMatchObject({ status: "QUEUED", rubricId: scenario.version.rubricId });
   });
 
   it("keeps pause increments atomic and completed sessions terminal", async () => {

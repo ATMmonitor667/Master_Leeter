@@ -1,7 +1,14 @@
 MASTER LEETER — RESUMABLE IMPLEMENTATION HANDOFF
-Updated: 2026-09-12
+Updated: 2026-09-14
 
 READ THIS FIRST
+Production work now lives in the isolated worktree:
+C:/Users/ATM Rahat Hossain/Desktop/Master_Leeter/.worktrees/production-runtime
+Branch: codex-production-02b3-supabase-runtime. The main checkout is voiceWorks
+with separate uncommitted voice work. Do not switch or modify that checkout.
+Ownership changes were recovered selectively from GitHub Desktop stash
+26a2f360b56a6d77da7ab282582d906446708363 and committed as befbc94.
+The original stash remains intact; do not reapply it over the recovered commit.
 User owns deployment, pushing and merging. After each verified checkpoint,
 commit the intended files, report the commit and owner actions, then pause.
 Never claim an entire iteration is finished when only a checkpoint is done.
@@ -10,6 +17,226 @@ untracked CODE_REVIEW_2026-09-12.txt without an explicit reason.
 Before resuming: git status --short --branch; git log -5 --oneline.
 Read this file, docs/PRODUCTION_ITERATIONS.md and docs/SUPABASE_AUTH.md.
 Inspect any AGENTS.md instructions. Preserve unrelated edits.
+
+CHECKPOINT RESULT — DURABLE BROWSER INPUT PROCESSING RECORDS (2026-09-14)
+- Migration 009 creates private runtime_inputs references, with no payload copy.
+  It backfills prior browser events using deterministic checkpoint keys to mark
+  known completions. Missing checkpoints remain unresolved, including partial work.
+- PgEventLog inserts the input reference in the SAME transaction as the browser
+  event, before ACK is possible. InterviewRuntime passes completedInputSeq to its
+  final event checkpoint. PgEventLog validates the checkpoint key/type/actor and
+  ownership token, then marks completion in that checkpoint transaction.
+- PgRuntimeInputs.pending provides bounded ordered discovery for active sessions,
+  excluding tombstones/ended sessions. Discovery does NOT execute or reclassify.
+- Tests cover transaction ordering and rollback on ledger/completion failure,
+  rejected candidate completion metadata, bounded discovery, and real DB pending
+  persistence/completion rollback/idempotency (live DB execution remains pending).
+- IMPORTANT: durable routing/replay worker is still required. Unresolved inputs
+  may have partial derived outputs; never blindly rerun historical model calls.
+  Voice-ready and worker-result command routing are not covered by browser rows.
+- During this checkpoint a background editor action sorted the session index and
+  injected an automatic export when runtime-inputs.ts appeared. Comparison showed
+  no other nonblank edits. Restored that file from befbc94; no intended work lost.
+  Existing .vscode settings identify Auto Barrel and disable it, but the observed
+  background rewrite still occurred. Run corruption checks before commits.
+Validation: API typecheck and 738 API tests pass; 16 real database tests skipped.
+Workspace typecheck also passed after ownership recovery. No Supabase changes.
+NEXT: reconcile pending inputs against recorded decisions/checkpoints, then add
+durable owner-routed dispatch and worker/voice commands. Deadlines and production
+activation remain later steps. Do not advertise cross-instance routing as done.
+
+CHECKPOINT RESULT — FENCED RUNTIME OWNERSHIP (2026-09-14)
+- Migration 008 adds private session_runtime_owners with RLS and browser revokes.
+  PgRuntimeOwnership locks the parent session for claim/renew, uses database time,
+  assigns a fresh UUID fencing token per acquisition, and refuses expired renewal
+  or ownership of ended/deleted sessions. Stale release cannot remove a new owner.
+- PgEventLog validates server-only runtimeToken within its append transaction;
+  PgSessionLifecycle validates it before stage mutation under the same row lock.
+- The storage bundle injects ownership. Session runtime creation is coalesced;
+  runtime/checkpoint/client-channel writes carry a token. Heartbeats renew leases;
+  lost ownership discards the local runtime and stops its reevaluation timer.
+  Voice delivery records are fenced; tool replies recheck ownership and use the
+  immutable stored scenario instead of requiring active catalogue membership.
+- Two-server tests verify explicit non-owner rejection, expiry/takeover and no
+  duplicate opening. Handle tests cover concurrent claims, database outages and
+  shutdown during acquisition. Live integration adds cross-pool write/transition
+  fencing, rollback and terminal-session checks; execution is pending database CI.
+Validation: workspace typecheck and 733 API tests pass, 15 database tests skipped.
+No Supabase migration, production startup activation, push or deployment performed.
+LIMIT: non-owner HTTP/WS admission returns 409 RUNTIME_OWNED_ELSEWHERE. Commands
+are not yet forwarded to their owner. This is ownership enforcement, NOT completed
+cross-instance routing or durable input processing. Startup remains memory mode.
+NEXT: durable command inbox/outbox and routing to the lease holder, including
+commit-before-dispatch crash recovery and worker completions. Then persistent
+connection/deadline state, live DB acceptance and durable startup activation.
+
+CHECKPOINT RESULT — STORAGE COMPOSITION + REPORT RECOVERY (2026-09-14)
+- Resumed codex-production-02b3-supabase-runtime at cd8f8af. The working tree
+  was on the older codex branch; previous unfinished storage edits were absent.
+- apps/api/src/storage.ts composes sessions, events, lifecycle, socket tickets,
+  consent and report jobs over one checked database pool. Checks critical schema
+  fields and each required table privilege plus redaction EXECUTE. Pool cleanup
+  occurs on readiness failure and server close; errors expose safe codes only.
+- The bundle is available for explicit integration injection, NOT selected by
+  production startup. Runtime ownership/routing and durable deadlines remain
+  prerequisites. No env files changed and no Supabase migrations were applied.
+- ReportJobStore now discovers bounded queued/expired jobs. EvaluationQueue
+  recovers them without a browser request, deduplicates local processing, retains
+  database claim fencing, and sanitizes evaluator failures. buildServer starts
+  recovery when a report store is injected and drains it before closing storage.
+- recovery-worker.ts polls without overlapping batches and retries discovery
+  outages. Queued jobs survive failed claims; FAILED evaluations still require
+  explicit retry (automatic provider backoff/caps remain future I05 work).
+- storage.test.ts and report/recovery.test.ts cover lifecycle cleanup, missing
+  schema/privileges, recovery limits, competing workers, expired claims, privacy
+  and shutdown. pg-integration.test.ts adds full-bundle restart and durable
+  report discovery acceptance for CI.
+Validation: workspace typecheck passes; 729 API tests pass, 14 live database
+tests skipped. Full suite needed --maxWorkers=2 --minWorkers=1 after an unrestricted
+run exhausted local memory. Docker CLI is installed, but default and desktop-linux
+engine probes hung even outside the sandbox; both probes were stopped. No live
+database or cloud acceptance is claimed. git diff --check passes.
+NEXT: fenced runtime ownership AND command routing/outbox, persistent connection
+and deadline state, then startup selection of the bundle. Run database CI and
+project-specific Supabase acceptance before claiming durable production readiness.
+
+CHECKPOINT RESULT — I02b.3a REPOSITORY BOUNDARY + PIN RECOVERY (2026-09-13)
+Branch: codex-production-02b3-supabase-runtime, based on main e7f2dcb.
+- buildServer and the session module now accept SessionStore/EventLog interfaces;
+  PostgreSQL adapters are no longer excluded by concrete in-memory types.
+- Every SessionStore returns its immutable pinned scenario snapshot. The memory
+  adapter clones on write/read so caller mutation cannot change a live session.
+- Runtime creation reads and validates the stored version/hash snapshot. It no
+  longer depends on the ACTIVE catalogue retaining an old or retired question.
+- Added a server-wiring regression that opens an interview from its pin with an
+  empty active catalogue, plus memory pin immutability coverage.
+Validation: all 700 API tests pass; six live database tests remain skipped;
+API typecheck and targeted wiring/storage tests pass.
+Not enabled: start() still constructs memory storage. No Supabase connection,
+migration or cloud write occurred. Consent/reports/tickets/runtime checkpoints,
+client sequence and deletion remain process-local, so enabling only these two
+PostgreSQL adapters would still be unsafe.
+NEXT: persist runtime/client checkpoints and lifecycle data, then assemble one
+complete durable storage bundle and fail closed before selecting it at startup.
+
+CHECKPOINT RESULT — I02b.3b DURABLE CLIENT SEQUENCE (2026-09-13)
+- Candidate browser sequence is now part of the EventLog append contract and is
+  committed in the same row as its evidence. A fresh SessionChannel initializes
+  its expected sequence from durable storage instead of process memory.
+- The resume response now returns the authoritative next browser sequence and
+  code revision. The interview page waits for those cursors before constructing
+  SessionClient, so its first post-refresh edit continues both counters.
+- Migration 003_client_sequence.sql adds a nonnegative client_seq column and a
+  per-session partial unique index. PgEventLog normalizes that index collision
+  into the channel recovery protocol and refreshes stale process state before
+  returning REPLAY_FROM.
+- InMemoryEventLog implements the same uniqueness/latest-sequence contract.
+- Added process-restart, stale-writer, adapter-protocol and opt-in live database
+  coverage; the live database case remains skipped until the isolated database
+  harness is configured and run.
+Not enabled: startup still selects the complete in-memory bundle. Durable runtime
+policy state, lifecycle transactions, consent, reports/jobs, tickets, leases and
+deletion must be completed before Supabase mode can be enabled safely.
+NEXT: implement deterministic runtime recovery from committed events without
+rerunning classifiers or replaying previously spoken audio.
+
+CHECKPOINT RESULT — I02b.3c RUNTIME RESTART RECOVERY (2026-09-13)
+- InterviewRuntime now writes versioned RUNTIME_CHECKPOINT events containing
+  stage, candidate/observer state, code revision/source, hint/probe/follow-up
+  budgets, disclosed facts, brief count, run/stage signals and timing state.
+- A fresh runtime hydrates the newest valid checkpoint and folds later recorded
+  outputs without reclassifying historical transcripts or scheduling speech.
+  Live audio authorization is intentionally cleared during recovery.
+- Runtime creation reads history before applying the newly committed event.
+  The voice-ready replay path restores the full stream and remains idempotent,
+  so a fresh API process does not deliver the opening a second time.
+- Invalid checkpoints, event gaps and session/scenario pin mismatches fail the
+  runtime closed instead of silently starting with empty policy state.
+Validation: workspace typecheck; 38 contract, 708 API and 123 web tests pass;
+seven live database tests remain skipped. The restart wiring test uses two fresh
+server instances over one repository/event log and verifies no reclassification
+or duplicate opening.
+Remaining limitation: a crash between committing an input event and recording
+its first derived output still needs an explicit durable processing/outbox state.
+Runtime checkpoints alone do not provide multi-replica ownership or atomic
+stage/session updates.
+NEXT: make lifecycle transitions/outbox records transactional, then persist the
+remaining consent/report/job/ticket/deletion stores before enabling durable mode.
+
+CHECKPOINT RESULT — I02b.3d SHARED SOCKET TICKETS (2026-09-13)
+- Access control now depends on an async SocketTicketStore interface; local/test
+  mode retains the memory implementation and buildServer accepts injection.
+- PgSocketTickets stores only SHA-256 token hashes, replaces the previous pending
+  ticket per user/session, caps the table under a transaction advisory lock and
+  consumes a matching ticket atomically with DELETE RETURNING.
+- Migration 004 creates the private ticket table with expiry and uniqueness
+  constraints, RLS enabled and all browser/public privileges revoked.
+- Protocol tests cover hashing, capacity rollback and atomic consume. The live
+  integration suite covers replacement, wrong-session refusal, cross-pool
+  redemption and one-use behavior; it remains skipped without the disposable
+  PostgreSQL harness.
+Validation: API typecheck and all 711 API tests pass; eight live database tests
+remain skipped. Startup still uses memory tickets because durable mode is not
+yet complete or selectable.
+NEXT: persist report jobs/results and consent, then add lifecycle/outbox and
+deletion coordination before assembling the Supabase runtime bundle.
+
+CHECKPOINT RESULT — I02b.3e REPORT JOBS + CONSENT REPOSITORIES (2026-09-13)
+- EvaluationQueue now uses an async ReportJobStore. Work is claimed with an
+  expiring lease and random fencing token; an expired job can be recovered and
+  the stale worker cannot overwrite its replacement's result.
+- PgReportJobStore persists queue state and complete report bodies in the
+  existing session_reports table. Migration 005 adds paired lease columns and
+  a claim index. buildServer accepts a report repository as part of its storage
+  boundary; local/test mode retains InMemoryReportJobStore.
+- Consent routes now use ConsentStore rather than a process Map. PgConsentStore
+  keeps timestamped, ordered, append-only grant/revocation history; migration
+  006 creates its private table with RLS and browser/public privilege revocation.
+- Runtime checkpoint payloads are now fully removed by privacy redaction because
+  they contain code and derived candidate context.
+- Protocol and memory tests cover claim fencing, malformed consent fail-closed
+  behavior and ordered history. Opt-in live tests cover cross-pool report claim
+  replacement/result persistence and consent deletion; still pending execution.
+NEXT: add database redaction+tombstones and transactional lifecycle/outbox, then
+persist leases/run admission and assemble the all-or-nothing Supabase bundle.
+
+CHECKPOINT RESULT — I02b.3f TOMBSTONE-FIRST DELETION (2026-09-13)
+- SessionStore now tombstones sessions. Normal lookup, owner enumeration and
+  pinned-scenario reads hide tombstoned sessions; memory and PostgreSQL mutation
+  paths refuse further lifecycle changes.
+- InMemoryEventLog permanently rejects appends after redaction. PgEventLog locks
+  and checks the session tombstone before every append and delegates redaction
+  to a restricted database function.
+- Migration 007 adds deleted_at and a SECURITY DEFINER redaction function that
+  runs only for a tombstoned session. The event mutation trigger permits only
+  that function's exact `{redacted:true}` payload replacement; sequence, type,
+  actor, pin, trace, idempotency/client sequence and original evidence hash are
+  immutable. Public/anon/authenticated execution is revoked.
+- Privacy routes tombstone before touching report/event stores, closing the race
+  where a late worker or replay could restore private payloads after deletion.
+Validation includes memory resurrection rejection and opt-in live PostgreSQL
+coverage for tombstone visibility, full payload removal, append refusal and
+continued rejection of arbitrary UPDATE. Live execution remains pending.
+NEXT: implement atomic create+SESSION_STARTED and end+SESSION_ENDED+report-outbox
+transactions, then persist/fence session ownership and select the full bundle.
+
+CHECKPOINT RESULT — I02b.3g TRANSACTIONAL SESSION LIFECYCLE (2026-09-13)
+- SessionLifecycle now owns create+SESSION_STARTED, stage+STATE_TRANSITIONED and
+  end+SESSION_ENDED+queued-report boundaries. registerSessionModule can inject
+  this coordinator while retaining the existing local memory composition.
+- PgSessionLifecycle performs every boundary on one checked-out connection and
+  transaction. Stage advancement locks the session and compares the expected
+  prior state; a stale runtime cannot commit a competing transition.
+- PgEventLog exposes a caller-transaction append that retains the session lock,
+  tombstone and immutable scenario-pin checks plus idempotent sequence logic.
+- The report row is the durable completion outbox. EvaluationQueue's follow-up
+  enqueue finds that committed row and claims it; a crash cannot leave an ended
+  session with no recoverable report work.
+Validation covers rollback/release at the adapter boundary and an opt-in live
+transaction trajectory through create, stage, stale-stage rejection, end and
+report outbox. Live execution remains pending.
+NEXT: add fenced shared runtime ownership and persistent connection/deadline
+state, then construct and select the complete Supabase storage bundle.
 
 BASELINE
 Branch: codex-production-02-auth-storage (flat name avoids remote codex conflict).
@@ -199,3 +426,186 @@ NEXT PERSON / AGENT:
 5. Then proceed to I02b.3: whole persistence boundary, checkpoints, jobs, privacy
    and shared tickets. Still no server restart recovery or persistent runtime.
 No Supabase secrets are needed for CI; it uses a disposable local test service.
+
+CHECKPOINT RESULT — I03 CODE IMPLEMENTATION
+- Branch: codex-production-03-preparation, based on cd64893.
+- Migration 010 adds private interview_preparations plus immutable tone/duration
+  settings. PgPreparationStore and InMemoryPreparationStore cover retry-safe
+  analysis, fact confirmation, scenario pinning, restatement persistence and
+  resume/preparation deletion.
+- /v1/preparations supports consented pasted text, source-backed fact review,
+  source erasure and completion into one idempotent interview session.
+- Gemini resume analysis treats the resume as untrusted data and drops facts
+  without an exact source quote. Restatement validation rejects contract drift
+  and private-content matches, then falls back to canonical reviewed wording.
+- Extra nice, Normal and Mean are pinned presentation settings; assistance mode
+  remains independent. Realtime credentials receive the server-owned tone
+  persona. Every session now receives exactly 2700 seconds, beginning only on
+  the first state transition after setup.
+- The web setup flow collects consent/resume/tone, shows extracted evidence for
+  explicit confirmation, supports source erasure and completes preparation.
+- Verification performed: contracts, API and web TypeScript checks plus
+  git diff whitespace validation. Per owner direction, no tests were added or
+  run for I03; a separate test pass must cover route ownership/idempotency,
+  migration SQL, injection fixtures, restatement leakage and tone review.
+- Before deployment: apply migrations through 011 to development Supabase, set
+  RESUME_ANALYZER_MODEL and RESTATEMENT_MODEL if defaults are unsuitable, then
+  run one synthetic-resume flow and verify account/session deletion receipts.
+
+CHECKPOINT RESULT — I04 VOICE LIFETIME: DEVICE RECOVERY + HANDLE CUSTODY
+- Branch: codex-production-04-live-experience, on top of 7a20001.
+- Continues the previous agent's uncommitted work; its pre-existing diff is
+  preserved verbatim at .agent-snapshots/pre-claude-*.patch before any edit.
+
+Implemented (device switching, I04 item 4's second half):
+- apps/web/lib/voice-session.ts: openStream(), replaceCaptureStream(),
+  recoverMicrophone(), handleDeviceChange(), notifyDevices() and a public
+  switchMicrophone(). A device swap rebuilds ONLY the capture graph. The
+  provider socket, the pending speech authorization and the server-owned
+  deadline are untouched, so changing headsets costs no interview time and
+  does not replay the opening brief.
+- Microphone loss now attempts recovery — same device id first, then the
+  system default — instead of the previous terminal fail(). The provider
+  connection stays up through the failure, so choosing a device recovers in
+  place. A recovery landing while status is FAILED returns it to LISTENING.
+- A navigator.mediaDevices devicechange listener is registered at start and
+  removed at stop. Mute is applied to replacement tracks in openStream, so a
+  swap cannot silently un-mute the candidate. Old tracks are stopped only
+  after the replacement is live, so the capture indicator never blinks off.
+- VoiceControls + interview page: the microphone picker is now available
+  during the round and reports the device the session is actually capturing
+  from, including after an automatic recovery.
+
+Implemented (resumption handle custody, correcting I04 item 2):
+- The previous implementation accepted resumptionHandle in the realtime-token
+  request body and forwarded it to the provider. That let any caller mint a
+  credential that restores ANOTHER session's accumulated audio context —
+  brief, probes and hints already spoken into it. Route ownership limited the
+  blast radius to one account; it did not close it.
+- apps/api/src/modules/realtime/resumption.ts: VoiceResumptionStore, an
+  in-process TTL map keyed by session id. Deliberately not a database column:
+  a handle is transport state with a lifetime of minutes, it is not interview
+  evidence, and it must not enter the append-only log.
+- New POST /interview-sessions/:id/voice-resumption is report-only; ownership
+  is enforced by the existing module preHandler. The mint route no longer
+  reads any handle from its request body and uses only what is stored for the
+  session it is minting for. A failed mint clears the stored handle so a
+  stale one cannot loop. An ended session clears it and refuses reports.
+- Side effect worth having: continuity now survives a page refresh, because
+  the handle no longer lives only in browser memory.
+
+Verification performed — read this before trusting the above:
+- Syntax and in-file type checking of all six changed files using a standalone
+  tsc 5.9.3. Clean.
+- pnpm typecheck, pnpm test and the web/API vitest suites were NOT run. The
+  workspace node_modules is a pnpm symlink farm created on Windows; those
+  links return I/O errors through the Linux mount this agent had, so the
+  project toolchain could not execute. This is a tooling limit, not a pass.
+- No new tests were written, per owner direction that tests belong to the
+  separate test pass.
+
+REQUIRED BEFORE COMMIT (owner, on Windows):
+  pnpm typecheck
+  pnpm --filter @master-leeter/web exec vitest run
+  pnpm --filter @master-leeter/api exec vitest run src/modules/session src/modules/realtime
+  git diff --check
+Existing suites most likely to move: any test asserting the realtime-token
+request body, and any that construct VoiceSession against a mediaDevices stub
+without addEventListener or getAudioTracks().readyState.
+
+FOLLOW-UP IN THE SAME CHECKPOINT — speaker side and item 5 procedure:
+- Output-device loss is now detected. Losing a speaker throws nothing; the
+  interviewer simply goes inaudible, which reads as the AI having stopped
+  talking, so recoverSpeaker() checks enumeration explicitly rather than
+  waiting for an error that never arrives. It falls back to the default sink
+  and resumes an AudioContext that the removal suspended — left suspended,
+  scheduled interviewer audio is dropped silently.
+- switchSpeaker() routes output where AudioContext.setSinkId exists. Where it
+  does not, the picker is hidden rather than offering a control that lies.
+- onDeviceChange now reports one VoiceDeviceState (microphones, speakers,
+  both active ids, canChooseSpeaker) instead of a bare microphone list.
+- docs/I04_ACCEPTANCE.md: the item 5 procedure, written as eight checks with
+  the evidence each one must produce. Deliberately a runbook and not a test
+  suite, per owner direction that test implementation is a separate pass.
+  Checks 1, 2, 7 and 8 need a live database and a person at a microphone and
+  cannot be closed by source inspection.
+
+STILL OPEN IN I04:
+- Item 5 itself: nobody has RUN docs/I04_ACCEPTANCE.md. Every check in it is
+  open. This is I04's exit condition and it is not met.
+- A rotation that lands mid-utterance still reports INTERRUPTED and drops the
+  authorized wording rather than re-requesting it. Correct for not repeating
+  speech; unverified against a real 45-minute round.
+- Speaker recovery is unverified on Windows audio, where default-device
+  switching behaves differently from the Chromium model assumed here.
+
+I05 READINESS:
+Not started, deliberately. NEXT_IMPLEMENTATION_PLAN's own rule is not to begin
+a later item while the current item's exit is unmet, and I04's exit is the
+acceptance run above. I05 also grades SEALED evidence, so starting it before
+checks 3, 4 and 5 have passed would build graders on a sealing path nobody has
+watched hold under a real race.
+
+I05 FIRST CODE CHECKPOINT — INDEPENDENT GRADERS
+- Branch: codex-production-05-independent-graders, based on I04 commit a24c6db.
+- Solution and transcript grading are separate Gemini requests with disjoint
+  evidence. Each produces a 0-100 estimate, confidence, rubric dimensions,
+  feedback and validated event citations; neither receives the other's result.
+- Fenced partial progress in migration 011 lets a retry reuse a completed grader
+  result. The recovery worker retries provider failures after exponential
+  backoff, including after restart, up to three attempts; candidate polling
+  exposes the retry state and regeneration remains asynchronous.
+- The report UI presents both grades separately, labels them model-estimated and
+  retains the deterministic behavior index as a distinct 1-4 signal.
+- Still open: apply migration 011 in development Supabase, run live model fixtures,
+  calibrate against human reviewers, add the separately assigned automated tests,
+  and complete I04's real voice acceptance procedure.
+
+FINAL I04 CODE FOLLOW-UP — PROVIDER TURN AND COMPLETION DRAIN
+- GoAway replacement now waits for the latest resumption-handle report before
+  minting, starts early enough to reserve handshake time, and only closes server
+  speech authorization when an interviewer utterance is actually in flight.
+- Manual VAD mute/disconnect now sends activityEnd. Complete Interview performs a
+  bounded four-second provider transcript drain before selecting and acknowledging
+  the final client cursor, covering the final-spoken-answer race in acceptance #4.
+- Retrying after partial voice startup releases the old tracks, AudioContext,
+  listeners and timers first. Startup failures also clean up immediately instead
+  of leaving the browser capture indicator active.
+- Deliberate microphone switches disarm the retired track's hardware-loss handler,
+  avoiding a duplicate recovery stream. Initial device state reaches the pickers,
+  and microphone failure leaves the live connection available for in-place recovery.
+- Validation on Windows: web typecheck PASS, API typecheck PASS, web production
+  build PASS, API production build PASS, git diff check PASS. Tests were not run
+  or added by explicit owner instruction.
+
+I06 FIRST CODE CHECKPOINT — RELEASE BOUNDARY
+- Branch: codex-production-06-launch-hardening, stacked on I05 commit 5c68a35.
+- Added the compiled/non-root Node 22 API image, production start command, typed
+  fail-fast production config, storage readiness, live/ready probes and bounded
+  SIGTERM admission drain.
+- Centralized browser API/socket origins and made hosted builds fail on insecure
+  or missing API/Supabase settings. Security and private-cache headers are set.
+- Validation: all package typechecks PASS, root production build PASS, compiled
+  API startup and five-scenario live/ready smoke PASS. Docker was unavailable.
+- Follow-up in the same branch: migration 012 now supplies one-active-account
+  enforcement and atomic shared rate buckets. New-session admission serializes
+  global capacity/monthly account checks, honors the kill switch and keeps
+  idempotent retries free; voice still has a lifetime credential cap.
+- Follow-up: voice/evaluator provider circuits, safe capability status, request
+  support IDs, redacted failure signals and recovery/exhaustion alert events are
+  implemented. Hosting still has to route those events to a named operator and
+  prove paging with forced failures.
+- Follow-up: CI now builds and boots the exact non-root Linux image, checks its
+  readiness/liveness and packaged scenarios, and stops it through Docker. A
+  manual-deploy Render staging blueprint carries owner-entered secrets and keeps
+  admission disabled until migration and hosted acceptance complete.
+- Follow-up: normal and resume-prepared interviews prefer an account-unseen
+  question family from durable session history, then allow reuse only after the
+  active catalogue is exhausted. Explicit question choices remain authoritative.
+- Follow-up: report exhaustion/recovery and realtime circuit-open events now use
+  an optional bounded HTTPS webhook with a closed redacted payload, transient
+  retries and shutdown drain. Staging still has to prove delivery and escalation.
+- Still open in I06: backup/restore and rollback automation, hosted browser/load
+  gates, alert paging drills and the invite pilot. Migration 012 must be applied
+  before this checkpoint can boot against development Supabase; the CI artifact
+  job must also pass on GitHub because no local Docker daemon was available.

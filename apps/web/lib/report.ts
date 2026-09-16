@@ -35,6 +35,21 @@ export interface SessionReport {
   probesAsked: string[];
   missedOpportunities: string[];
   drills: { communication: string; algorithmic: string; testing: string };
+  solutionGrade?: IndependentGrade;
+  transcriptGrade?: IndependentGrade;
+}
+
+export interface IndependentGrade {
+  status: "SCORED" | "INSUFFICIENT_EVIDENCE";
+  score: number | null;
+  confidence: number;
+  summary: string;
+  strengths: string[];
+  improvements: string[];
+  dimensions: Array<{ key: string; score: number | null; rationale: string }>;
+  evidence: Array<{ seq: number; claim: string; quote?: string; codeRevision?: number; segmentId?: string }>;
+  model: string;
+  promptVersion: string;
 }
 
 export const DIMENSION_LABELS: Record<string, string> = {

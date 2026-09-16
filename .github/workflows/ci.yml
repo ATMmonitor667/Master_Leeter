@@ -6,6 +6,37 @@ on:
   pull_request:
 
 jobs:
+  artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API release image
+        run: docker build -f Dockerfile.api -t master-leeter-api:ci .
+      - name: Verify non-root compiled runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect master-leeter-api:ci --format '{{.Config.User}}')" = "node"
+          docker run --rm -d --name master-leeter-api-ci -p 4100:4000 \
+            -e NODE_ENV=development \
+            -e AUTH_MODE=development \
+            -e ALLOW_INSECURE_DEV=1 \
+            -e QUESTION_BANK_SOURCE=files \
+            -e PORT=4000 \
+            -e DRAIN_GRACE_MS=0 \
+            master-leeter-api:ci
+          trap 'docker logs master-leeter-api-ci || true; docker stop --time 2 master-leeter-api-ci || true' EXIT
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:4100/health/ready && break
+            if [ "$attempt" = 30 ]; then exit 1; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:4100/health/live
+          catalogue="$(curl --fail --silent http://127.0.0.1:4100/v1/scenarios)"
+          test "$(printf '%s' "$catalogue" | grep -o '"ref"' | wc -l)" -eq 5
+          docker stop --time 10 master-leeter-api-ci
+          trap - EXIT
+
   database:
     runs-on: ubuntu-latest
     services:

@@ -1,4 +1,4 @@
-import { InterviewModeSchema, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
+import { InterviewModeSchema, type InterviewState, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
@@ -6,6 +6,7 @@ import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.j
 import {
   MintLimiter,
   RealtimeTokenError,
+  VoiceResumptionStore,
   executeVoiceTool,
   type RealtimeTokenMinter,
 } from "../realtime/index.js";
@@ -13,18 +14,23 @@ import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario } from "../scenario/loader.js";
 import { type QuestionBank, FileQuestionBank, QuestionBankError, chooseQuestion } from "../scenario/question-bank.js";
 import { SessionChannel } from "./channel.js";
-import { InMemoryEventLog } from "./event-log.js";
-import { type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
+import { InMemoryEventLog, type EventLog } from "./event-log.js";
+import { isAbandoned, type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
 import { reconstruct } from "./resume.js";
 import { buildSessionReview } from "./review.js";
 import { enqueueRun, handleRunRequestedEvent, type RunContext } from "./runs.js";
 import {
   InMemorySessionStore,
   type InterviewSession,
+  type SessionStore,
   SessionNotFoundError,
   remainingSeconds,
 } from "./session-store.js";
 import { registerEventsSocket } from "./ws.js";
+import { FinalInputsPendingError, type SessionLifecycle } from "./lifecycle.js";
+import { RuntimeOwnerHandles, type RuntimeOwnership } from "./runtime-ownership.js";
+import { AdmissionError } from "../admission/index.js";
+import { ProviderCircuit } from "../../lib/provider-circuit.js";
 
 /**
  * Session module — session lifecycle, the app WebSocket, and the event log.
@@ -39,10 +45,12 @@ export {
   InMemorySessionStore,
   SessionNotFoundError,
   remainingSeconds,
+  DEFAULT_INTERVIEW_SECONDS,
   type InterviewSession,
   type SessionStore,
 } from "./session-store.js";
 export { SessionChannel, type ChannelDeps } from "./channel.js";
+export { InMemorySessionLifecycle, type SessionLifecycle } from "./lifecycle.js";
 export {
   GRACE_SECONDS,
   isAbandoned,
@@ -69,21 +77,33 @@ const VoiceToolBody = z.object({
   args: z.record(z.unknown()).default({}),
 });
 
+const VoiceResumptionBody = z.object({
+  /** Opaque handle emitted by the provider to the browser holding the socket. */
+  handle: z.string().min(1).max(16_384),
+});
+
 const RunBody = z.object({
   source: z.string().max(200_000),
   revision: z.number().int().nonnegative(),
   input: z.string().max(100_000).default(""),
 });
 
+const EndBody = z.object({
+  /** Highest browser event acknowledged before requesting the atomic seal. */
+  finalClientSeq: z.number().int().min(-1).default(-1),
+});
+
 export interface SessionModuleOptions {
   library: Map<string, LoadedScenario>;
   questionBank?: QuestionBank;
-  store?: InMemorySessionStore;
-  eventLog?: InMemoryEventLog;
+  store?: SessionStore;
+  eventLog?: EventLog;
   /** Absent until a judge model is configured. The interview works without it. */
   runner?: CodeRunner;
   /** Enqueued on end. Never awaited — evaluation is off the live path (ADR-004). */
-  evaluationQueue?: { enqueue(sessionId: string, rubricId: string): unknown };
+  evaluationQueue?: { enqueue(sessionId: string, rubricId: string): Promise<unknown> };
+  lifecycle?: SessionLifecycle;
+  runtimeOwnership?: RuntimeOwnership;
   /**
    * Shared across every session in the process, deliberately.
    *
@@ -102,6 +122,9 @@ export interface SessionModuleOptions {
    * runs without voice exactly as it runs without a runner.
    */
   realtimeTokenMinter?: RealtimeTokenMinter;
+  maxRealtimeMintsPerSession?: number;
+  realtimeCircuit?: ProviderCircuit;
+  onRealtimeCircuitOpen?: (sessionId: string, failureKind: string) => void;
 }
 
 export async function registerSessionModule(
@@ -110,7 +133,6 @@ export async function registerSessionModule(
 ): Promise<void> {
   const store = opts.store ?? new InMemorySessionStore();
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
-  const channel = new SessionChannel({ sessions: store, eventLog });
   const questionBank = opts.questionBank ?? new FileQuestionBank(opts.library);
 
   /**
@@ -152,7 +174,12 @@ export async function registerSessionModule(
   const leases = new Map<string, LeaseState>();
 
   /** Caps realtime credential minting per session. Cleared when the session ends. */
-  const mintLimiter = new MintLimiter();
+  const mintLimiter = new MintLimiter(opts.maxRealtimeMintsPerSession);
+  const realtimeCircuit = opts.realtimeCircuit ?? new ProviderCircuit(3, 60_000);
+  // Handles are reported by the browser and read back here at mint time. The
+  // mint route never reads a handle out of its own request body — see
+  // VoiceResumptionStore for why that distinction is the whole point.
+  const resumption = new VoiceResumptionStore();
 
   /**
    * Live orchestrators, one per active session.
@@ -173,16 +200,72 @@ export async function registerSessionModule(
    * remaining" for the whole interview — and the gate's wrap-up rule reads it.
    */
   const liveSessions = new Map<string, InterviewSession>();
+  const owners = opts.runtimeOwnership ? new RuntimeOwnerHandles(opts.runtimeOwnership, (id) => {
+    runtimes.get(id)?.dispose();
+    runtimes.delete(id);
+    liveSessions.delete(id);
+  }) : undefined;
+  const channel = new SessionChannel({ sessions: store, eventLog: owners ? {
+    read: (id, seq) => eventLog.read(id, seq),
+    latestSeq: (id) => eventLog.latestSeq(id),
+    latestClientSeq: (id) => eventLog.latestClientSeq(id),
+    append: async (req) => {
+      const token = await owners.ensure(req.sessionId);
+      if (!token) throw new Error("RUNTIME_OWNERSHIP_LOST");
+      return eventLog.append({ ...req, runtimeToken: token });
+    },
+  } : eventLog });
+  const ownershipTimer = owners ? setInterval(() => { void owners.heartbeat(); }, 10_000) : undefined;
+  let completionTimer: ReturnType<typeof setInterval> | undefined;
+  ownershipTimer?.unref();
+  app.addHook("onClose", async () => {
+    if (ownershipTimer) clearInterval(ownershipTimer);
+    if (completionTimer) clearInterval(completionTimer);
+    await owners?.close();
+    for (const runtime of runtimes.values()) runtime.dispose();
+  });
 
-  async function runtimeFor(sessionId: string): Promise<InterviewRuntime | null> {
+  // Until command routing exists, reject commands on a non-owner explicitly.
+  // Never return success for a voice command that this process cannot handle.
+  if (owners) app.addHook("preHandler", async (req, reply) => {
+    const id = (req.params as { id?: string }).id;
+    if (!id || !req.routeOptions.url?.includes("/interview-sessions/:id")) return;
+    if (req.method !== "POST" && !req.routeOptions.url.endsWith("/events")) return;
+    const session = await store.get(id);
+    if (!session || session.endedAt) return;
+    try {
+      if (!await owners.ensure(id)) return reply.code(409).send({ error: "RUNTIME_OWNED_ELSEWHERE" });
+    } catch {
+      return reply.code(503).send({ error: "RUNTIME_OWNERSHIP_UNAVAILABLE" });
+    }
+  });
+
+  const pendingRuntimes = new Map<string, Promise<InterviewRuntime | null>>();
+  const dispatchTails = new Map<string, Promise<void>>();
+
+  async function runtimeFor(sessionId: string, beforeSeq?: number): Promise<InterviewRuntime | null> {
+    const pending = pendingRuntimes.get(sessionId);
+    if (pending) return pending;
+    const task = createRuntime(sessionId, beforeSeq).finally(() => pendingRuntimes.delete(sessionId));
+    pendingRuntimes.set(sessionId, task);
+    return task;
+  }
+
+  async function createRuntime(sessionId: string, beforeSeq?: number): Promise<InterviewRuntime | null> {
+    const runtimeToken = await owners?.ensure(sessionId);
+    if (owners && !runtimeToken) return null;
     const existing = runtimes.get(sessionId);
     if (existing) return existing;
 
     const session = await store.get(sessionId);
     if (!session || session.endedAt) return null;
 
-    const scenario = opts.library.get(session.scenarioVersionId);
-    if (!scenario) return null;
+    const scenario = await store.pinnedScenario(session.id);
+    if (!scenario || scenario.version.id !== session.scenarioVersionId ||
+        scenario.contentHash !== session.scenarioHash) {
+      app.log.error({ sessionId }, "session scenario snapshot is missing or does not match its pin");
+      return null;
+    }
 
     let liveSession = session;
     liveSessions.set(session.id, session);
@@ -195,7 +278,10 @@ export async function registerSessionModule(
       policy: session.policy,
       scenarioVersionId: session.scenarioVersionId,
       traceId: session.traceId,
-      events: eventLog,
+      events: runtimeToken ? { append: async (req) => {
+        if (!await owners!.verify(sessionId, runtimeToken)) throw new Error("RUNTIME_OWNERSHIP_LOST");
+        return eventLog.append({ ...req, runtimeToken });
+      } } : eventLog,
       remainingSeconds: () => remainingSeconds(liveSessions.get(session.id) ?? liveSession ?? session, Date.now()),
       // Without this the runtime silently falls back to the rule stub, and
       // every session runs on `stub-rules-v1` while CLASSIFIER_MODEL is read by
@@ -203,8 +289,24 @@ export async function registerSessionModule(
       // interviewer that never notices a complexity claim.
       ...(opts.classifier ? { classifier: opts.classifier } : {}),
       // A decision reached by the re-evaluation timer has no caller awaiting it.
-      onAuthorized: (result) => deliver(session.id, result),
+      onAuthorized: (result) => {
+        void deliverOwned(session.id, result, runtimeToken ?? undefined);
+      },
+      ...(opts.lifecycle ? {
+        commitTransition: async (from: InterviewState, to: InterviewState, reason: string) => {
+          const updated = await opts.lifecycle!.transitionWithEvent(session.id, from, to, reason, runtimeToken ?? undefined);
+          liveSession = updated;
+          liveSessions.set(session.id, updated);
+          pushToSession(session.id, {
+            kind: "STATE",
+            state: updated.state,
+            remainingSeconds: remainingSeconds(updated, Date.now()),
+            interviewerStatus: "LISTENING",
+          });
+        },
+      } : {}),
       onTransition: async (to) => {
+        if (opts.lifecycle) return;
         const updated = await store.transition(session.id, to);
         liveSession = updated;
         liveSessions.set(session.id, updated);
@@ -217,6 +319,16 @@ export async function registerSessionModule(
       },
     });
 
+    try {
+      const history = await eventLog.read(session.id);
+      runtime.restore(beforeSeq === undefined ? history : history.filter((event) => event.seq < beforeSeq));
+    } catch (error) {
+      app.log.error({ sessionId, errorType: error instanceof Error ? error.name : typeof error }, "session runtime could not be restored");
+      liveSessions.delete(session.id);
+      return null;
+    }
+
+    if (runtimeToken && !await owners!.verify(sessionId, runtimeToken)) return null;
     runtimes.set(session.id, runtime);
     return runtime;
   }
@@ -241,20 +353,42 @@ export async function registerSessionModule(
    * candidate's connection. A quiet interviewer is a degraded interview, a lost
    * event log is an unrecoverable one.
    */
-  async function dispatch(event: SessionEvent): Promise<void> {
+  function dispatch(event: SessionEvent, replayExisting = false): Promise<void> {
+    const previous = dispatchTails.get(event.sessionId) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(() => dispatchOne(event, replayExisting));
+    dispatchTails.set(event.sessionId, current);
+    const cleanup = () => {
+      if (dispatchTails.get(event.sessionId) === current) dispatchTails.delete(event.sessionId);
+    };
+    void current.then(cleanup, cleanup);
+    return current;
+  }
+
+  async function dispatchOne(event: SessionEvent, replayExisting = false): Promise<void> {
+    const runtime = await runtimeFor(event.sessionId, replayExisting ? undefined : event.seq);
+    if (!runtime) return;
+
     if (event.type === "RUN_REQUESTED") {
       await handleRunRequestedEvent(event, runDeps);
     }
 
-    const runtime = await runtimeFor(event.sessionId);
-    if (!runtime) return;
-
     try {
       const result = await runtime.ingest(event);
-      deliver(event.sessionId, result);
-    } catch (err) {
-      app.log.error({ sessionId: event.sessionId, err }, "orchestrator ingest failed");
+      if (runtimes.get(event.sessionId) === runtime) await deliverOwned(event.sessionId, result);
+    } catch (error) {
+      app.log.error({ sessionId: event.sessionId, errorType: error instanceof Error ? error.name : typeof error }, "orchestrator ingest failed");
     }
+  }
+
+  async function deliverOwned(sessionId: string, result: { decision: unknown; utterance: unknown }, expectedToken?: string): Promise<void> {
+    if (owners) {
+      try {
+        if (expectedToken && !await owners.verify(sessionId, expectedToken)) return;
+        const token = await owners.ensure(sessionId);
+        if (!token || (expectedToken && token !== expectedToken)) return;
+      } catch { return; }
+    }
+    deliver(sessionId, result);
   }
 
   /**
@@ -345,7 +479,7 @@ export async function registerSessionModule(
         onUnavailable: (request, error) => {
           // Logged, not thrown. A runner outage must not end the interview.
           runContext.delete(request.runId);
-          app.log.warn({ runId: request.runId, err: error.message }, "runner unavailable");
+          app.log.warn({ runId: request.runId, errorType: error.name }, "runner unavailable");
           pushToSession(request.sessionId, {
             kind: "ERROR",
             code: "RUNNER_UNAVAILABLE",
@@ -375,7 +509,10 @@ export async function registerSessionModule(
       if (!session) {
         const scenario = body.data.scenarioRef
           ? await questionBank.get(body.data.scenarioRef)
-          : chooseQuestion(await questionBank.listActive());
+          : chooseQuestion(
+              await questionBank.listActive(),
+              await store.scenarioVersionIdsForUser(userId),
+            );
         if (!scenario) {
           return reply.code(body.data.scenarioRef ? 404 : 503).send({ error: body.data.scenarioRef ? "UNKNOWN_SCENARIO" : "QUESTION_BANK_EMPTY" });
         }
@@ -386,24 +523,30 @@ export async function registerSessionModule(
         const pinned = opts.library.get(scenario.version.id);
         if (pinned && pinned.contentHash !== scenario.contentHash) throw new QuestionBankError("VERSION_CONFLICT");
         opts.library.set(scenario.version.id, pinned ?? scenario);
-        session = await store.create({
+        const createRequest = {
           userId,
           scenario,
           mode: body.data.mode,
           language: body.data.language,
           idempotencyKey,
-        });
+        };
+        session = opts.lifecycle
+          ? await opts.lifecycle.createStarted(createRequest)
+          : await store.create(createRequest);
       }
 
-      await eventLog.append({
-        sessionId: session.id,
-        type: "SESSION_STARTED",
-        actor: "SYSTEM",
-        scenarioVersionId: session.scenarioVersionId,
-        payload: { mode: session.mode, language: session.language, scenarioHash: session.scenarioHash },
-        traceId: session.traceId,
-        idempotencyKey: `session-started:${session.id}`,
-      });
+      if (!opts.lifecycle) {
+        await eventLog.append({
+          sessionId: session.id,
+          type: "SESSION_STARTED",
+          actor: "SYSTEM",
+          scenarioVersionId: session.scenarioVersionId,
+          payload: { mode: session.mode, language: session.language, scenarioHash: session.scenarioHash,
+            interviewerTone: session.interviewerTone ?? "NORMAL", expectedSeconds: session.expectedSeconds },
+          traceId: session.traceId,
+          idempotencyKey: `session-started:${session.id}`,
+        });
+      }
 
       // Note what is NOT in this response: no oral brief, no facts, no tests.
       // The problem reaches the candidate through the voice agent or not at all.
@@ -415,6 +558,16 @@ export async function registerSessionModule(
         language: session.language,
       });
     } catch (err) {
+      if (err instanceof AdmissionError) {
+        const status = err.code === "ACTIVE_SESSION_EXISTS" ? 409 : err.code === "ADMISSION_PAUSED" ? 503 : 429;
+        const message = err.code === "ACTIVE_SESSION_EXISTS"
+          ? "Finish your active interview before starting another."
+          : err.code === "MONTHLY_QUOTA_REACHED"
+            ? "Your interview allowance has been used for this month."
+            : "Interview capacity is temporarily unavailable. Please retry later.";
+        return reply.code(status).header("Retry-After", status === 409 ? "0" : "60")
+          .send({ error: err.code, message });
+      }
       if (err instanceof QuestionBankError) {
         app.log.warn({ code: err.code }, "question bank could not supply a validated question");
         return reply.code(503).send({ error: "QUESTION_BANK_UNAVAILABLE", message: "Interview questions are temporarily unavailable. Please retry shortly." });
@@ -455,43 +608,119 @@ export async function registerSessionModule(
     return reply.send({ sessionId: id, entries });
   });
 
-  app.post("/interview-sessions/:id/end", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    try {
-      const session = await store.end(id);
+  const finalizing = new Map<string, Promise<InterviewSession>>();
 
-      await eventLog.append({
-        sessionId: session.id,
-        type: "SESSION_ENDED",
-        actor: "SYSTEM",
-        scenarioVersionId: session.scenarioVersionId,
-        payload: {},
-        traceId: session.traceId,
-        // Idempotent by construction: ending twice appends once.
-        idempotencyKey: `session-ended:${session.id}`,
-      });
+  async function finalizeSession(id: string, expectedClientSeq = -1): Promise<InterviewSession> {
+    const existing = finalizing.get(id);
+    if (existing) return existing;
 
-      // Let the orchestrator settle its final observation pass before the
-      // evaluator reads the log, then drop it. Without this the last code delta
-      // of a session can lose its snapshot to the process moving on.
+    const work = (async () => {
+      const beforeEnd = await store.get(id);
+      if (!beforeEnd) throw new SessionNotFoundError(id);
+      // ACK means the input is durable, while this tail means its live derived
+      // state has also settled. Seal only after both, otherwise the final input
+      // can be present in evidence while its checkpoint is rejected as late.
+      for (;;) {
+        const tail = dispatchTails.get(id);
+        if (!tail) break;
+        await tail.catch(() => {});
+        if (dispatchTails.get(id) === tail) break;
+      }
+      const rubricId = opts.library.get(beforeEnd.scenarioVersionId)?.version.rubricId ?? "rubric-coding-v1";
+      if (!opts.lifecycle) {
+        const durableClientSeq = await eventLog.latestClientSeq(id);
+        if (durableClientSeq < expectedClientSeq) {
+          throw new FinalInputsPendingError(expectedClientSeq, durableClientSeq);
+        }
+      }
+      const session = opts.lifecycle
+        ? await opts.lifecycle.endWithReport(id, rubricId, undefined, expectedClientSeq)
+        : await store.end(id);
+
+      if (!opts.lifecycle) {
+        await eventLog.append({
+          sessionId: session.id,
+          type: "SESSION_ENDED",
+          actor: "SYSTEM",
+          scenarioVersionId: session.scenarioVersionId,
+          payload: { sealedClientSeq: await eventLog.latestClientSeq(id) },
+          traceId: session.traceId,
+          idempotencyKey: `session-ended:${session.id}`,
+        });
+      }
+
       const runtime = runtimes.get(session.id);
       if (runtime) {
         await runtime.settled();
+        runtime.dispose();
         runtimes.delete(session.id);
         liveSessions.delete(session.id);
       }
       channel.forget(session.id);
+      dispatchTails.delete(session.id);
       mintLimiter.forget(session.id);
+      resumption.clear(session.id);
+      leases.delete(session.id);
 
-      // Fire and forget. The live phase must complete regardless of evaluator
-      // health, so this is deliberately not awaited and its failure cannot
-      // affect the response (ADR-004).
       const scenario = opts.library.get(session.scenarioVersionId);
-      opts.evaluationQueue?.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1");
+      if (opts.evaluationQueue) {
+        void opts.evaluationQueue.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1")
+          .catch((error: unknown) => app.log.error({ sessionId: session.id, errorType: error instanceof Error ? error.name : typeof error }, "report job enqueue failed"));
+      }
 
+      return session;
+    })().finally(() => finalizing.delete(id));
+
+    finalizing.set(id, work);
+    return work;
+  }
+
+  let completionSweepRunning = false;
+  completionTimer = setInterval(() => {
+    if (completionSweepRunning) return;
+    completionSweepRunning = true;
+    void (async () => {
+      const now = new Date();
+      const due = await store.dueForCompletion(now.toISOString());
+      const ids = new Set(due.map((session) => session.id));
+      for (const [id, lease] of leases) {
+        if (isAbandoned(lease, now.getTime())) ids.add(id);
+      }
+
+      for (const id of ids) {
+        try {
+          await finalizeSession(id);
+          pushToSession(id, {
+            kind: "ERROR",
+            code: "SESSION_ENDED",
+            message: "Interview time is complete. Your report is being prepared.",
+          });
+        } catch (error) {
+          if (!(error instanceof SessionNotFoundError)) {
+            app.log.error({ sessionId: id, errorType: error instanceof Error ? error.name : typeof error }, "automatic session completion failed");
+          }
+        }
+      }
+    })().finally(() => { completionSweepRunning = false; });
+  }, 5_000);
+  completionTimer.unref();
+
+  app.post("/interview-sessions/:id/end", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = EndBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
+    try {
+      const session = await finalizeSession(id, body.data.finalClientSeq);
       return reply.send({ sessionId: session.id, endedAt: session.endedAt });
     } catch (err) {
       if (err instanceof SessionNotFoundError) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+      if (err instanceof FinalInputsPendingError) {
+        return reply.code(409).send({
+          error: "FINAL_INPUTS_PENDING",
+          expectedClientSeq: err.expectedClientSeq,
+          durableClientSeq: err.durableClientSeq,
+        });
+      }
       throw err;
     }
   });
@@ -591,7 +820,15 @@ export async function registerSessionModule(
       });
     }
 
+    if (!realtimeCircuit.tryAcquire()) {
+      return reply.code(503).header("Retry-After", "60").send({
+        error: "REALTIME_CIRCUIT_OPEN",
+        message: "Voice credentials are temporarily unavailable. Retry shortly.",
+      });
+    }
+
     if (!mintLimiter.take(id)) {
+      realtimeCircuit.release();
       // Almost always a client retry loop rather than an attacker, and the
       // symptom of not catching it — voice dying for every session once the
       // quota is gone — looks nothing like the cause.
@@ -603,7 +840,13 @@ export async function registerSessionModule(
     }
 
     try {
-      const credential = await opts.realtimeTokenMinter.mint();
+      // Continuity comes from what this server stored for THIS session id.
+      const storedHandle = resumption.get(id);
+      const credential = await opts.realtimeTokenMinter.mint({
+        tone: session.interviewerTone ?? "NORMAL",
+        ...(storedHandle ? { resumptionHandle: storedHandle } : {}),
+      });
+      realtimeCircuit.success();
 
       app.log.info(
         {
@@ -612,6 +855,7 @@ export async function registerSessionModule(
           model: credential.model,
           expiresAt: credential.expiresAt,
           mints: mintLimiter.used(id),
+          resumed: Boolean(storedHandle),
         },
         "minted realtime credential",
       );
@@ -620,10 +864,16 @@ export async function registerSessionModule(
     } catch (err) {
       const kind = err instanceof RealtimeTokenError ? err.kind : "PROVIDER_ERROR";
 
-      // Full detail to the log — a rejected constraint is explained precisely in
-      // the provider's body and that is the first thing anyone debugging this
-      // will want. The client gets a code and nothing else.
-      app.log.error({ sessionId: id, kind, err }, "realtime token mint failed");
+      realtimeCircuit.failure(kind === "RATE_LIMITED");
+      if (realtimeCircuit.state() === "OPEN") opts.onRealtimeCircuitOpen?.(id, kind);
+      // Provider bodies can contain request fragments. Keep routine diagnostics
+      // to an opaque session id and typed failure kind.
+      app.log.error({ sessionId: id, kind }, "realtime token mint failed");
+
+      // A handle the provider will not accept would fail every retry the same
+      // way. Drop it so the next attempt opens a fresh provider session; the
+      // interview itself is unaffected, only the carried audio context.
+      resumption.clear(id);
 
       return reply.code(kind === "RATE_LIMITED" ? 429 : 502).send({
         error: kind === "RATE_LIMITED" ? "TOKEN_CAP_REACHED" : "REALTIME_MINT_FAILED",
@@ -662,6 +912,33 @@ export async function registerSessionModule(
    * Replays through the same path: the opening is triggered by ingesting the
    * logged SESSION_STARTED, so a replay reaches it without this route existing.
    */
+  /**
+   * The browser reports the provider's latest resumption handle (I04-2).
+   *
+   * Report-only. Nothing here decides which handle a credential is minted with;
+   * that is read from this session's own stored entry at mint time. Ownership is
+   * enforced by the API access-control hook, so a handle can only be written
+   * against a session the caller owns. The browser still supplies the opaque
+   * value; the important boundary here is that another account cannot write it
+   * and the later mint request cannot substitute a different value.
+   */
+  app.post("/interview-sessions/:id/voice-resumption", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = VoiceResumptionBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "INVALID_BODY" });
+
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) {
+      // An ended session must not be resumable. Drop anything still held.
+      resumption.clear(id);
+      return reply.code(409).send({ error: "SESSION_ENDED" });
+    }
+
+    resumption.record(id, body.data.handle);
+    return reply.send({ ok: true });
+  });
+
   app.post("/interview-sessions/:id/voice-ready", async (req, reply) => {
     const { id } = req.params as { id: string };
     const session = await store.get(id);
@@ -673,7 +950,7 @@ export async function registerSessionModule(
 
     // Idempotent by construction: the gate only authorizes the brief while
     // briefDeliveryCount is 0, so a retried call decides STAY_SILENT.
-    await dispatch(started);
+    await dispatch(started, true);
     return reply.send({ ok: true });
   });
 
@@ -704,7 +981,7 @@ export async function registerSessionModule(
       return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
     }
 
-    const scenario = opts.library.get(session.scenarioVersionId);
+    const scenario = await store.pinnedScenario(session.id);
     const runtime = runtimes.get(id);
     if (!scenario || !runtime) {
       // No live orchestrator means no authorization to check against, and an
@@ -713,6 +990,10 @@ export async function registerSessionModule(
     }
 
     const voice = runtime.voiceContext();
+    const deliveryToken = await owners?.ensure(id);
+    if (owners && (!deliveryToken || runtimes.get(id) !== runtime)) {
+      return reply.code(409).send({ error: "RUNTIME_OWNERSHIP_LOST" });
+    }
 
     const result = await executeVoiceTool(
       { name: body.data.name, args: body.data.args },
@@ -735,11 +1016,15 @@ export async function registerSessionModule(
             payload: { ...entry, utteranceId: voice.utteranceId },
             traceId: session.traceId,
             idempotencyKey: `delivery:${voice.utteranceId ?? "none"}:${entry.kind}`,
+            ...(deliveryToken ? { runtimeToken: deliveryToken } : {}),
           });
         },
       },
     );
 
+    if (deliveryToken && !await owners!.verify(id, deliveryToken)) {
+      return reply.code(409).send({ error: "RUNTIME_OWNERSHIP_LOST" });
+    }
     if (!result.ok) {
       app.log.info({ sessionId: id, tool: body.data.name, refusal: result.refusal }, "voice tool refused");
       // 200 with a refusal, not an HTTP error: the model needs to read this and

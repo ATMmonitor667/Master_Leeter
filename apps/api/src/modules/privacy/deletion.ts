@@ -102,6 +102,7 @@ const FULLY_REDACTED: ReadonlySet<EventType> = new Set<EventType>([
   "BRIEF_DELIVERED",
   "NOTE_DELTA",
   "CODE_DELTA",
+  "RUNTIME_CHECKPOINT",
 ]);
 
 export function redactionFor(event: SessionEvent): SessionEvent {
@@ -126,7 +127,7 @@ export interface Deletable {
 }
 
 export interface DeletionDeps {
-  eventLog: EventLog & { redact?(sessionId: string): Promise<number> };
+  eventLog: EventLog;
   /** Sessions belonging to a user. */
   sessionsOf(userId: string): Promise<string[]>;
   /** Reports, recordings, analytics — anything holding derived data. */

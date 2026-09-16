@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { InterviewMode, InterviewPolicy, InterviewState } from "@master-leeter/contracts";
+import type { InterviewerTone, InterviewMode, InterviewPolicy, InterviewState } from "@master-leeter/contracts";
 import { INITIAL_STATE, policyFor } from "../orchestrator/index.js";
 import type { LoadedScenario } from "../scenario/loader.js";
+
+export const DEFAULT_INTERVIEW_SECONDS = 2_700;
 
 /**
  * Session lifecycle (M2-1).
@@ -22,6 +24,7 @@ export interface InterviewSession {
   policy: InterviewPolicy;
   state: InterviewState;
   language: string;
+  interviewerTone?: InterviewerTone;
   traceId: string;
   createdAt: string;
   startedAt: string | null;
@@ -36,6 +39,9 @@ export interface CreateSessionRequest {
   scenario: LoadedScenario;
   mode: InterviewMode;
   language?: string;
+  interviewerTone?: InterviewerTone;
+  /** Preparation is outside this clock. Prepared interviews always pass 2700. */
+  expectedSeconds?: number;
   /** Stable across retries. Two creates with the same key return the same session. */
   idempotencyKey: string;
 }
@@ -44,11 +50,19 @@ export interface SessionStore {
   create(req: CreateSessionRequest): Promise<InterviewSession>;
   findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null>;
   idsForUser(userId: string): Promise<string[]>;
+  /** Question versions previously assigned to this account, excluding deleted sessions. */
+  scenarioVersionIdsForUser(userId: string): Promise<string[]>;
   get(id: string): Promise<InterviewSession | null>;
+  /** Started sessions whose server-owned interview budget has elapsed. */
+  dueForCompletion(at?: string, limit?: number): Promise<InterviewSession[]>;
+  /** Immutable private scenario snapshot used to rebuild a runtime after restart. */
+  pinnedScenario(id: string): Promise<LoadedScenario | null>;
   /** Idempotent. Ending an ended session returns it unchanged. */
   end(id: string, at?: string): Promise<InterviewSession>;
   transition(id: string, state: InterviewState): Promise<InterviewSession>;
   addPause(id: string, seconds: number): Promise<InterviewSession>;
+  /** Hide the session from normal reads before privacy redaction begins. */
+  tombstone(id: string, at?: string): Promise<boolean>;
 }
 
 export class SessionNotFoundError extends Error {
@@ -60,7 +74,9 @@ export class SessionNotFoundError extends Error {
 
 export class InMemorySessionStore implements SessionStore {
   private readonly sessions = new Map<string, InterviewSession>();
+  private readonly scenarios = new Map<string, LoadedScenario>();
   private readonly byIdempotencyKey = new Map<string, string>();
+  private readonly tombstones = new Map<string, string>();
 
   constructor(private readonly now: () => string = () => new Date().toISOString()) {}
 
@@ -68,6 +84,7 @@ export class InMemorySessionStore implements SessionStore {
     const key = JSON.stringify([req.userId, req.idempotencyKey]);
     const existingId = this.byIdempotencyKey.get(key);
     if (existingId) {
+      if (this.tombstones.has(existingId)) throw new Error("SESSION_DELETED");
       const existing = this.sessions.get(existingId);
       if (existing) return existing;
     }
@@ -90,17 +107,17 @@ export class InMemorySessionStore implements SessionStore {
       policy,
       state: INITIAL_STATE,
       language: req.language ?? "python",
+      interviewerTone: req.interviewerTone ?? "NORMAL",
       traceId: randomUUID(),
       createdAt: this.now(),
       startedAt: null,
       endedAt: null,
-      // The scenario's own estimate wins over the policy default — a 25-minute
-      // scenario should not be given 40 minutes because Mock mode says so.
-      expectedSeconds: req.scenario.version.target.expectedMinutes * 60,
+      expectedSeconds: req.expectedSeconds ?? DEFAULT_INTERVIEW_SECONDS,
       pausedSeconds: 0,
     };
 
     this.sessions.set(session.id, session);
+    this.scenarios.set(session.id, structuredClone(req.scenario));
     this.byIdempotencyKey.set(key, session.id);
     return session;
   }
@@ -108,16 +125,36 @@ export class InMemorySessionStore implements SessionStore {
   /** Retry must succeed even when the bank is offline or the question was retired. */
   async findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null> {
     const id = this.byIdempotencyKey.get(JSON.stringify([userId, key]));
-    return id ? this.sessions.get(id) ?? null : null;
+    return id && !this.tombstones.has(id) ? this.sessions.get(id) ?? null : null;
   }
 
   async get(id: string): Promise<InterviewSession | null> {
-    return this.sessions.get(id) ?? null;
+    return this.tombstones.has(id) ? null : this.sessions.get(id) ?? null;
+  }
+
+  async dueForCompletion(at = this.now(), limit = 100): Promise<InterviewSession[]> {
+    const nowMs = Date.parse(at);
+    return [...this.sessions.values()]
+      .filter((session) => !this.tombstones.has(session.id) && !session.endedAt &&
+        Boolean(session.startedAt) && remainingSeconds(session, nowMs) === 0)
+      .slice(0, limit);
+  }
+
+  async pinnedScenario(id: string): Promise<LoadedScenario | null> {
+    if (this.tombstones.has(id)) return null;
+    const scenario = this.scenarios.get(id);
+    return scenario ? structuredClone(scenario) : null;
   }
 
   /** Every session belonging to a user. Drives account-scope deletion (M7-3). */
   async idsForUser(userId: string): Promise<string[]> {
-    return [...this.sessions.values()].filter((s) => s.userId === userId).map((s) => s.id);
+    return [...this.sessions.values()].filter((s) => s.userId === userId && !this.tombstones.has(s.id)).map((s) => s.id);
+  }
+
+  async scenarioVersionIdsForUser(userId: string): Promise<string[]> {
+    return [...new Set([...this.sessions.values()]
+      .filter((session) => session.userId === userId && !this.tombstones.has(session.id))
+      .map((session) => session.scenarioVersionId))];
   }
 
   async end(id: string, at?: string): Promise<InterviewSession> {
@@ -150,7 +187,15 @@ export class InMemorySessionStore implements SessionStore {
     return updated;
   }
 
+  async tombstone(id: string, at = this.now()): Promise<boolean> {
+    if (this.tombstones.has(id)) return false;
+    if (!this.sessions.has(id)) throw new SessionNotFoundError(id);
+    this.tombstones.set(id, at);
+    return true;
+  }
+
   private require(id: string): InterviewSession {
+    if (this.tombstones.has(id)) throw new SessionNotFoundError(id);
     const session = this.sessions.get(id);
     if (!session) throw new SessionNotFoundError(id);
     return session;

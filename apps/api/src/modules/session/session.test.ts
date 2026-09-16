@@ -136,6 +136,17 @@ describe("session store", () => {
     const s = await create();
     expect(s.scenarioVersionId).toBe("conveyor-rescan@1");
     expect(s.scenarioHash).toBe(scenario.contentHash);
+    expect(await store.pinnedScenario(s.id)).toEqual(scenario);
+  });
+
+  it("keeps an immutable scenario snapshot rather than a caller-owned reference", async () => {
+    const input = structuredClone(scenario);
+    const created = await store.create({ userId: "u1", scenario: input, mode: "MOCK", idempotencyKey: "pin" });
+    input.version.status = "RETIRED";
+    const firstRead = await store.pinnedScenario(created.id);
+    expect(firstRead?.version.status).toBe("ACTIVE");
+    if (firstRead) firstRead.version.status = "RETIRED";
+    expect((await store.pinnedScenario(created.id))?.version.status).toBe("ACTIVE");
   });
 
   it("pins policy at creation so a later config change cannot alter a live session", async () => {
@@ -179,6 +190,16 @@ describe("session store", () => {
 
   it("throws a typed error for an unknown session", async () => {
     await expect(store.end("nope")).rejects.toBeInstanceOf(SessionNotFoundError);
+  });
+
+  it("hides a tombstoned session and its pinned scenario", async () => {
+    const session = await create("deleted");
+    await store.end(session.id);
+    expect(await store.tombstone(session.id)).toBe(true);
+    expect(await store.get(session.id)).toBeNull();
+    expect(await store.pinnedScenario(session.id)).toBeNull();
+    expect(await store.idsForUser(session.userId)).not.toContain(session.id);
+    await expect(store.transition(session.id, "IMPLEMENTATION")).rejects.toBeInstanceOf(SessionNotFoundError);
   });
 });
 
@@ -273,6 +294,34 @@ describe("session channel — reconnect semantics", () => {
 
     const next = await channel.handleClientEvent(clientEvent(3, "e3"));
     expect(next.accepted).toBe(true);
+  });
+
+  it("recovers the expected browser sequence in a fresh channel", async () => {
+    await channel.handleClientEvent(clientEvent(0, "e0"));
+    const freshProcess = new SessionChannel({ sessions: store, eventLog: log });
+    const next = await freshProcess.handleClientEvent(clientEvent(1, "e1"));
+    expect(next.accepted).toBe(true);
+    expect(await log.latestClientSeq(sessionId)).toBe(1);
+  });
+
+  it("rejects reuse of a committed browser sequence under a different key", async () => {
+    await channel.handleClientEvent(clientEvent(0, "original"));
+    const collision = await channel.handleClientEvent(clientEvent(0, "different"));
+    expect(collision.accepted).toBe(false);
+    expect(collision.messages).toEqual([{ kind: "REPLAY_FROM", seq: 1 }]);
+    expect(await log.latestSeq(sessionId)).toBe(0);
+  });
+
+  it("refreshes a stale process sequence after a concurrent writer wins", async () => {
+    const staleProcess = new SessionChannel({ sessions: store, eventLog: log });
+    expect((await staleProcess.handleClientEvent(clientEvent(0, "stale-prime"))).messages[0]).toMatchObject({ kind: "ACK" });
+    staleProcess.forget(sessionId);
+
+    const competingProcess = new SessionChannel({ sessions: store, eventLog: log });
+    await competingProcess.handleClientEvent(clientEvent(1, "winner"));
+
+    const collision = await staleProcess.handleClientEvent(clientEvent(1, "loser"));
+    expect(collision).toEqual({ accepted: false, messages: [{ kind: "REPLAY_FROM", seq: 2 }] });
   });
 
   it("rejects events after the session has ended", async () => {

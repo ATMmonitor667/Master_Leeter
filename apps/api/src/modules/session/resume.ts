@@ -22,6 +22,8 @@ export interface ResumeState {
   notes: string;
   /** Last server sequence, so the client knows where to continue from. */
   lastSeq: number;
+  /** Next browser sequence; survives a page refresh or API process restart. */
+  nextClientSeq: number;
   runsCompleted: number;
   /** Milestones already reached, so the UI does not re-announce them. */
   milestones: string[];
@@ -44,6 +46,7 @@ export async function reconstruct(
     codeRevision: 0,
     notes: "",
     lastSeq: events[events.length - 1]?.seq ?? -1,
+    nextClientSeq: (await eventLog.latestClientSeq(sessionId)) + 1,
     runsCompleted: 0,
     milestones: [],
     ended: false,

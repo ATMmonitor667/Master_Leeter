@@ -50,30 +50,30 @@ describe("Supabase identity verification", () => {
 });
 
 describe("socket tickets", () => {
-  it("binds to the issuing session and consumes once", () => {
+  it("binds to the issuing session and consumes once", async () => {
     const tickets = new SocketTickets(() => 100);
     const principal = { userId, expiresAt: 100_000 };
-    const key = tickets.issue("room-a", principal);
-    expect(tickets.take(key, "room-b")).toBeNull();
-    expect(tickets.take(key, "room-a")).toEqual(principal);
-    expect(tickets.take(key, "room-a")).toBeNull();
+    const key = await tickets.issue("room-a", principal);
+    expect(await tickets.take(key, "room-b")).toBeNull();
+    expect(await tickets.take(key, "room-a")).toEqual(principal);
+    expect(await tickets.take(key, "room-a")).toBeNull();
   });
-  it("expires after 30 seconds and invalidates superseded pending tickets", () => {
+  it("expires after 30 seconds and invalidates superseded pending tickets", async () => {
     let now = 100;
     const tickets = new SocketTickets(() => now);
     const principal = { userId, expiresAt: 100_000 };
-    const first = tickets.issue("room", principal);
-    const second = tickets.issue("room", principal);
-    expect(tickets.take(first, "room")).toBeNull();
+    const first = await tickets.issue("room", principal);
+    const second = await tickets.issue("room", principal);
+    expect(await tickets.take(first, "room")).toBeNull();
     now += 30_001;
-    expect(tickets.take(second, "room")).toBeNull();
+    expect(await tickets.take(second, "room")).toBeNull();
   });
-  it("never outlives the bearer token", () => {
+  it("never outlives the bearer token", async () => {
     let now = 100;
     const tickets = new SocketTickets(() => now);
-    const key = tickets.issue("room", { userId, expiresAt: 200 });
+    const key = await tickets.issue("room", { userId, expiresAt: 200 });
     now = 201;
-    expect(tickets.take(key, "room")).toBeNull();
-    expect(() => tickets.issue("room", { userId, expiresAt: 200 })).toThrow("UNAUTHORIZED");
+    expect(await tickets.take(key, "room")).toBeNull();
+    await expect(tickets.issue("room", { userId, expiresAt: 200 })).rejects.toThrow("UNAUTHORIZED");
   });
 });

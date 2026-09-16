@@ -180,7 +180,7 @@ describe("the state greeting", () => {
 });
 
 describe("close", () => {
-  it("clears the sequence watermark so a reconnect is not read as a gap", async () => {
+  it("reloads the durable watermark when the socket reconnects", async () => {
     await socket.deliver(clientEvent(0, "e0"));
     await socket.deliver(clientEvent(1, "e1"));
 
@@ -194,8 +194,8 @@ describe("close", () => {
       },
     });
 
-    // A fresh connection starting from 0 again must not be told it has a hole.
-    await reconnected.deliver(clientEvent(0, "e-new"));
+    // The page resume response gives a fresh client the durable next sequence.
+    await reconnected.deliver(clientEvent(2, "e-new"));
     expect(reconnected.replyKinds()).toEqual(["ACK"]);
   });
 });

@@ -84,7 +84,12 @@ export class SessionChannel {
       };
     }
 
-    const expected = (this.lastClientSeq.get(event.sessionId) ?? -1) + 1;
+    let lastClientSeq = this.lastClientSeq.get(event.sessionId);
+    if (lastClientSeq === undefined) {
+      lastClientSeq = await this.deps.eventLog.latestClientSeq(event.sessionId);
+      this.lastClientSeq.set(event.sessionId, lastClientSeq);
+    }
+    const expected = lastClientSeq + 1;
 
     if (event.clientSeq > expected) {
       // Something was lost. Refuse to append past the hole — an event log with a
@@ -96,16 +101,34 @@ export class SessionChannel {
       };
     }
 
-    const { event: appended, duplicate } = await this.deps.eventLog.append({
-      sessionId: event.sessionId,
-      type: event.type,
-      actor: "CANDIDATE",
-      scenarioVersionId: session.scenarioVersionId,
-      payload: event.payload,
-      traceId: session.traceId,
-      idempotencyKey: event.idempotencyKey,
-      occurredAt: event.occurredAt,
-    });
+    let appended: SessionEvent;
+    let duplicate: boolean;
+    try {
+      ({ event: appended, duplicate } = await this.deps.eventLog.append({
+        sessionId: event.sessionId,
+        type: event.type,
+        actor: "CANDIDATE",
+        scenarioVersionId: session.scenarioVersionId,
+        payload: event.payload,
+        traceId: session.traceId,
+        idempotencyKey: event.idempotencyKey,
+        occurredAt: event.occurredAt,
+        clientSeq: event.clientSeq,
+      }));
+    } catch (err) {
+      if ((err as Error).message === "CLIENT_SEQUENCE_CONFLICT") {
+        const durableLastClientSeq = await this.deps.eventLog.latestClientSeq(event.sessionId);
+        this.lastClientSeq.set(event.sessionId, durableLastClientSeq);
+        return { accepted: false, messages: [{ kind: "REPLAY_FROM", seq: durableLastClientSeq + 1 }] };
+      }
+      if ((err as Error).message === "SESSION_ENDED") {
+        return {
+          accepted: false,
+          messages: [{ kind: "ERROR", code: "SESSION_ENDED", message: event.sessionId }],
+        };
+      }
+      throw err;
+    }
 
     // A replayed event must not rewind the counter; a duplicate is not evidence
     // that later events were lost.

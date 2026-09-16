@@ -200,6 +200,21 @@ describe("sequencing and acks", () => {
     expect(h.transport.events.map((e) => e.clientSeq)).toEqual([0, 1, 2]);
   });
 
+  it("continues browser and code revisions from the durable resume cursors", () => {
+    let transport!: FakeTransport;
+    const client = new SessionClient({
+      sessionId: SESSION,
+      initialClientSeq: 7,
+      initialCodeRevision: 4,
+      debounceMs: 0,
+      connect: (handlers) => (transport = new FakeTransport(handlers)),
+    });
+    client.connect();
+    client.codeChanged("restored and edited");
+    client.flush();
+    expect(transport.events[0]).toMatchObject({ clientSeq: 7, payload: { revision: 5 } });
+  });
+
   it("gives every event a unique idempotency key", () => {
     const h = build();
     for (let i = 0; i < 4; i++) {

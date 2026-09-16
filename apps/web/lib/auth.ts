@@ -1,8 +1,9 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { apiBaseUrl, productionDeployment } from "./public-config";
 
 let client: SupabaseClient | undefined;
 export function authEnabled(): boolean {
-  return process.env["NEXT_PUBLIC_AUTH_MODE"] === "supabase" || process.env.NODE_ENV === "production";
+  return process.env["NEXT_PUBLIC_AUTH_MODE"] === "supabase" || productionDeployment();
 }
 export function authClient(): SupabaseClient {
   if (client) return client;
@@ -19,7 +20,7 @@ export class SignInRequired extends Error {
 
 /** Credentials are attached only to the configured API origin. */
 export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  const api = new URL(process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000");
+  const api = new URL(apiBaseUrl());
   const url = new URL(input, api);
   if (url.origin !== api.origin) throw new Error("Unexpected API destination");
   if (!authEnabled()) return fetch(url.toString(), { ...init, redirect: "error" });

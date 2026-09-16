@@ -15,7 +15,7 @@ const row = {
 const event = {
   session_id: id, seq: 0, occurred_at: "2026-09-12T10:00:00Z", type: "CODE_DELTA",
   actor: "CANDIDATE", scenario_version_id: "conveyor-rescan@1", payload: { text: "code" },
-  evidence_hash: "hash", trace_id: "trace",
+  evidence_hash: "hash", trace_id: "trace", client_seq: null,
 };
 const request = {
   sessionId: id, scenarioVersionId: "conveyor-rescan@1", type: "CODE_DELTA" as const,
@@ -24,14 +24,14 @@ const request = {
 
 // These test adapter protocol, NOT PostgreSQL locking, permissions or durability.
 describe("PostgreSQL event transaction protocol", () => {
-  function setup(duplicate = false, failure?: string) {
+  function setup(duplicate = false, failure?: Error) {
     const statements: string[] = [];
     const query = vi.fn(async (sql: string) => {
       statements.push(sql.trim());
       if (sql.includes("FOR UPDATE")) return { rows: [row] };
       if (sql.includes("SELECT *")) return { rows: duplicate ? [event] : [] };
       if (sql.includes("INSERT INTO")) {
-        if (failure) throw new Error(failure);
+        if (failure) throw failure;
         return { rows: [event] };
       }
       return { rows: [] };
@@ -62,10 +62,20 @@ describe("PostgreSQL event transaction protocol", () => {
     expect(h.statements.at(-1)).toBe("COMMIT");
   });
   it("rolls back and releases the connection on failed writes", async () => {
-    const h = setup(false, "write failed");
+    const h = setup(false, new Error("write failed"));
     await expect(h.log.append(request)).rejects.toThrow("write failed");
     expect(h.statements.at(-1)).toBe("ROLLBACK");
     expect(h.statements).not.toContain("COMMIT");
+    expect(h.release).toHaveBeenCalledOnce();
+  });
+  it("normalizes a durable client sequence collision", async () => {
+    const conflict = Object.assign(new Error("duplicate key"), {
+      code: "23505",
+      constraint: "session_events_client_seq",
+    });
+    const h = setup(false, conflict);
+    await expect(h.log.append({ ...request, clientSeq: 0 })).rejects.toThrow("CLIENT_SEQUENCE_CONFLICT");
+    expect(h.statements.at(-1)).toBe("ROLLBACK");
     expect(h.release).toHaveBeenCalledOnce();
   });
   it("rejects a different scenario pin before writing", async () => {
