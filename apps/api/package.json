@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
+    "start": "node --conditions=production dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json",
     "test": "vitest run --passWithNoTests",
     "test:database": "node scripts/test-database.mjs",

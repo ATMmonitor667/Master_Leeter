@@ -577,3 +577,15 @@ FINAL I04 CODE FOLLOW-UP — PROVIDER TURN AND COMPLETION DRAIN
 - Validation on Windows: web typecheck PASS, API typecheck PASS, web production
   build PASS, API production build PASS, git diff check PASS. Tests were not run
   or added by explicit owner instruction.
+
+I06 FIRST CODE CHECKPOINT — RELEASE BOUNDARY
+- Branch: codex-production-06-launch-hardening, stacked on I05 commit 5c68a35.
+- Added the compiled/non-root Node 22 API image, production start command, typed
+  fail-fast production config, storage readiness, live/ready probes and bounded
+  SIGTERM admission drain.
+- Centralized browser API/socket origins and made hosted builds fail on insecure
+  or missing API/Supabase settings. Security and private-cache headers are set.
+- Validation: all package typechecks PASS, root production build PASS, compiled
+  API startup and five-scenario live/ready smoke PASS. Docker was unavailable.
+- Still open in I06: per-user/global admission and cost caps, provider breakers,
+  operational metrics/alerts, backup/restore and hosted browser/load/pilot gates.

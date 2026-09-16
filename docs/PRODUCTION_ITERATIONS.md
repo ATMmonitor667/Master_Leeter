@@ -299,6 +299,26 @@ Acceptance: cloud/provider gates closed, real failure drills pass, no cross-user
 access, score quality approved and cost limits verified. Only then describe the
 application as production-ready.
 
+Implementation checkpoint (branch `codex-production-06-launch-hardening`):
+
+- Added a Node 22 multi-stage API image that runs as a non-root user, resolves
+  compiled shared contracts and includes scenario/parser assets. The API now has
+  an explicit compiled production start command and honors host `PORT`.
+- Added typed production admission config. Hosted API boot rejects memory/auth,
+  file-question, insecure-origin, missing voice/classifier/evaluator and invalid
+  Supabase/database fallbacks before listening, while local development remains
+  explicit and supported.
+- Split liveness/readiness, added live storage readiness, safe release identity,
+  request support IDs, redacted production errors and a bounded SIGTERM drain
+  that refuses new interviews before closing sockets and durable stores.
+- Centralized browser HTTP/WS endpoints. Hosted Vercel builds reject localhost,
+  insecure origins, missing Supabase auth or secret browser keys and emit CSP,
+  microphone, framing, MIME, referrer, HSTS and private-page cache headers.
+- Root production build and API/web/contracts typechecks pass. The compiled API
+  started locally, exposed five scenarios and passed live/ready smoke requests.
+  The Docker daemon was unavailable, so Linux image, hosted signal/socket and
+  cloud readiness checks remain external acceptance.
+
 ## Handoff after every iteration
 
 Update checklist, run scoped tests and affected regressions, record unverified

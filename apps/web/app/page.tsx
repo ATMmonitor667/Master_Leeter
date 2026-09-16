@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AccountMenu } from "../components/AccountMenu";
 import { apiFetch, SignInRequired } from "../lib/auth";
+import { apiUrl } from "../lib/public-config";
 
 /**
  * Session setup.
@@ -29,7 +30,6 @@ interface Preparation {
   sessionId: string | null;
 }
 
-const API = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
 const MODES = ["LEARNING", "MOCK", "STRICT"] as const;
 const MODE_COPY: Record<(typeof MODES)[number], string> = {
   LEARNING: "More room for hints and a gentler intervention cadence.",
@@ -56,14 +56,14 @@ export default function Home() {
   const preparationKey = useRef<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API}/v1/scenarios`)
+    fetch(apiUrl("/v1/scenarios"), { redirect: "error" })
       .then((r) => r.json())
       .then((d) => {
         const entries = (d.scenarios ?? []) as CatalogueEntry[];
         setScenarios(entries);
         setSelectedRef((current) => current ?? entries[0]?.ref ?? null);
       })
-      .catch(() => setError("Could not reach the API. Is it running on port 4000?"));
+      .catch(() => setError("Could not reach the interview service. Please retry."));
   }, []);
 
   async function analyzeResume() {
@@ -71,7 +71,7 @@ export default function Home() {
     setError(null);
     try {
       preparationKey.current ??= crypto.randomUUID();
-      const res = await apiFetch(`${API}/v1/preparations`, {
+      const res = await apiFetch("/v1/preparations", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -83,7 +83,7 @@ export default function Home() {
       let next = await res.json() as Preparation;
       for (let poll = 0; next.status === "ANALYZING" && poll < 40; poll += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 500));
-        const latest = await apiFetch(`${API}/v1/preparations/${next.id}`);
+        const latest = await apiFetch(`/v1/preparations/${next.id}`);
         if (!latest.ok) throw new Error("Could not read the resume review.");
         next = await latest.json() as Preparation;
       }
@@ -103,12 +103,12 @@ export default function Home() {
     setStarting(true);
     setError(null);
     try {
-      const reviewed = await apiFetch(`${API}/v1/preparations/${preparation.id}/facts`, {
+      const reviewed = await apiFetch(`/v1/preparations/${preparation.id}/facts`, {
         method: "PATCH", headers: { "content-type": "application/json" },
         body: JSON.stringify({ confirmedFactIds: [...confirmedFacts] }),
       });
       if (!reviewed.ok) throw new Error(`Resume confirmation failed (${reviewed.status}).`);
-      const completed = await apiFetch(`${API}/v1/preparations/${preparation.id}/complete`, {
+      const completed = await apiFetch(`/v1/preparations/${preparation.id}/complete`, {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ scenarioRef, mode, language: "python" }),
       });
@@ -125,7 +125,7 @@ export default function Home() {
 
   async function eraseResume() {
     if (!preparation) return;
-    const res = await apiFetch(`${API}/v1/preparations/${preparation.id}/resume`, { method: "DELETE" });
+    const res = await apiFetch(`/v1/preparations/${preparation.id}/resume`, { method: "DELETE" });
     if (!res.ok) { setError("Could not erase the resume text."); return; }
     setResumeText("");
   }

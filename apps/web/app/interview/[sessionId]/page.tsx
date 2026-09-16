@@ -11,6 +11,7 @@ import { Timer } from "../../../components/Timer";
 import { VoiceControls } from "../../../components/VoiceControls";
 import { SessionClient } from "../../../lib/session-client";
 import { apiFetch } from "../../../lib/auth";
+import { apiBaseUrl } from "../../../lib/public-config";
 import { connectSessionTransport } from "../../../lib/session-transport";
 import { VoiceSession, type VoiceDeviceState, type VoiceStatus } from "../../../lib/voice-session";
 
@@ -89,10 +90,9 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
    * with the log the evaluator reads.
    */
   useEffect(() => {
-    const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
     let cancelled = false;
 
-    apiFetch(`${api}/v1/interview-sessions/${sessionId}/resume`)
+    apiFetch(`/v1/interview-sessions/${sessionId}/resume`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data) return setRestored(true);
@@ -161,7 +161,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
 
       const session = new VoiceSession({
         sessionId,
-        apiBase: process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000",
+        apiBase: apiBaseUrl(),
         ...(deviceId ? { deviceId } : {}),
         onStatus: (status) => {
           setVoiceStatus(status);
@@ -252,14 +252,13 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   const onEnd = useCallback(async () => {
     setEnding(true);
 
-    const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
     try {
       // Manual VAD must close the current provider turn before the final app
       // cursor is chosen. This bounded wait lets a spoken answer that ends on
       // the button click enter the same acknowledged/sealed evidence stream.
       await voiceRef.current?.finishInput();
       const finalClientSeq = await clientRef.current?.flushAndWaitForAcknowledgement() ?? -1;
-      const response = await apiFetch(`${api}/v1/interview-sessions/${sessionId}/end`, {
+      const response = await apiFetch(`/v1/interview-sessions/${sessionId}/end`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ finalClientSeq }),

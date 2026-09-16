@@ -72,6 +72,9 @@ export async function createSupabaseStorage(
     consentStore: new PgConsentStore(db),
     reportJobStore: new PgReportJobStore(db),
     preparationStore: new PgPreparationStore(db),
+    storageReadiness: async () => {
+      await db.query("SELECT 1 AS ready");
+    },
     closeStorage: () => closing ??= db.close(),
   };
 }

@@ -1,4 +1,5 @@
 import { apiFetch, SignInRequired } from "./auth";
+import { webSocketBaseUrl } from "./public-config";
 import type { Transport, TransportHandlers } from "./session-client";
 
 /** Obtain a new one-use ticket for every connection, including retries. */
@@ -25,7 +26,7 @@ export function connectSessionTransport(sessionId: string, handlers: TransportHa
       const body: unknown = await response.json();
       if (closed) return;
       if (!body || typeof body !== "object" || !("ticket" in body) || typeof body.ticket !== "string") throw new Error("Invalid connection response");
-      const base = process.env["NEXT_PUBLIC_WS_URL"] ?? "ws://localhost:4000";
+      const base = webSocketBaseUrl();
       const url = new URL(`/v1/interview-sessions/${sessionId}/events`, base);
       url.searchParams.set("ticket", body.ticket);
       socket = new WebSocket(url.toString());

@@ -16,7 +16,9 @@ still requires live authentication acceptance, durable sessions and the remainin
 
 Iteration I02a adds [Supabase email-code sign-in and access control](docs/SUPABASE_AUTH.md).
 Node 22+ is required. Configure both API and browser public auth settings for
-protected use; durable sessions and live Supabase acceptance remain pending.
+protected use; live Supabase and browser acceptance remain pending. The current
+release artifact and environment inventory are in
+[production configuration](docs/PRODUCTION_CONFIGURATION.md).
 
 Practice coding interviews the way they actually happen: you hear the problem spoken aloud, think out loud, write code, and run tests — while an AI interviewer watches and **speaks only when it has something authorized to say**. Silence is a system action, not a prompt suggestion.
 
@@ -100,8 +102,8 @@ Modular monolith: one TypeScript backend, one Next.js client, shared contracts, 
 
 ### Prerequisites
 
-- **Node.js 20+**
-- **pnpm 9+**
+- **Node.js 22**
+- **pnpm 9.15.0**
 - **Docker** (Postgres + Redis)
 
 ### 1. Clone and install
@@ -182,6 +184,7 @@ Invariant 6 (untrusted code isolation) is trivially satisfied here because nothi
 |---|---|
 | `pnpm dev:api` | Start API with hot reload |
 | `pnpm dev:web` | Start Next.js dev server |
+| `pnpm start:api` | Start the compiled API with production package exports |
 | `pnpm typecheck` | Typecheck all packages |
 | `pnpm test` | Run unit tests (751+) |
 | `pnpm sim` | Candidate-bot simulator — gate behavior |

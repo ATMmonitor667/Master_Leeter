@@ -20,7 +20,6 @@ import { apiFetch } from "../../../lib/auth";
  *     scores observable interview behaviour, and the copy says so plainly.
  */
 
-const API = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
 const POLL_MS = 1500;
 
 type State =
@@ -35,7 +34,7 @@ export default function ReportPage({ params }: { params: Promise<{ sessionId: st
 
   const fetchReport = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await apiFetch(`${API}/v1/interview-sessions/${sessionId}/report`);
+      const res = await apiFetch(`/v1/interview-sessions/${sessionId}/report`);
 
       if (res.status === 202) {
         const body = await res.json();

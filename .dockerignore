@@ -1,0 +1,12 @@
+.git
+.github
+.worktrees
+.agent-snapshots
+**/.env*
+!**/.env.example
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/*.log
+docs

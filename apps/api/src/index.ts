@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { runtimeConfig } from "./config.js";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
 import { EvaluationQueue, IndependentGeminiEvaluator, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
 import { startReportRecovery } from "./modules/report/recovery-worker.js";
@@ -56,6 +57,7 @@ export interface ServerOptions {
   library: Map<string, LoadedScenario>;
   questionBank?: QuestionBank;
   logger?: boolean;
+  production?: boolean;
   authenticator?: Authenticator;
   webOrigin?: string;
   eventLog?: EventLog;
@@ -70,6 +72,8 @@ export interface ServerOptions {
   resumeAnalyzer?: ResumeAnalyzer;
   scenarioRestater?: ScenarioRestater;
   closeStorage?: () => Promise<void>;
+  readinessChecks?: ReadonlyArray<{ name: string; check: () => Promise<void> }>;
+  release?: string;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -90,7 +94,29 @@ export function buildServer(opts: ServerOptions) {
     redact: ["req.headers.authorization", "req.headers.apikey", "req.headers.cookie"],
     // Tickets are single-use but still credentials: omit URL queries from logs.
     serializers: { req: (req) => ({ method: req.method, url: req.url.split("?")[0] ?? "", id: req.id, hostname: req.hostname, remoteAddress: req.ip, remotePort: req.socket.remotePort ?? 0 }) },
-  } : false });
+  } : false, bodyLimit: 256_000 });
+
+  let draining = false;
+  app.decorate("beginDrain", () => { draining = true; });
+  app.addHook("onRequest", async (req, reply) => {
+    reply.header("X-Request-Id", req.id);
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (opts.production) reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  });
+  app.addHook("preHandler", async (req, reply) => {
+    if (draining && req.method === "POST" && req.routeOptions.url === "/v1/interview-sessions") {
+      return reply.code(503).header("Retry-After", "10").send({ error: "SERVICE_DRAINING" });
+    }
+  });
+  if (opts.production) app.setErrorHandler((error, req, reply) => {
+    const proposed = typeof error === "object" && error !== null && "statusCode" in error &&
+      typeof error.statusCode === "number" ? error.statusCode : 500;
+    const status = proposed >= 400 && proposed < 500 ? proposed : 500;
+    req.log.error({ requestId: req.id, status, errorType: error instanceof Error ? error.name : typeof error }, "request failed");
+    return reply.code(status).send({ error: status === 500 ? "INTERNAL_ERROR" : "REQUEST_REJECTED", requestId: req.id });
+  });
 
   const webOrigin = opts.webOrigin ?? process.env["WEB_ORIGIN"] ?? "http://localhost:3000";
   void app.register(cors, {
@@ -127,6 +153,16 @@ export function buildServer(opts: ServerOptions) {
   app.decorate("evaluationQueue", evaluationQueue);
 
   app.get("/health", async () => ({ ok: true, scenarios: opts.library.size }));
+  app.get("/health/live", async () => ({ status: "live", release: opts.release ?? "development" }));
+  app.get("/health/ready", async (_req, reply) => {
+    if (draining) return reply.code(503).send({ status: "draining" });
+    const checks = opts.readinessChecks ?? [];
+    const results = await Promise.allSettled(checks.map((item) => item.check()));
+    const failed = results.flatMap((result, index) => result.status === "rejected"
+      ? [checks[index]?.name ?? "unknown"] : []);
+    if (failed.length) return reply.code(503).send({ status: "unavailable", checks: failed });
+    return reply.send({ status: "ready", scenarios: opts.library.size, release: opts.release ?? "development" });
+  });
 
   void app.register(registerSessionModule, {
     prefix: "/v1",
@@ -169,6 +205,7 @@ export async function start(): Promise<void> {
   // Before anything reads process.env. Called here rather than at import time
   // so importing this module from a test does not pull in a personal .env.local.
   const env = loadEnv();
+  const config = runtimeConfig(process.env);
   const authenticator = authenticatorFromEnv(process.env);
 
   // Scenarios load at boot and fail loudly. A content bug should stop a deploy,
@@ -221,16 +258,17 @@ export async function start(): Promise<void> {
 
   // Supabase is PostgreSQL. Its direct/pooler connection string activates the
   // durable repositories; local development may still run explicitly in memory.
-  const databaseUrl = process.env["DATABASE_URL"]?.trim();
-  if (process.env["NODE_ENV"] === "production" && !databaseUrl) {
-    throw new Error("DATABASE_CONFIGURATION");
-  }
+  const databaseUrl = config.databaseUrl;
   const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl) : undefined;
 
   const app = buildServer({
     library,
     questionBank,
     logger: true,
+    production: config.production,
+    webOrigin: config.webOrigin,
+    release: config.release,
+    ...(durableStorage ? { readinessChecks: [{ name: "storage", check: durableStorage.storageReadiness }] } : {}),
     ...(authenticator ? { authenticator } : {}),
     ...(runner ? { runner } : {}),
     classifier,
@@ -240,7 +278,7 @@ export async function start(): Promise<void> {
     ...(evaluator ? { evaluator } : {}),
     ...(durableStorage ?? {}),
   });
-  const port = Number(process.env["API_PORT"] ?? 4000);
+  const port = config.port;
 
   // Names only, never values.
   app.log.info({ files: env.loaded, vars: env.applied }, "environment loaded");
@@ -305,6 +343,24 @@ export async function start(): Promise<void> {
     );
   }
   await app.listen({ port, host: "0.0.0.0" });
+
+  let shuttingDown = false;
+  const shutdown = async (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.beginDrain();
+    app.log.info({ signal, drainGraceMs: config.drainGraceMs }, "shutdown started");
+    try {
+      await new Promise((resolve) => setTimeout(resolve, config.drainGraceMs));
+      await app.close();
+      app.log.info({ signal }, "shutdown complete");
+    } catch {
+      process.exitCode = 1;
+      app.log.error({ signal }, "shutdown failed");
+    }
+  };
+  process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+  process.once("SIGINT", () => { void shutdown("SIGINT"); });
 }
 
 const entry = (process.argv[1] ?? "").replace(/\\/g, "/");
@@ -313,4 +369,8 @@ if (entry.endsWith("src/index.ts") || entry.endsWith("dist/index.js")) {
     console.error(err);
     process.exit(1);
   });
+}
+
+declare module "fastify" {
+  interface FastifyInstance { beginDrain(): void }
 }

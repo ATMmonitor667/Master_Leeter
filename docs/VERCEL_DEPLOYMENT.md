@@ -122,9 +122,9 @@ Preview protection applies to the web deployment; it does not protect the separa
 Perform this on staging before production:
 
 1. Complete P02/P03, create managed Postgres and compatible persistent coordination, and configure access/TLS/backups. Create distinct application and migration roles.
-2. Build the proposed API Docker image using repository root as context and `apps/api/Dockerfile` as its Dockerfile path. Test the image locally/in CI with its production command. The image must contain compiled contracts, scenarios, rubric assets and parser assets.
+2. Build the API image using repository root as context and `Dockerfile.api` as its Dockerfile path. Test the image locally/in CI with its production command. The image contains compiled contracts, scenarios and required parser dependencies.
 3. Run the migration command added by P07 as a single serialized release job. Never run competing migrations from every replica or Vercel build. Prove old code tolerates additive schema changes.
-4. Create a paid Render web service from that image/config. Bind HTTP and WS to its assigned port. Set the future `/health/live` and `/health/ready` checks as implemented in P03; current `/health` only counts loaded scenarios.
+4. Create a paid Render web service from that image/config. Bind HTTP and WS to its assigned port. Route liveness to `/health/live` and readiness to `/health/ready`; readiness verifies storage without spending a provider request.
 5. Create the worker from the same versioned image with the future worker start command. It must use durable queues and the same content/protocol versions as the API. Keep sandbox credentials in dispatch infrastructure, outside candidate processes.
 6. Disable production automatic deploys for initial rollout. Later select deploy-after-successful-CI or a controlled release workflow. Render provides both manual deployment and a CI-gated option. [Render deployment controls](https://render.com/docs/deploys)
 7. Configure `api-staging.example.com`, then `api.example.com` for production. Add the provider-prescribed DNS record and verify TLS and WSS before putting the address in browser config. Render web services use one public HTTP/WS port. [Render web services](https://render.com/docs/web-services)
