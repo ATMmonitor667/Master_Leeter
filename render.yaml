@@ -1,0 +1,53 @@
+services:
+  - type: web
+    name: master-leeter-api-staging
+    runtime: docker
+    dockerfilePath: ./Dockerfile.api
+    dockerContext: .
+    healthCheckPath: /health/ready
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_MODE
+        value: supabase
+      - key: QUESTION_BANK_SOURCE
+        value: supabase
+      - key: DRAIN_GRACE_MS
+        value: "5000"
+      - key: ADMISSION_ENABLED
+        value: "false"
+      - key: MAX_ACTIVE_INTERVIEWS
+        value: "10"
+      - key: MONTHLY_INTERVIEWS_PER_USER
+        value: "10"
+      - key: MAX_REALTIME_MINTS_PER_SESSION
+        value: "12"
+      - key: SESSION_CREATES_PER_MINUTE
+        value: "5"
+      - key: PREPARATIONS_PER_MINUTE
+        value: "5"
+      - key: REALTIME_MINTS_PER_MINUTE
+        value: "6"
+      - key: RUN_REQUESTS_PER_MINUTE
+        value: "10"
+      - key: WEB_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: REALTIME_API_KEY
+        sync: false
+      - key: REALTIME_MODEL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CLASSIFIER_MODEL
+        sync: false
+      - key: EVALUATOR_MODEL
+        sync: false

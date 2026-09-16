@@ -116,7 +116,10 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
     webOrigin,
     ...(databaseUrl ? { databaseUrl } : {}),
     drainGraceMs: drainResult.success ? drainResult.data : 5_000,
-    release: env["RELEASE_SHA"]?.trim().slice(0, 64) || "development",
+    release:
+      env["RELEASE_SHA"]?.trim().slice(0, 64) ||
+      env["RENDER_GIT_COMMIT"]?.trim().slice(0, 64) ||
+      "development",
     admission,
     rateLimits,
   };

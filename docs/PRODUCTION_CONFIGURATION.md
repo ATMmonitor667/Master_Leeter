@@ -8,7 +8,19 @@ docker build -f Dockerfile.api -t master-leeter-api:<release> .
 
 The image runs as the unprivileged `node` user, starts compiled JavaScript with
 the compiled contracts export, includes the five scenario assets, binds
-`0.0.0.0`, and honors host-provided `PORT` before local `API_PORT`.
+`0.0.0.0`, and honors host-provided `PORT` before local `API_PORT`. Its Docker
+health check calls `/health/ready`, so an instance is removed from service when
+storage is unavailable or shutdown drain has begun.
+
+CI builds this exact Linux image, verifies its configured user, boots it with
+the compiled start command, checks live/ready and the packaged scenario
+catalogue, then stops it through Docker to exercise the SIGTERM path.
+
+`render.yaml` defines the first staging API service with automatic deployment
+disabled. It requires the owner to enter all URLs and credentials in Render and
+keeps `ADMISSION_ENABLED=false` until migrations and hosted checks pass. The
+blueprint is configuration scaffolding; importing it does not prove readiness
+or authorize a production deployment.
 
 ## API environment
 
@@ -32,7 +44,7 @@ name invalid variables and never include their values.
 | `RESUME_ANALYZER_MODEL`, `RESTATEMENT_MODEL` | Optional overrides; each falls back to the configured observer model |
 | `JUDGE_MODEL` | Optional model-estimated run feedback; it is never described as sandbox execution |
 | `DRAIN_GRACE_MS` | 0–20000 ms for load balancers to observe failed readiness before sockets close |
-| `RELEASE_SHA` | Safe image/commit identifier returned by health probes |
+| `RELEASE_SHA` | Safe image/commit identifier returned by health probes; Render's `RENDER_GIT_COMMIT` is used when absent |
 | `ADMISSION_ENABLED` | Operator kill switch for new interviews; existing interviews continue |
 | `MAX_ACTIVE_INTERVIEWS` | Deployment-wide active-session ceiling, enforced under a Supabase advisory lock |
 | `MONTHLY_INTERVIEWS_PER_USER` | Account interview allowance per UTC calendar month |
@@ -80,6 +92,7 @@ provider bodies, database addresses, source code or transcript content.
 
 Local validation completed for this checkpoint: the root production build and
 all package typechecks pass; compiled API startup reports five scenarios and
-healthy liveness/readiness. Docker engine was unavailable on the development
-machine, so a clean Linux image build and hosted SIGTERM/WS smoke remain release
-acceptance rather than completed evidence.
+healthy liveness/readiness. The release workflow now owns the clean Linux image
+build and container smoke because the development machine has no available
+Docker engine. A successful workflow run plus hosted SIGTERM/WS checks remain
+release acceptance evidence.

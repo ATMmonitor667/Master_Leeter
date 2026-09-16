@@ -323,11 +323,18 @@ Implementation checkpoint (branch `codex-production-06-launch-hardening`):
   `/health/status` capability state, request support IDs, redacted failure logs,
   throttled recovery errors and an exhausted-report alert signal. The operations
   runbook names the host alerts that still require staging configuration/drills.
+- Added a CI artifact gate that builds and boots the exact Linux API image,
+  verifies its non-root runtime, health endpoints, packaged scenario catalogue
+  and Docker-stop shutdown. The image now supplies its own readiness health
+  check and includes the contracts package runtime dependency links.
+- Added a Render staging blueprint with manual deployment, owner-supplied
+  secrets and admission disabled until migration 012 and hosted acceptance pass.
+  Render commit identity feeds the API's safe release status automatically.
 - Root production build and API/web/contracts typechecks pass. The compiled API
   started locally, exposed five scenarios and passed live/ready smoke requests.
-  The Docker daemon was unavailable, so migration 012 execution, Linux image,
-  hosted signal/socket, configured-cap concurrency and cloud readiness checks
-  remain external acceptance.
+  The Docker daemon was unavailable, so migration 012 execution, a successful
+  CI image run, hosted signal/socket, configured-cap concurrency and cloud
+  readiness checks remain external acceptance.
 
 ## Handoff after every iteration
 

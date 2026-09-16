@@ -121,6 +121,12 @@ Preview protection applies to the web deployment; it does not protect the separa
 
 Perform this on staging before production:
 
+The repository `render.yaml` is the staging API starting point. It uses
+`Dockerfile.api`, disables automatic deployment, leaves credentials as
+owner-entered values and starts with interview admission disabled. Review every
+value during Blueprint creation; enable admission only after migration 012,
+authentication, health and provider checks pass.
+
 1. Complete P02/P03, create managed Postgres and compatible persistent coordination, and configure access/TLS/backups. Create distinct application and migration roles.
 2. Build the API image using repository root as context and `Dockerfile.api` as its Dockerfile path. Test the image locally/in CI with its production command. The image contains compiled contracts, scenarios and required parser dependencies.
 3. Run the migration command added by P07 as a single serialized release job. Never run competing migrations from every replica or Vercel build. Prove old code tolerates additive schema changes.

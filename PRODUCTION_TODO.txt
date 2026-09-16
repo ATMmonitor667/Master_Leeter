@@ -31,8 +31,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [~] I06 release boundary plus durable global/account admission, kill switch,
     provider-route rates and voice credential caps implemented on
     codex-production-06-launch-hardening. Safe capability status, provider
-    breakers and alertable redacted signals are implemented; alert delivery,
-    backup/restore, hosted drills and owner-assisted pilot remain.
+    breakers, alertable redacted signals, exact-image CI and a staging blueprint
+    are implemented; alert delivery, backup/restore, hosted drills and the
+    owner-assisted pilot remain.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md
 Question bank setup (no cloud data has been written):
@@ -61,8 +62,10 @@ RECOMMENDED HOSTING
 
 FOUNDATION / ACCESS
 [ ] P01 Production specification, provider/budget decisions, documentation audit.
-[ ] P02 Reproducible Linux API/worker artifacts, contracts, assets, start scripts.
-[ ] P03 Typed config, production validation, readiness, browser endpoint setup.
+[~] P02 Reproducible Linux API artifact, contracts, assets and start script are
+    implemented; worker artifact/start path and a successful CI image run remain.
+[~] P03 Typed config, production validation, readiness and browser endpoints are
+    implemented; hosted configuration and probe evidence remain.
 [ ] P04 Managed authentication, accounts and token refresh.
 [ ] P05 Ownership on every HTTP/WS route and single-use socket tickets.
 [ ] P06 Origins, input limits, rate limits, browser headers and abuse controls.
@@ -95,8 +98,10 @@ PRODUCT / PRIVACY / OPERATIONS
 [ ] P21 Atomic credits/capacity, provider-cost enforcement, caps and kill switch.
 [ ] P22 Redacted diagnostics, alerts, service status and user support.
 [ ] P23 Real DB/queue, browser, two-instance, load and human voice acceptance.
-[ ] P24 Production CI/release gates, protocol compatibility and migrations.
-[ ] P25 Protected staging + Vercel integration + API/worker/domain configuration.
+[~] P24 Production CI builds/smokes the API image; migration execution,
+    compatibility and hosted release evidence remain.
+[~] P25 Render staging blueprint and Vercel configuration are documented;
+    provisioning, protection, worker/domain wiring and hosted evidence remain.
 [ ] P26 Backup restore, deployment rollback and incident rehearsal.
 
 LAUNCH / GROWTH
