@@ -25,7 +25,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
     deadline/abandonment completion, GoAway rotation, provider resumption/context
     compression, audio preflight/device recovery and final spoken-turn drain.
     Real 45-minute browser/device/cloud acceptance remains.
-[ ] I05 Separate 0-100 solution/transcript AI graders and evidence-based reports.
+[~] I05 Independent 0-100 solution/transcript Gemini graders, fenced partial
+    checkpoints/retries and separate evidence-backed report cards implemented.
+    Migration, calibration fixtures and live/human grading acceptance remain.
 [ ] I06 Security/cost/recovery hardening, release checks and owner-assisted pilot.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md

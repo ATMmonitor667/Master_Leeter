@@ -1,19 +1,28 @@
 import type { FastifyInstance } from "fastify";
 import { scenarioRef } from "../scenario/loader.js";
 import type { EventLog } from "../session/event-log.js";
+import type { SessionStore } from "../session/session-store.js";
 import { BaselineEvaluator, type Evaluator, type SessionReport } from "./evaluator.js";
-import { InMemoryReportJobStore, type ReportJob, type ReportJobStore } from "./report-store.js";
+import { InMemoryReportJobStore, MAX_REPORT_ATTEMPTS, reportRetryAt, type ReportJob, type ReportJobStore } from "./report-store.js";
+
+const REPORT_LEASE_MS = 3 * 60_000;
 
 export { extractFacts, momentsFor, type EvidenceMoment, type SessionFacts } from "./evidence.js";
 export {
   BaselineEvaluator,
   weightedOverall,
   type DimensionScore,
+  type EvaluationContext,
+  type EvaluationProgress,
   type Evaluator,
+  type GradeCitation,
+  type GradeDimension,
+  type IndependentGrade,
   type SessionReport,
 } from "./evaluator.js";
 export { CODING_RUBRIC_V1, rubricById, weightSum, type Rubric, type RubricDimension } from "./rubric.js";
 export { InMemoryReportJobStore, type ReportClaim, type ReportJob, type ReportJobStore, type ReportStatus } from "./report-store.js";
+export { IndependentGeminiEvaluator, SOLUTION_PROMPT_VERSION, TRANSCRIPT_PROMPT_VERSION } from "./independent-evaluator.js";
 
 /**
  * Report module — post-session evaluation.
@@ -37,6 +46,7 @@ export class EvaluationQueue {
     private readonly evaluator: Evaluator = new BaselineEvaluator(),
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly jobs: ReportJobStore = new InMemoryReportJobStore(),
+    private readonly scenarioFor?: ((sessionId: string) => ReturnType<SessionStore["pinnedScenario"]>) | undefined,
   ) {}
 
   /** Idempotent: enqueuing a session already evaluated returns the existing job. */
@@ -48,7 +58,12 @@ export class EvaluationQueue {
 
   async get(sessionId: string): Promise<ReportJob | null> {
     const job = await this.jobs.get(sessionId);
-    if (job?.status === "QUEUED" || job?.status === "RUNNING") this.background(sessionId);
+    // Provider failures are retried from checkpointed grader progress. Bound the
+    // attempts so a polling report page cannot create an unbounded cost loop.
+    if (job?.status === "QUEUED" || job?.status === "RUNNING" ||
+        (job?.status === "FAILED" && job.attempts < MAX_REPORT_ATTEMPTS && reportRetryAt(job) <= Date.parse(this.now()))) {
+      this.background(sessionId);
+    }
     return job;
   }
 
@@ -92,10 +107,10 @@ export class EvaluationQueue {
    * This is why the log is append-only: improving the rubric re-scores every
    * past session without re-running a single interview.
    */
-  async regenerate(sessionId: string, rubricId: string): Promise<ReportJob> {
+  async regenerate(sessionId: string, rubricId: string, wait = true): Promise<ReportJob> {
     await this.jobs.delete(sessionId);
     const job = await this.enqueue(sessionId, rubricId);
-    await this.settled(sessionId);
+    if (wait) await this.settled(sessionId);
     return (await this.jobs.get(sessionId)) ?? job;
   }
 
@@ -111,14 +126,30 @@ export class EvaluationQueue {
 
   private async process(sessionId: string): Promise<void> {
     const now = this.now();
-    const leaseExpiresAt = new Date(Date.parse(now) + 60_000).toISOString();
+    // Two independent provider calls may each consume their 45-second timeout.
+    // The lease must cover both or a healthy worker can be replaced mid-grade.
+    const leaseExpiresAt = new Date(Date.parse(now) + REPORT_LEASE_MS).toISOString();
     const claim = await this.jobs.claim(sessionId, now, leaseExpiresAt);
     if (!claim) return;
 
     try {
       const events = await this.eventLog.read(sessionId);
       if (events.length === 0) throw new Error("no events for session");
-      const report = await this.evaluator.evaluate(events, claim.job.rubricId);
+      const scenario = await this.scenarioFor?.(sessionId);
+      const context = scenario === undefined ? {} : { scenario };
+      const report = this.evaluator.evaluateWithProgress
+        ? await this.evaluator.evaluateWithProgress(
+          events,
+          claim.job.rubricId,
+          context,
+          claim.job.progress,
+          async (progress) => {
+            if (!await this.jobs.saveProgress(sessionId, claim.token, progress)) {
+              throw new Error("REPORT_LEASE_LOST");
+            }
+          },
+        )
+        : await this.evaluator.evaluate(events, claim.job.rubricId, context);
       await this.jobs.complete(sessionId, claim.token, report, this.now());
     } catch {
       // A failed evaluation never affects the completed interview. The job is
@@ -162,8 +193,9 @@ export async function registerReportModule(
     if (job.status !== "READY") {
       // 202 while in flight: the report is coming, and the client should poll
       // rather than treat this as an error.
-      return reply.code(job.status === "FAILED" ? 500 : 202).send({
-        status: job.status,
+      const retrying = job.status === "FAILED" && job.attempts < MAX_REPORT_ATTEMPTS;
+      return reply.code(job.status === "FAILED" && !retrying ? 500 : 202).send({
+        status: retrying ? "RETRYING" : job.status,
         error: job.error,
         attempts: job.attempts,
       });
@@ -175,8 +207,9 @@ export async function registerReportModule(
   app.post("/interview-sessions/:id/report/regenerate", async (req, reply) => {
     // Author/admin only once auth lands (M2-8).
     const { id } = req.params as { id: string };
-    const job = await queue.regenerate(id, "rubric-coding-v1");
-    return reply.code(job.status === "READY" ? 200 : 500).send({ status: job.status, error: job.error });
+    const job = await queue.regenerate(id, "rubric-coding-v1", false);
+    const status = job.status === "READY" ? 200 : job.status === "FAILED" ? 500 : 202;
+    return reply.code(status).send({ status: job.status, error: job.error });
   });
 }
 

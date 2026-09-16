@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
-import { EvaluationQueue, registerReportModule, type ReportJobStore } from "./modules/report/index.js";
+import { EvaluationQueue, IndependentGeminiEvaluator, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
 import { startReportRecovery } from "./modules/report/recovery-worker.js";
 import type { RuntimeOwnership } from "./modules/session/runtime-ownership.js";
 import { loadEnv } from "./env.js";
@@ -62,6 +62,7 @@ export interface ServerOptions {
   sessionStore?: SessionStore;
   socketTickets?: SocketTicketStore;
   reportJobStore?: ReportJobStore;
+  evaluator?: Evaluator;
   consentStore?: ConsentStore;
   lifecycle?: SessionLifecycle;
   runtimeOwnership?: RuntimeOwnership;
@@ -102,7 +103,13 @@ export function buildServer(opts: ServerOptions) {
   const store = opts.sessionStore ?? new InMemorySessionStore();
   const preparationStore = opts.preparationStore ?? new InMemoryPreparationStore();
   registerAccessControl(app, { sessions: store, webOrigin, tickets: opts.socketTickets ?? new SocketTickets(), ...(opts.authenticator ? { authenticator: opts.authenticator } : {}) });
-  const evaluationQueue = new EvaluationQueue(eventLog, undefined, undefined, opts.reportJobStore);
+  const evaluationQueue = new EvaluationQueue(
+    eventLog,
+    opts.evaluator,
+    undefined,
+    opts.reportJobStore,
+    (sessionId) => store.pinnedScenario(sessionId),
+  );
   let stopRecovery: (() => Promise<void>) | undefined;
   if (opts.reportJobStore) app.addHook("onReady", async () => {
     stopRecovery = startReportRecovery(() => evaluationQueue.recover(),
@@ -191,6 +198,12 @@ export async function start(): Promise<void> {
   const classifier = classifierFromEnv();
 
   const preparationKey = geminiApiKeyFromEnv();
+  const evaluatorModel = process.env["EVALUATOR_MODEL"];
+  const evaluator = preparationKey && evaluatorModel ? new IndependentGeminiEvaluator(new GeminiClient({
+    apiKey: preparationKey,
+    model: evaluatorModel,
+    requestTimeoutMs: 45_000,
+  })) : undefined;
   const resumeAnalyzer = preparationKey ? new GeminiResumeAnalyzer(new GeminiClient({
     apiKey: preparationKey,
     model: process.env["RESUME_ANALYZER_MODEL"] ?? process.env["OBSERVER_MODEL"] ?? "gemini-3.5-flash",
@@ -224,6 +237,7 @@ export async function start(): Promise<void> {
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
     ...(scenarioRestater ? { scenarioRestater } : {}),
+    ...(evaluator ? { evaluator } : {}),
     ...(durableStorage ?? {}),
   });
   const port = Number(process.env["API_PORT"] ?? 4000);
@@ -238,6 +252,7 @@ export async function start(): Promise<void> {
       authentication: authenticator ? "supabase" : "insecure-local-development",
       runner: runner ? "model-judge" : "none",
       classifier: classifier.id,
+      evaluator: evaluator ? `${evaluatorModel}:independent-v1` : "deterministic-baseline",
       realtime: realtimeTokenMinter ? realtimeTokenMinter.id : "none",
     },
     "scenario library loaded",
@@ -250,6 +265,13 @@ export async function start(): Promise<void> {
     app.log.warn(
       "REALTIME_MODEL or REALTIME_API_KEY is not set — voice is DISABLED and " +
         "POST /realtime-token will return 503. Set both in apps/api/.env.local.",
+    );
+  }
+
+  if (!evaluator) {
+    app.log.warn(
+      "EVALUATOR_MODEL or a Gemini API key is not set — reports use the deterministic " +
+        "baseline and will not include independent 0-100 solution/transcript grades.",
     );
   }
 

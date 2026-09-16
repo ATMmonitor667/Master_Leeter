@@ -252,6 +252,29 @@ Acceptance: retries use identical sealed inputs; valid bounded scores; independe
 graders distinguish solution quality from explanation quality; failures recover
 after restart; human reviewers confirm evidence and appropriately cautious claims.
 
+Implementation checkpoint (branch `codex-production-05-independent-graders`):
+
+- Added two structurally separate Gemini calls. The solution grader receives the
+  sealed final code, contract, private reference evidence and reported runs but no
+  transcript. The transcript grader receives attributed candidate turns and only
+  disclosed question context, with no code, run result or solution-grade output.
+- Both produce bounded 0–100 model estimates, confidence, rubric dimensions,
+  actionable feedback and event-sequence citations. Transcript quotes must match
+  the cited candidate turn exactly; solution citations can resolve only to the
+  sealed code or reported-run events. Missing code/transcript is insufficient
+  evidence and never an invented zero.
+- Migration 011 adds fenced per-grader progress. A successful first grader is
+  stored under the report lease; provider failure retries only the missing half,
+  with three bounded attempts and a lease long enough for both model timeouts.
+  Failed durable jobs become claimable after exponential backoff, including
+  after an API restart; report polling exposes this state as retrying.
+- The candidate report shows the two grades separately and explicitly refuses to
+  combine them. The deterministic 1–4 behavior index remains as an auditable
+  event-derived signal and no longer describes predicted run results as execution.
+- API/web typechecks pass. Tests remain assigned to the separate test pass.
+  Development migration, live Gemini runs, adversarial calibration fixtures and
+  human reviewer calibration remain I05 acceptance gates.
+
 Owner needs: grading preferences, review of sample reports, funded inference quota
 and spending caps. Do not promise that scores predict hiring outcomes.
 

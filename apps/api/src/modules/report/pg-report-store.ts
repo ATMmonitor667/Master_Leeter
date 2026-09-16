@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { QueryClient } from "../session/pg-event-log.js";
-import type { SessionReport } from "./evaluator.js";
-import type { ReportClaim, ReportJob, ReportJobStore } from "./report-store.js";
+import type { EvaluationProgress, SessionReport } from "./evaluator.js";
+import { MAX_REPORT_ATTEMPTS, type ReportClaim, type ReportJob, type ReportJobStore } from "./report-store.js";
 
 interface ReportRow {
   session_id: string;
   rubric_id: string;
   status: ReportJob["status"];
   body: SessionReport | null;
+  progress: EvaluationProgress | null;
   error: string | null;
   attempts: number;
   created_at: Date | string;
@@ -19,6 +20,7 @@ const toJob = (row: ReportRow): ReportJob => ({
   rubricId: row.rubric_id,
   status: row.status,
   report: row.body,
+  progress: row.progress ?? {},
   error: row.error,
   attempts: row.attempts,
   queuedAt: new Date(row.created_at).toISOString(),
@@ -56,7 +58,12 @@ export class PgReportJobStore implements ReportJobStore {
       `SELECT r.session_id FROM public.session_reports r
        JOIN public.interview_sessions s ON s.id=r.session_id
        WHERE s.deleted_at IS NULL AND s.ended_at IS NOT NULL AND
-         (r.status='QUEUED' OR (r.status='RUNNING' AND r.lease_expires_at <= $1::timestamptz))
+         (r.status='QUEUED' OR
+          (r.status='RUNNING' AND r.lease_expires_at <= $1::timestamptz) OR
+          (r.status='FAILED' AND r.attempts < ${MAX_REPORT_ATTEMPTS} AND
+           r.completed_at +
+             (LEAST(60.0, 5.0 * power(2.0, GREATEST(r.attempts - 1, 0)))::double precision * interval '1 second')
+             <= $1::timestamptz))
        ORDER BY r.created_at, r.session_id LIMIT $2`, [now, limit],
     );
     return result.rows.map((row) => row.session_id);
@@ -69,7 +76,12 @@ export class PgReportJobStore implements ReportJobStore {
          status='RUNNING',attempts=attempts+1,error=NULL,completed_at=NULL,
          lease_token=$2::uuid,lease_expires_at=$4::timestamptz
        WHERE session_id=$1::uuid AND
-         (status='QUEUED' OR (status='RUNNING' AND lease_expires_at <= $3::timestamptz))
+         (status='QUEUED' OR
+          (status='RUNNING' AND lease_expires_at <= $3::timestamptz) OR
+          (status='FAILED' AND attempts < ${MAX_REPORT_ATTEMPTS} AND
+           completed_at +
+             (LEAST(60.0, 5.0 * power(2.0, GREATEST(attempts - 1, 0)))::double precision * interval '1 second')
+             <= $3::timestamptz))
        RETURNING *`,
       [sessionId, token, now, leaseExpiresAt],
     );
@@ -78,6 +90,16 @@ export class PgReportJobStore implements ReportJobStore {
 
   async complete(sessionId: string, token: string, report: SessionReport, completedAt: string): Promise<ReportJob | null> {
     return this.finish(sessionId, token, "READY", JSON.stringify(report), null, completedAt);
+  }
+
+  async saveProgress(sessionId: string, token: string, progress: EvaluationProgress): Promise<ReportJob | null> {
+    const result = await this.db.query<ReportRow>(
+      `UPDATE public.session_reports SET progress=$3::jsonb
+       WHERE session_id=$1::uuid AND lease_token=$2::uuid AND status='RUNNING'
+       RETURNING *`,
+      [sessionId, token, JSON.stringify(progress)],
+    );
+    return result.rows[0] ? toJob(result.rows[0]) : null;
   }
 
   async fail(sessionId: string, token: string, error: string, completedAt: string): Promise<ReportJob | null> {

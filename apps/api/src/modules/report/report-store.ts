@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SessionReport } from "./evaluator.js";
+import type { EvaluationProgress, SessionReport } from "./evaluator.js";
 
 export type ReportStatus = "QUEUED" | "RUNNING" | "READY" | "FAILED";
 
@@ -8,6 +8,7 @@ export interface ReportJob {
   status: ReportStatus;
   rubricId: string;
   report: SessionReport | null;
+  progress: EvaluationProgress;
   error: string | null;
   attempts: number;
   queuedAt: string;
@@ -22,8 +23,16 @@ export interface ReportJobStore {
   recoverable(now: string, limit: number): Promise<string[]>;
   claim(sessionId: string, now: string, leaseExpiresAt: string): Promise<ReportClaim | null>;
   complete(sessionId: string, token: string, report: SessionReport, completedAt: string): Promise<ReportJob | null>;
+  saveProgress(sessionId: string, token: string, progress: EvaluationProgress): Promise<ReportJob | null>;
   fail(sessionId: string, token: string, error: string, completedAt: string): Promise<ReportJob | null>;
   delete(sessionId: string): Promise<boolean>;
+}
+
+export const MAX_REPORT_ATTEMPTS = 3;
+export function reportRetryAt(job: Pick<ReportJob, "attempts" | "completedAt">): number {
+  if (!job.completedAt) return 0;
+  const delay = Math.min(60_000, 5_000 * 2 ** Math.max(0, job.attempts - 1));
+  return Date.parse(job.completedAt) + delay;
 }
 
 interface StoredJob extends ReportJob {
@@ -42,6 +51,7 @@ export class InMemoryReportJobStore implements ReportJobStore {
       status: "QUEUED",
       rubricId,
       report: null,
+      progress: existing?.progress ?? {},
       error: null,
       attempts: existing?.attempts ?? 0,
       queuedAt,
@@ -62,14 +72,17 @@ export class InMemoryReportJobStore implements ReportJobStore {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("INVALID_RECOVERY_LIMIT");
     return [...this.jobs.values()]
       .filter((job) => job.status === "QUEUED" ||
-        (job.status === "RUNNING" && (!job.leaseExpiresAt || job.leaseExpiresAt <= now)))
+        (job.status === "RUNNING" && (!job.leaseExpiresAt || job.leaseExpiresAt <= now)) ||
+        (job.status === "FAILED" && job.attempts < MAX_REPORT_ATTEMPTS && reportRetryAt(job) <= Date.parse(now)))
       .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.sessionId.localeCompare(b.sessionId))
       .slice(0, limit).map((job) => job.sessionId);
   }
 
   async claim(sessionId: string, now: string, leaseExpiresAt: string): Promise<ReportClaim | null> {
     const job = this.jobs.get(sessionId);
-    if (!job || (job.status !== "QUEUED" && !(job.status === "RUNNING" && (!job.leaseExpiresAt || job.leaseExpiresAt <= now)))) return null;
+    const recoverableFailure = job?.status === "FAILED" && job.attempts < MAX_REPORT_ATTEMPTS && reportRetryAt(job) <= Date.parse(now);
+    if (!job || (job.status !== "QUEUED" && !recoverableFailure &&
+        !(job.status === "RUNNING" && (!job.leaseExpiresAt || job.leaseExpiresAt <= now)))) return null;
     job.status = "RUNNING";
     job.attempts += 1;
     job.error = null;
@@ -88,6 +101,13 @@ export class InMemoryReportJobStore implements ReportJobStore {
     job.completedAt = completedAt;
     job.leaseToken = null;
     job.leaseExpiresAt = null;
+    return this.public(job);
+  }
+
+  async saveProgress(sessionId: string, token: string, progress: EvaluationProgress): Promise<ReportJob | null> {
+    const job = this.claimed(sessionId, token);
+    if (!job) return null;
+    job.progress = structuredClone(progress);
     return this.public(job);
   }
 

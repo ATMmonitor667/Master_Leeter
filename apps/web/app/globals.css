@@ -343,6 +343,15 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .meta-mono { font-family: var(--mono); color: var(--muted-strong); }
 .meta-sep { flex: 1 1 auto; height: 1px; min-width: 24px; background: linear-gradient(90deg, var(--border), transparent); }
 .report-meta span:last-child { font-family: var(--mono); }
+.grader-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-bottom: 14px; }
+.grader-note { margin: 4px 0 10px; color: var(--muted); font-size: 11px; }
+.grader-card { padding: 20px; border: 1px solid var(--border); border-top-color: rgba(122,162,255,.55); border-radius: 15px; background: linear-gradient(145deg,var(--panel),var(--bg-soft)); }
+.grader-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }.grader-card h2 { margin: 5px 0 0; font-size: 17px; }.grader-card > p { color: var(--muted-strong); line-height: 1.55; }
+.grader-score { color: var(--text); font: 700 34px var(--mono); }.grader-score small { color: var(--muted); font-size: 10px; }
+.grader-confidence { color: var(--muted); font: 10px var(--mono); text-transform: uppercase; }
+.grader-dimensions { display: grid; gap: 5px; margin: 16px 0 0; }.grader-dimensions div { display: flex; justify-content: space-between; gap: 12px; }.grader-dimensions dt { color: var(--muted); text-transform: capitalize; }.grader-dimensions dd { margin: 0; font: 700 11px var(--mono); }
+.grader-feedback { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }.grader-feedback strong { font-size: 11px; }.grader-feedback ul { margin: 7px 0 0; padding-left: 17px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.grader-evidence { display: grid; gap: 8px; margin: 16px 0 0; padding: 14px 0 0; border-top: 1px solid var(--border); list-style: none; color: var(--muted); font-size: 11px; }.grader-evidence span { color: var(--blue); font-family: var(--mono); }.grader-evidence q { display: block; margin-top: 3px; color: var(--muted-strong); }
 .dimension-grid { display: grid; gap: 12px; }
 .dimension-card { border: 1px solid var(--border); border-radius: 15px; padding: 20px; background: rgba(17,22,32,.86); }
 .dimension-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
@@ -384,6 +393,7 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
   .stage-copy { display: none; }
   .stage-step { min-width: 28px; }
   .report-highlights { grid-template-columns: 1fr 1fr; }
+  .grader-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
   .landing-shell, .report-shell { padding-left: 18px; padding-right: 18px; }

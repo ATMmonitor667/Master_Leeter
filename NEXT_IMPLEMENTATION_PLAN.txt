@@ -448,7 +448,7 @@ CHECKPOINT RESULT — I03 CODE IMPLEMENTATION
   git diff whitespace validation. Per owner direction, no tests were added or
   run for I03; a separate test pass must cover route ownership/idempotency,
   migration SQL, injection fixtures, restatement leakage and tone review.
-- Before deployment: apply migrations through 010 to development Supabase, set
+- Before deployment: apply migrations through 011 to development Supabase, set
   RESUME_ANALYZER_MODEL and RESTATEMENT_MODEL if defaults are unsuitable, then
   run one synthetic-resume flow and verify account/session deletion receipts.
 
@@ -545,6 +545,21 @@ a later item while the current item's exit is unmet, and I04's exit is the
 acceptance run above. I05 also grades SEALED evidence, so starting it before
 checks 3, 4 and 5 have passed would build graders on a sealing path nobody has
 watched hold under a real race.
+
+I05 FIRST CODE CHECKPOINT — INDEPENDENT GRADERS
+- Branch: codex-production-05-independent-graders, based on I04 commit a24c6db.
+- Solution and transcript grading are separate Gemini requests with disjoint
+  evidence. Each produces a 0-100 estimate, confidence, rubric dimensions,
+  feedback and validated event citations; neither receives the other's result.
+- Fenced partial progress in migration 011 lets a retry reuse a completed grader
+  result. The recovery worker retries provider failures after exponential
+  backoff, including after restart, up to three attempts; candidate polling
+  exposes the retry state and regeneration remains asynchronous.
+- The report UI presents both grades separately, labels them model-estimated and
+  retains the deterministic behavior index as a distinct 1-4 signal.
+- Still open: apply migration 011 in development Supabase, run live model fixtures,
+  calibrate against human reviewers, add the separately assigned automated tests,
+  and complete I04's real voice acceptance procedure.
 
 FINAL I04 CODE FOLLOW-UP — PROVIDER TURN AND COMPLETION DRAIN
 - GoAway replacement now waits for the latest resumption-handle report before
