@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { listMicrophones, type VoiceStatus } from "../lib/voice-session";
+import { listMicrophones, type VoiceDeviceState, type VoiceStatus } from "../lib/voice-session";
+import { VoicePreflight } from "./VoicePreflight";
 
 /**
  * Voice controls (M3-2).
@@ -23,6 +24,12 @@ export interface VoiceControlsProps {
   onStart: (deviceId?: string) => void;
   onStop: () => void;
   onToggleMute: () => void;
+  /** Devices reported by the live session; fresher than a local enumeration. */
+  deviceState?: VoiceDeviceState | null | undefined;
+  /** Swap the capture device mid-round without restarting the interview. */
+  onSwitchDevice?: ((deviceId?: string) => void) | undefined;
+  /** Route interviewer audio elsewhere. Hidden where the browser cannot. */
+  onSwitchSpeaker?: ((deviceId?: string) => void) | undefined;
 }
 
 const LABEL: Record<VoiceStatus, string> = {
@@ -40,11 +47,21 @@ export function VoiceControls({
   onStart,
   onStop,
   onToggleMute,
+  deviceState,
+  onSwitchDevice,
+  onSwitchSpeaker,
 }: VoiceControlsProps) {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState<string>("");
+  const [preflightOpen, setPreflightOpen] = useState(false);
 
   const live = status === "LISTENING" || status === "SPEAKING";
+  // While live the session is the authority on what is plugged in and which
+  // device is actually carrying audio, including after an automatic recovery.
+  const shownDevices = live && deviceState?.microphones.length ? deviceState.microphones : devices;
+  const selected = live ? deviceState?.activeMicrophoneId ?? "" : deviceId;
+  const speakers = deviceState?.speakers ?? [];
+  const canRouteOutput = live && Boolean(deviceState?.canChooseSpeaker) && Boolean(onSwitchSpeaker);
 
   const refreshDevices = useCallback(() => {
     // Labels are empty until permission has been granted once, so this is worth
@@ -66,18 +83,40 @@ export function VoiceControls({
         </span>
       )}
 
-      {!live && devices.length > 1 && (
+      {shownDevices.length > 1 && (
         <select
-          value={deviceId}
-          onChange={(e) => setDeviceId(e.target.value)}
-          disabled={status === "CONNECTING"}
+          value={selected}
+          onChange={(e) => {
+            const next = e.target.value;
+            // Switching during the round rebuilds only the capture graph: the
+            // interview, the clock and the connection are untouched.
+            if (live) onSwitchDevice?.(next || undefined);
+            else setDeviceId(next);
+          }}
+          disabled={status === "CONNECTING" || (live && !onSwitchDevice)}
           className="voice-select"
           aria-label="Microphone"
         >
           <option value="">Default microphone</option>
-          {devices.map((d) => (
+          {shownDevices.map((d) => (
             <option key={d.deviceId} value={d.deviceId}>
               {d.label || "Microphone"}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {canRouteOutput && speakers.length > 1 && (
+        <select
+          value={deviceState?.activeSpeakerId ?? ""}
+          onChange={(e) => onSwitchSpeaker?.(e.target.value || undefined)}
+          className="voice-select"
+          aria-label="Speaker"
+        >
+          <option value="">Default speaker</option>
+          {speakers.map((d) => (
+            <option key={d.deviceId} value={d.deviceId}>
+              {d.label || "Speaker"}
             </option>
           ))}
         </select>
@@ -98,12 +137,21 @@ export function VoiceControls({
         </>
       ) : (
         <button
-          onClick={() => onStart(deviceId || undefined)}
+          onClick={() => setPreflightOpen(true)}
           disabled={status === "CONNECTING"}
           className="primary-button"
         >
           <span className="button-icon mic-icon" aria-hidden="true">●</span>{LABEL[status]}
         </button>
+      )}
+      {preflightOpen && (
+        <VoicePreflight
+          onCancel={() => setPreflightOpen(false)}
+          onContinue={(selected) => {
+            setPreflightOpen(false);
+            onStart((selected ?? deviceId) || undefined);
+          }}
+        />
       )}
     </div>
   );

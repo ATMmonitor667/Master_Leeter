@@ -207,6 +207,25 @@ budget/code; final keystroke and spoken answer included; no submit/run required.
 Owner needs: supported-browser device tests, consent copy review and confirmation
 of acceptable voice spend. A mock provider test is not full voice acceptance.
 
+Implementation checkpoint (branch `codex-production-04-live-experience`):
+
+- Added the minimal codepad/notes interview surface, acknowledged revision saves,
+  atomic final-cursor sealing, late-write rejection and server-owned deadline and
+  abandoned-tab completion.
+- Added provider-authoritative interim/final candidate transcription, playback
+  drain before interviewer completion, explicit manual-VAD turn closure, and a
+  bounded final transcript drain before completion seals evidence.
+- Added fresh-token reconnect and proactive GoAway rotation with constrained
+  session resumption and sliding-window context compression. Resumption handles
+  are held server-side per interview and cleared when a session ends.
+- Added microphone permission/input-level preflight, speaker check, live input and
+  output selection, device-change detection and in-place microphone/default-output
+  recovery without resetting the server-owned interview clock.
+- Web/API typechecks and production builds pass. Tests remain intentionally
+  deferred to the separately assigned test pass. The real 45-minute, hardware,
+  Supabase and failure-race procedure in `docs/I04_ACCEPTANCE.md` remains I04's
+  exit gate.
+
 ## I05 — Independent final graders and reports
 
 Tasks:

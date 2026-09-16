@@ -100,6 +100,10 @@ export interface RealtimeVoiceOptions {
   /** The candidate spoke over the interviewer. Stop playback immediately. */
   onBargeIn?: () => void;
   onReady?: () => void;
+  /** Latest opaque handle for continuing this logical provider session. */
+  onResumptionHandle?: (handle: string) => void;
+  /** Provider connection will close after this many milliseconds. */
+  onGoAway?: (timeLeftMs: number) => void;
   /** The provider socket closed and a fresh short-lived credential is required. */
   onDisconnected?: () => void;
   onError?: (err: Error) => void;
@@ -166,7 +170,13 @@ export class RealtimeVoice {
     // leave the server believing the candidate is still talking, which would
     // hold the gate's floor forever.
     const closing = this.vad.reset(this.now());
-    if (closing) this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs });
+    if (closing) {
+      // Manual VAD means the provider cannot infer that the last audio frame was
+      // the end of the turn. Close it before the socket so a final transcript
+      // still has a chance to arrive during an orderly shutdown.
+      this.sendActivity("activityEnd");
+      this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs });
+    }
 
     this.ready = false;
     this.transport?.close();
@@ -186,7 +196,10 @@ export class RealtimeVoice {
 
     if (muted) {
       const closing = this.vad.reset(this.now());
-      if (closing) this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs });
+      if (closing) {
+        this.sendActivity("activityEnd");
+        this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs });
+      }
     }
   }
 
@@ -351,6 +364,23 @@ export class RealtimeVoice {
       return;
     }
 
+    const resumption = (msg["sessionResumptionUpdate"] ?? msg["session_resumption_update"]) as
+      | Record<string, unknown>
+      | undefined;
+    if (resumption) {
+      const handle = resumption["newHandle"] ?? resumption["new_handle"] ?? resumption["token"];
+      if (resumption["resumable"] !== false && typeof handle === "string" && handle.length > 0) {
+        this.opts.onResumptionHandle?.(handle);
+      }
+      return;
+    }
+
+    const goAway = (msg["goAway"] ?? msg["go_away"]) as Record<string, unknown> | undefined;
+    if (goAway) {
+      this.opts.onGoAway?.(durationMs(goAway["timeLeft"] ?? goAway["time_left"]));
+      return;
+    }
+
     const toolCall = msg["toolCall"] ?? msg["tool_call"];
     if (toolCall) {
       void this.relayToolCall(toolCall as Record<string, unknown>);
@@ -364,6 +394,10 @@ export class RealtimeVoice {
     }
 
     const content = serverContent(msg);
+    if (content?.["interrupted"] === true) {
+      this.interviewerSpeaking = false;
+      this.opts.onBargeIn?.();
+    }
     const interimTranscript = content?.["interimInputTranscription"] ?? content?.["interim_input_transcription"];
     const finalTranscript = content?.["inputTranscription"] ?? content?.["input_transcription"];
     const interimText = transcriptText(interimTranscript);
@@ -382,6 +416,13 @@ function transcriptText(value: unknown): string {
   if (!value || typeof value !== "object") return "";
   const text = (value as Record<string, unknown>)["text"];
   return typeof text === "string" ? text.trim() : "";
+}
+
+function durationMs(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, value * 1_000);
+  if (typeof value !== "string") return 0;
+  const match = /^(\d+(?:\.\d+)?)s$/.exec(value.trim());
+  return match?.[1] ? Math.max(0, Number(match[1]) * 1_000) : 0;
 }
 
 /**

@@ -265,6 +265,22 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .voice-controls { display: flex; align-items: center; gap: 7px; }
 .voice-error { max-width: 220px; color: var(--err); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .voice-select { max-width: 170px; padding: 7px 9px; font-size: 11px; }
+.voice-preflight { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 26px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--panel); box-shadow: 0 24px 80px rgba(0,0,0,.5); }
+.voice-preflight h2 { margin: 7px 0 8px; font-size: 22px; }
+.voice-preflight > p { color: var(--muted); }
+.preflight-checks { display: grid; gap: 9px; margin: 20px 0; }
+.preflight-row { display: grid; grid-template-columns: 28px 1fr; gap: 11px; align-items: start; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-soft); }
+.preflight-row > span { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; background: var(--border); color: var(--muted); font: 700 10px var(--mono); }
+.preflight-row.ready > span { background: rgba(74,222,128,.14); color: var(--ok); }
+.preflight-row.failed > span { background: rgba(248,113,113,.14); color: var(--err); }
+.preflight-row strong, .preflight-row small { display: block; }
+.preflight-row small { margin: 3px 0 9px; color: var(--muted); }
+.preflight-device { min-width: 0; }
+.preflight-device select { width: 100%; margin: 7px 0; }
+.mic-meter { height: 5px; margin: 9px 0 11px; overflow: hidden; border-radius: 5px; background: var(--border); }
+.mic-meter span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--blue), var(--ok)); transition: width 80ms linear; }
+.preflight-error { padding: 9px 11px; border: 1px solid rgba(248,113,113,.3); border-radius: 8px; background: rgba(248,113,113,.08); color: var(--err) !important; font-size: 12px; }
+.preflight-help { font-size: 11px; line-height: 1.55; }
 .interviewer-status { display: flex; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); }
 .interviewer-status span:last-child { color: var(--muted-strong); font-size: 12px; }
 .timer { min-width: 54px; color: var(--text); font: 700 13px var(--mono); text-align: center; }

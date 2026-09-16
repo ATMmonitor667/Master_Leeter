@@ -451,3 +451,114 @@ CHECKPOINT RESULT — I03 CODE IMPLEMENTATION
 - Before deployment: apply migrations through 010 to development Supabase, set
   RESUME_ANALYZER_MODEL and RESTATEMENT_MODEL if defaults are unsuitable, then
   run one synthetic-resume flow and verify account/session deletion receipts.
+
+CHECKPOINT RESULT — I04 VOICE LIFETIME: DEVICE RECOVERY + HANDLE CUSTODY
+- Branch: codex-production-04-live-experience, on top of 7a20001.
+- Continues the previous agent's uncommitted work; its pre-existing diff is
+  preserved verbatim at .agent-snapshots/pre-claude-*.patch before any edit.
+
+Implemented (device switching, I04 item 4's second half):
+- apps/web/lib/voice-session.ts: openStream(), replaceCaptureStream(),
+  recoverMicrophone(), handleDeviceChange(), notifyDevices() and a public
+  switchMicrophone(). A device swap rebuilds ONLY the capture graph. The
+  provider socket, the pending speech authorization and the server-owned
+  deadline are untouched, so changing headsets costs no interview time and
+  does not replay the opening brief.
+- Microphone loss now attempts recovery — same device id first, then the
+  system default — instead of the previous terminal fail(). The provider
+  connection stays up through the failure, so choosing a device recovers in
+  place. A recovery landing while status is FAILED returns it to LISTENING.
+- A navigator.mediaDevices devicechange listener is registered at start and
+  removed at stop. Mute is applied to replacement tracks in openStream, so a
+  swap cannot silently un-mute the candidate. Old tracks are stopped only
+  after the replacement is live, so the capture indicator never blinks off.
+- VoiceControls + interview page: the microphone picker is now available
+  during the round and reports the device the session is actually capturing
+  from, including after an automatic recovery.
+
+Implemented (resumption handle custody, correcting I04 item 2):
+- The previous implementation accepted resumptionHandle in the realtime-token
+  request body and forwarded it to the provider. That let any caller mint a
+  credential that restores ANOTHER session's accumulated audio context —
+  brief, probes and hints already spoken into it. Route ownership limited the
+  blast radius to one account; it did not close it.
+- apps/api/src/modules/realtime/resumption.ts: VoiceResumptionStore, an
+  in-process TTL map keyed by session id. Deliberately not a database column:
+  a handle is transport state with a lifetime of minutes, it is not interview
+  evidence, and it must not enter the append-only log.
+- New POST /interview-sessions/:id/voice-resumption is report-only; ownership
+  is enforced by the existing module preHandler. The mint route no longer
+  reads any handle from its request body and uses only what is stored for the
+  session it is minting for. A failed mint clears the stored handle so a
+  stale one cannot loop. An ended session clears it and refuses reports.
+- Side effect worth having: continuity now survives a page refresh, because
+  the handle no longer lives only in browser memory.
+
+Verification performed — read this before trusting the above:
+- Syntax and in-file type checking of all six changed files using a standalone
+  tsc 5.9.3. Clean.
+- pnpm typecheck, pnpm test and the web/API vitest suites were NOT run. The
+  workspace node_modules is a pnpm symlink farm created on Windows; those
+  links return I/O errors through the Linux mount this agent had, so the
+  project toolchain could not execute. This is a tooling limit, not a pass.
+- No new tests were written, per owner direction that tests belong to the
+  separate test pass.
+
+REQUIRED BEFORE COMMIT (owner, on Windows):
+  pnpm typecheck
+  pnpm --filter @master-leeter/web exec vitest run
+  pnpm --filter @master-leeter/api exec vitest run src/modules/session src/modules/realtime
+  git diff --check
+Existing suites most likely to move: any test asserting the realtime-token
+request body, and any that construct VoiceSession against a mediaDevices stub
+without addEventListener or getAudioTracks().readyState.
+
+FOLLOW-UP IN THE SAME CHECKPOINT — speaker side and item 5 procedure:
+- Output-device loss is now detected. Losing a speaker throws nothing; the
+  interviewer simply goes inaudible, which reads as the AI having stopped
+  talking, so recoverSpeaker() checks enumeration explicitly rather than
+  waiting for an error that never arrives. It falls back to the default sink
+  and resumes an AudioContext that the removal suspended — left suspended,
+  scheduled interviewer audio is dropped silently.
+- switchSpeaker() routes output where AudioContext.setSinkId exists. Where it
+  does not, the picker is hidden rather than offering a control that lies.
+- onDeviceChange now reports one VoiceDeviceState (microphones, speakers,
+  both active ids, canChooseSpeaker) instead of a bare microphone list.
+- docs/I04_ACCEPTANCE.md: the item 5 procedure, written as eight checks with
+  the evidence each one must produce. Deliberately a runbook and not a test
+  suite, per owner direction that test implementation is a separate pass.
+  Checks 1, 2, 7 and 8 need a live database and a person at a microphone and
+  cannot be closed by source inspection.
+
+STILL OPEN IN I04:
+- Item 5 itself: nobody has RUN docs/I04_ACCEPTANCE.md. Every check in it is
+  open. This is I04's exit condition and it is not met.
+- A rotation that lands mid-utterance still reports INTERRUPTED and drops the
+  authorized wording rather than re-requesting it. Correct for not repeating
+  speech; unverified against a real 45-minute round.
+- Speaker recovery is unverified on Windows audio, where default-device
+  switching behaves differently from the Chromium model assumed here.
+
+I05 READINESS:
+Not started, deliberately. NEXT_IMPLEMENTATION_PLAN's own rule is not to begin
+a later item while the current item's exit is unmet, and I04's exit is the
+acceptance run above. I05 also grades SEALED evidence, so starting it before
+checks 3, 4 and 5 have passed would build graders on a sealing path nobody has
+watched hold under a real race.
+
+FINAL I04 CODE FOLLOW-UP — PROVIDER TURN AND COMPLETION DRAIN
+- GoAway replacement now waits for the latest resumption-handle report before
+  minting, starts early enough to reserve handshake time, and only closes server
+  speech authorization when an interviewer utterance is actually in flight.
+- Manual VAD mute/disconnect now sends activityEnd. Complete Interview performs a
+  bounded four-second provider transcript drain before selecting and acknowledging
+  the final client cursor, covering the final-spoken-answer race in acceptance #4.
+- Retrying after partial voice startup releases the old tracks, AudioContext,
+  listeners and timers first. Startup failures also clean up immediately instead
+  of leaving the browser capture indicator active.
+- Deliberate microphone switches disarm the retired track's hardware-loss handler,
+  avoiding a duplicate recovery stream. Initial device state reaches the pickers,
+  and microphone failure leaves the live connection available for in-place recovery.
+- Validation on Windows: web typecheck PASS, API typecheck PASS, web production
+  build PASS, API production build PASS, git diff check PASS. Tests were not run
+  or added by explicit owner instruction.

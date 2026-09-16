@@ -34,6 +34,8 @@ export {
   interviewerPersona,
 } from "./persona.js";
 
+export { VoiceResumptionStore } from "./resumption.js";
+
 export {
   VOICE_TOOLS,
   executeVoiceTool,

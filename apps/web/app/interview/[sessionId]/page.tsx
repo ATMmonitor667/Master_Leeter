@@ -12,7 +12,7 @@ import { VoiceControls } from "../../../components/VoiceControls";
 import { SessionClient } from "../../../lib/session-client";
 import { apiFetch } from "../../../lib/auth";
 import { connectSessionTransport } from "../../../lib/session-transport";
-import { VoiceSession, type VoiceStatus } from "../../../lib/voice-session";
+import { VoiceSession, type VoiceDeviceState, type VoiceStatus } from "../../../lib/voice-session";
 
 /**
  * The candidate workspace (M2-3).
@@ -51,6 +51,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   const [restored, setRestored] = useState(false);
   const [resumeCursor, setResumeCursor] = useState({ clientSeq: 0, codeRevision: 0 });
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("IDLE");
+  const [voiceDevices, setVoiceDevices] = useState<VoiceDeviceState | null>(null);
   const [voiceMuted, setVoiceMuted] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [captionInterim, setCaptionInterim] = useState("");
@@ -147,8 +148,16 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
    * to read the workspace before anything is listening.
    */
   const onVoiceStart = useCallback(
-    (deviceId?: string) => {
+    async (deviceId?: string) => {
       setVoiceError(null);
+
+      // A retry can follow a partially-started session (permission, worklet or
+      // provider failure). Release that session before opening another one so
+      // its devicechange listener, tracks and reconnect timers cannot survive
+      // behind the replacement.
+      const previous = voiceRef.current;
+      voiceRef.current = null;
+      await previous?.stop().catch(() => {});
 
       const session = new VoiceSession({
         sessionId,
@@ -159,6 +168,9 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
           if (status === "LISTENING") setVoiceError(null);
         },
         onError: (err) => setVoiceError(err.message),
+        // Fired on OS device changes and after an automatic recovery, so the
+        // pickers keep showing what is really capturing and playing.
+        onDeviceChange: setVoiceDevices,
         // The events M4-2 measures silenceMs between. They carry the VAD's
         // onset timestamps, not the moment they were sent.
         onSpeechBoundary: (boundary) =>
@@ -175,17 +187,37 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       });
 
       voiceRef.current = session;
-      session.start().catch(() => {
+      await session.start().catch(() => {
         // Already surfaced through onError; the rejection is the same failure.
       });
     },
     [sessionId],
   );
 
+  /**
+   * Change microphone without leaving the round.
+   *
+   * Deliberately not stop() + start(): that would re-mint a credential and
+   * replay the opening handshake. Interview time is server-owned and keeps
+   * running, so a device swap must stay cheap.
+   */
+  const onSwitchDevice = useCallback((deviceId?: string) => {
+    voiceRef.current?.switchMicrophone(deviceId).catch((err: unknown) => {
+      setVoiceError(err instanceof Error ? err.message : "Could not switch microphone.");
+    });
+  }, []);
+
+  const onSwitchSpeaker = useCallback((deviceId?: string) => {
+    voiceRef.current?.switchSpeaker(deviceId).catch((err: unknown) => {
+      setVoiceError(err instanceof Error ? err.message : "Could not switch speaker.");
+    });
+  }, []);
+
   const onVoiceStop = useCallback(() => {
     void voiceRef.current?.stop();
     voiceRef.current = null;
     setVoiceMuted(false);
+    setVoiceDevices(null);
   }, []);
 
   const onToggleMute = useCallback(() => {
@@ -222,6 +254,10 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
 
     const api = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:4000";
     try {
+      // Manual VAD must close the current provider turn before the final app
+      // cursor is chosen. This bounded wait lets a spoken answer that ends on
+      // the button click enter the same acknowledged/sealed evidence stream.
+      await voiceRef.current?.finishInput();
       const finalClientSeq = await clientRef.current?.flushAndWaitForAcknowledgement() ?? -1;
       const response = await apiFetch(`${api}/v1/interview-sessions/${sessionId}/end`, {
         method: "POST",
@@ -254,6 +290,9 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
             onStart={onVoiceStart}
             onStop={onVoiceStop}
             onToggleMute={onToggleMute}
+            deviceState={voiceDevices}
+            onSwitchDevice={onSwitchDevice}
+            onSwitchSpeaker={onSwitchSpeaker}
           />
           <InterviewerStatus state={voiceStatus === "SPEAKING" ? "SPEAKING" : interviewer} />
           <Timer
@@ -278,9 +317,12 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       voiceStatus,
       voiceMuted,
       voiceError,
+      voiceDevices,
       onVoiceStart,
       onVoiceStop,
       onToggleMute,
+      onSwitchDevice,
+      onSwitchSpeaker,
       stage,
     ],
   );

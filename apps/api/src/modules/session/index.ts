@@ -6,6 +6,7 @@ import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.j
 import {
   MintLimiter,
   RealtimeTokenError,
+  VoiceResumptionStore,
   executeVoiceTool,
   type RealtimeTokenMinter,
 } from "../realtime/index.js";
@@ -72,6 +73,11 @@ const CreateSessionBody = z.object({
 const VoiceToolBody = z.object({
   name: z.string().min(1),
   args: z.record(z.unknown()).default({}),
+});
+
+const VoiceResumptionBody = z.object({
+  /** Opaque handle emitted by the provider to the browser holding the socket. */
+  handle: z.string().min(1).max(16_384),
 });
 
 const RunBody = z.object({
@@ -164,6 +170,10 @@ export async function registerSessionModule(
 
   /** Caps realtime credential minting per session. Cleared when the session ends. */
   const mintLimiter = new MintLimiter();
+  // Handles are reported by the browser and read back here at mint time. The
+  // mint route never reads a handle out of its own request body — see
+  // VoiceResumptionStore for why that distinction is the whole point.
+  const resumption = new VoiceResumptionStore();
 
   /**
    * Live orchestrators, one per active session.
@@ -630,6 +640,7 @@ export async function registerSessionModule(
       channel.forget(session.id);
       dispatchTails.delete(session.id);
       mintLimiter.forget(session.id);
+      resumption.clear(session.id);
       leases.delete(session.id);
 
       const scenario = opts.library.get(session.scenarioVersionId);
@@ -802,7 +813,12 @@ export async function registerSessionModule(
     }
 
     try {
-      const credential = await opts.realtimeTokenMinter.mint({ tone: session.interviewerTone ?? "NORMAL" });
+      // Continuity comes from what this server stored for THIS session id.
+      const storedHandle = resumption.get(id);
+      const credential = await opts.realtimeTokenMinter.mint({
+        tone: session.interviewerTone ?? "NORMAL",
+        ...(storedHandle ? { resumptionHandle: storedHandle } : {}),
+      });
 
       app.log.info(
         {
@@ -811,6 +827,7 @@ export async function registerSessionModule(
           model: credential.model,
           expiresAt: credential.expiresAt,
           mints: mintLimiter.used(id),
+          resumed: Boolean(storedHandle),
         },
         "minted realtime credential",
       );
@@ -823,6 +840,11 @@ export async function registerSessionModule(
       // the provider's body and that is the first thing anyone debugging this
       // will want. The client gets a code and nothing else.
       app.log.error({ sessionId: id, kind, err }, "realtime token mint failed");
+
+      // A handle the provider will not accept would fail every retry the same
+      // way. Drop it so the next attempt opens a fresh provider session; the
+      // interview itself is unaffected, only the carried audio context.
+      resumption.clear(id);
 
       return reply.code(kind === "RATE_LIMITED" ? 429 : 502).send({
         error: kind === "RATE_LIMITED" ? "TOKEN_CAP_REACHED" : "REALTIME_MINT_FAILED",
@@ -861,6 +883,33 @@ export async function registerSessionModule(
    * Replays through the same path: the opening is triggered by ingesting the
    * logged SESSION_STARTED, so a replay reaches it without this route existing.
    */
+  /**
+   * The browser reports the provider's latest resumption handle (I04-2).
+   *
+   * Report-only. Nothing here decides which handle a credential is minted with;
+   * that is read from this session's own stored entry at mint time. Ownership is
+   * enforced by the API access-control hook, so a handle can only be written
+   * against a session the caller owns. The browser still supplies the opaque
+   * value; the important boundary here is that another account cannot write it
+   * and the later mint request cannot substitute a different value.
+   */
+  app.post("/interview-sessions/:id/voice-resumption", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = VoiceResumptionBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "INVALID_BODY" });
+
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+    if (session.endedAt) {
+      // An ended session must not be resumable. Drop anything still held.
+      resumption.clear(id);
+      return reply.code(409).send({ error: "SESSION_ENDED" });
+    }
+
+    resumption.record(id, body.data.handle);
+    return reply.send({ ok: true });
+  });
+
   app.post("/interview-sessions/:id/voice-ready", async (req, reply) => {
     const { id } = req.params as { id: string };
     const session = await store.get(id);

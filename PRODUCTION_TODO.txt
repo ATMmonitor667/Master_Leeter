@@ -22,7 +22,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [~] I04 core code implemented on codex-production-04-live-experience: minimal
     codepad/notes UI, provider input transcription, voice action/reconnect path,
     acknowledged saves, atomic final cursor seal, late-write rejection and server
-    deadline/abandonment completion. Real 45-minute and device acceptance remain.
+    deadline/abandonment completion, GoAway rotation, provider resumption/context
+    compression, audio preflight/device recovery and final spoken-turn drain.
+    Real 45-minute browser/device/cloud acceptance remains.
 [ ] I05 Separate 0-100 solution/transcript AI graders and evidence-based reports.
 [ ] I06 Security/cost/recovery hardening, release checks and owner-assisted pilot.
 Full per-iteration tasks, acceptance and owner dependencies:
@@ -66,10 +68,13 @@ DATA / RECOVERY
 [ ] P10 Single session owner, fenced leases, cross-instance commands, durable jobs.
 
 INTERVIEW / EXECUTION / REPORTS
-[~] P11 Provider transcription is independent of captions and completion waits for
-    playback drain; full device preflight and human audio acceptance remain.
-[~] P12 Fresh-token voice reconnect is implemented; provider GoAway/resumption,
-    context compression and a real 45-minute verification remain.
+[~] P11 Provider transcription is independent of captions; completion waits for
+    playback drain and a bounded final candidate transcript drain. Browser audio
+    preflight plus microphone/speaker switching and recovery are implemented;
+    human hardware acceptance remains.
+[~] P12 Fresh-token reconnect, provider GoAway rotation, server-held resumption
+    handles and context compression are implemented. A real 45-minute provider
+    verification remains.
 [~] P13 Durable server deadline discovery, atomic finalization, late-write rejection
     and abandoned-tab completion are implemented; cloud race drills remain.
 [ ] P14 Sandbox provider spike: actual enforced isolation/resource/cleanup tests.
