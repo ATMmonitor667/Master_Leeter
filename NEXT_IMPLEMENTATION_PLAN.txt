@@ -591,6 +591,10 @@ I06 FIRST CODE CHECKPOINT — RELEASE BOUNDARY
   enforcement and atomic shared rate buckets. New-session admission serializes
   global capacity/monthly account checks, honors the kill switch and keeps
   idempotent retries free; voice still has a lifetime credential cap.
-- Still open in I06: operational metrics/alerts, evaluator/voice breaker status,
-  backup/restore and hosted browser/load/pilot gates. Migration 012 must be
-  applied before this checkpoint can boot against development Supabase.
+- Follow-up: voice/evaluator provider circuits, safe capability status, request
+  support IDs, redacted failure signals and recovery/exhaustion alert events are
+  implemented. Hosting still has to route those events to a named operator and
+  prove paging with forced failures.
+- Still open in I06: backup/restore and rollback automation, hosted browser/load
+  gates and the invite pilot. Migration 012 must be applied before this
+  checkpoint can boot against development Supabase.

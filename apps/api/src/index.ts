@@ -3,14 +3,15 @@ import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { runtimeConfig } from "./config.js";
+import { ProviderCircuit } from "./lib/provider-circuit.js";
 import { InMemoryRateLimitStore, type RateLimitPolicy, type RateLimitStore } from "./modules/admission/index.js";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
-import { EvaluationQueue, IndependentGeminiEvaluator, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
+import { EvaluationQueue, IndependentGeminiEvaluator, MAX_REPORT_ATTEMPTS, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
 import { startReportRecovery } from "./modules/report/recovery-worker.js";
 import type { RuntimeOwnership } from "./modules/session/runtime-ownership.js";
 import { loadEnv } from "./env.js";
 import { GeminiClient, geminiApiKeyFromEnv } from "./lib/gemini.js";
-import { classifierFromEnv, type IntentClassifier } from "./modules/orchestrator/index.js";
+import { classifierFromEnv, GeminiClassifier, type IntentClassifier } from "./modules/orchestrator/index.js";
 import {
   GeminiResumeAnalyzer,
   GeminiScenarioRestater,
@@ -78,6 +79,8 @@ export interface ServerOptions {
   rateLimiter?: RateLimitStore;
   rateLimits?: RateLimitPolicy;
   maxRealtimeMintsPerSession?: number;
+  realtimeCircuit?: ProviderCircuit;
+  status?: () => Record<string, unknown>;
   /** Absent when no judge model is configured. Runs then return 503, and say so. */
   runner?: CodeRunner;
   /**
@@ -168,11 +171,19 @@ export function buildServer(opts: ServerOptions) {
     undefined,
     opts.reportJobStore,
     (sessionId) => store.pinnedScenario(sessionId),
+    (sessionId, attempts, code) => {
+      const details = { sessionId, attempts, code };
+      if (attempts >= MAX_REPORT_ATTEMPTS) app.log.error(details, "report evaluation attempts exhausted");
+      else app.log.warn(details, "report evaluation failed; retry remains");
+    },
   );
   let stopRecovery: (() => Promise<void>) | undefined;
   if (opts.reportJobStore) app.addHook("onReady", async () => {
-    stopRecovery = startReportRecovery(() => evaluationQueue.recover(),
-      () => app.log.error("report recovery failed; pending work will be retried"));
+    stopRecovery = startReportRecovery(() => evaluationQueue.recover(), (consecutiveFailures) => {
+      if (consecutiveFailures === 1 || consecutiveFailures % 12 === 0) {
+        app.log.error({ consecutiveFailures }, "report recovery unavailable; pending work will be retried");
+      }
+    });
   });
   app.addHook("onClose", async () => {
     await stopRecovery?.();
@@ -196,6 +207,11 @@ export function buildServer(opts: ServerOptions) {
     if (failed.length) return reply.code(503).send({ status: "unavailable", checks: failed });
     return reply.send({ status: "ready", scenarios: opts.library.size, release: opts.release ?? "development" });
   });
+  app.get("/health/status", async () => ({
+    status: "ok",
+    release: opts.release ?? "development",
+    ...(opts.status ? { capabilities: opts.status() } : {}),
+  }));
 
   void app.register(registerSessionModule, {
     prefix: "/v1",
@@ -210,6 +226,7 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.classifier ? { classifier: opts.classifier } : {}),
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
     ...(opts.maxRealtimeMintsPerSession ? { maxRealtimeMintsPerSession: opts.maxRealtimeMintsPerSession } : {}),
+    ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
   void app.register(registerPreparationModule, {
@@ -289,6 +306,7 @@ export async function start(): Promise<void> {
   // Null when voice is unconfigured. Built once and shared: the token route is
   // the only caller, and the credential it mints is per-request regardless.
   const realtimeTokenMinter = minterFromEnv();
+  const realtimeCircuit = new ProviderCircuit(3, 60_000);
 
   // Supabase is PostgreSQL. Its direct/pooler connection string activates the
   // durable repositories; local development may still run explicitly in memory.
@@ -304,6 +322,16 @@ export async function start(): Promise<void> {
     release: config.release,
     rateLimits: config.rateLimits,
     maxRealtimeMintsPerSession: config.admission.maxRealtimeMintsPerSession,
+    realtimeCircuit,
+    status: () => ({
+      admission: config.admission.enabled ? "OPEN" : "PAUSED",
+      authentication: authenticator ? "AVAILABLE" : "DEVELOPMENT",
+      storage: durableStorage ? "AVAILABLE" : "MEMORY",
+      voice: realtimeTokenMinter ? realtimeCircuit.state() : "UNAVAILABLE",
+      classifier: classifier instanceof GeminiClassifier ? classifier.operationalStatus().circuit : "FALLBACK",
+      evaluator: evaluator ? evaluator.operationalStatus().circuit : "FALLBACK",
+      runFeedback: runner ? "AVAILABLE_MODEL_ESTIMATE" : "UNAVAILABLE",
+    }),
     ...(durableStorage ? { readinessChecks: [{ name: "storage", check: durableStorage.storageReadiness }] } : {}),
     ...(authenticator ? { authenticator } : {}),
     ...(runner ? { runner } : {}),
@@ -402,7 +430,11 @@ export async function start(): Promise<void> {
 const entry = (process.argv[1] ?? "").replace(/\\/g, "/");
 if (entry.endsWith("src/index.ts") || entry.endsWith("dist/index.js")) {
   start().catch((err: unknown) => {
-    console.error(err);
+    const message = err instanceof Error ? err.message : "STARTUP_FAILED";
+    const safe = message.startsWith("CONFIGURATION_INVALID:") ||
+      ["STORAGE_SCHEMA_INCOMPLETE", "STORAGE_UNAVAILABLE", "AUTH_CONFIGURATION"].includes(message)
+      ? message : err instanceof QuestionBankError ? `QUESTION_BANK_${err.code}` : "STARTUP_FAILED";
+    console.error(safe);
     process.exit(1);
   });
 }

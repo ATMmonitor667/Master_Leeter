@@ -21,7 +21,7 @@ export {
   type SessionReport,
 } from "./evaluator.js";
 export { CODING_RUBRIC_V1, rubricById, weightSum, type Rubric, type RubricDimension } from "./rubric.js";
-export { InMemoryReportJobStore, type ReportClaim, type ReportJob, type ReportJobStore, type ReportStatus } from "./report-store.js";
+export { InMemoryReportJobStore, MAX_REPORT_ATTEMPTS, type ReportClaim, type ReportJob, type ReportJobStore, type ReportStatus } from "./report-store.js";
 export { IndependentGeminiEvaluator, SOLUTION_PROMPT_VERSION, TRANSCRIPT_PROMPT_VERSION } from "./independent-evaluator.js";
 
 /**
@@ -47,6 +47,7 @@ export class EvaluationQueue {
     private readonly now: () => string = () => new Date().toISOString(),
     private readonly jobs: ReportJobStore = new InMemoryReportJobStore(),
     private readonly scenarioFor?: ((sessionId: string) => ReturnType<SessionStore["pinnedScenario"]>) | undefined,
+    private readonly onFailure?: ((sessionId: string, attempts: number, code: string) => void) | undefined,
   ) {}
 
   /** Idempotent: enqueuing a session already evaluated returns the existing job. */
@@ -151,12 +152,22 @@ export class EvaluationQueue {
         )
         : await this.evaluator.evaluate(events, claim.job.rubricId, context);
       await this.jobs.complete(sessionId, claim.token, report, this.now());
-    } catch {
+    } catch (error) {
       // A failed evaluation never affects the completed interview. The job is
       // retryable from the same immutable events.
+      this.onFailure?.(sessionId, claim.job.attempts, evaluationFailureCode(error));
       await this.jobs.fail(sessionId, claim.token, "EVALUATION_FAILED", this.now());
     }
   }
+}
+
+function evaluationFailureCode(error: unknown): string {
+  if (error instanceof Error && error.message === "EVALUATOR_CIRCUIT_OPEN") return "CIRCUIT_OPEN";
+  if (typeof error === "object" && error !== null && "kind" in error &&
+      ["TIMEOUT", "RATE_LIMITED", "HTTP", "MALFORMED", "NO_KEY"].includes(String(error.kind))) {
+    return `PROVIDER_${String(error.kind)}`;
+  }
+  return error instanceof Error ? error.name : "UNKNOWN";
 }
 
 export interface ReportModuleOptions {

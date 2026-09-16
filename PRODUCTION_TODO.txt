@@ -30,8 +30,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
     Migration, calibration fixtures and live/human grading acceptance remain.
 [~] I06 release boundary plus durable global/account admission, kill switch,
     provider-route rates and voice credential caps implemented on
-    codex-production-06-launch-hardening; monitoring, backup/restore, hosted
-    drills and owner-assisted pilot remain.
+    codex-production-06-launch-hardening. Safe capability status, provider
+    breakers and alertable redacted signals are implemented; alert delivery,
+    backup/restore, hosted drills and owner-assisted pilot remain.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md
 Question bank setup (no cloud data has been written):

@@ -1,5 +1,6 @@
 import type { SessionEvent } from "@master-leeter/contracts";
-import { GeminiClient, type GeminiSchema } from "../../lib/gemini.js";
+import { GeminiClient, GeminiError, type GeminiSchema, type GenerateJsonRequest } from "../../lib/gemini.js";
+import { ProviderCircuit, type CircuitState } from "../../lib/provider-circuit.js";
 import {
   BaselineEvaluator,
   type EvaluationContext,
@@ -68,12 +69,17 @@ state uncertainty, and never infer personality, employability, accent, pedigree,
 
 export class IndependentGeminiEvaluator {
   private readonly baseline: BaselineEvaluator;
+  private readonly circuit = new ProviderCircuit(2, 60_000);
 
   constructor(
     private readonly client: GeminiClient,
     now: () => string = () => new Date().toISOString(),
   ) {
     this.baseline = new BaselineEvaluator(now);
+  }
+
+  operationalStatus(): { model: string; circuit: CircuitState } {
+    return { model: this.client.model, circuit: this.circuit.state() };
   }
 
   async evaluate(events: SessionEvent[], rubricId: string, context: EvaluationContext = {}): Promise<SessionReport> {
@@ -112,7 +118,7 @@ export class IndependentGeminiEvaluator {
     if (!scenario) throw new Error("SCENARIO_UNAVAILABLE_FOR_SOLUTION_GRADING");
 
     const runEvents = events.filter((event) => event.type === "RUN_COMPLETED");
-    const reply = await this.client.generateJson<ModelGrade>({
+    const reply = await this.generate<ModelGrade>({
       system: `${SYSTEM}\nYou are the SOLUTION grader. You receive no transcript and must not assess communication.\nAll correctness claims are model-estimated. Supplied run results may themselves be model predictions, not execution proof.\nUse only supplied contract/reference evidence. Never reveal hidden test inputs or outputs, reference solution names,\nreference invariants, or reference failure modes in candidate-facing text. Discuss flaws in the submitted code at a high level;\ndo not propose an algorithm or implementation that the candidate did not already use.`,
       prompt: JSON.stringify({
         rubric: SOLUTION_DIMENSIONS,
@@ -153,7 +159,7 @@ export class IndependentGeminiEvaluator {
       .filter((event) => event.type === "CLARIFICATION_ANSWERED")
       .map((event) => event.payload["factKey"])
       .filter((value): value is string => typeof value === "string"));
-    const reply = await this.client.generateJson<ModelGrade>({
+    const reply = await this.generate<ModelGrade>({
       system: `${SYSTEM}\nYou are the TRANSCRIPT grader. You receive no candidate source code, run result,\nsolution score, or other grader output. Grade reasoning and communication only. Do not grade accent or writing style.\nEvery evidence item must cite a candidate turn seq and quote an exact substring from that turn.`,
       prompt: JSON.stringify({
         rubric: TRANSCRIPT_DIMENSIONS,
@@ -171,6 +177,18 @@ export class IndependentGeminiEvaluator {
       maxOutputTokens: 4_000,
     });
     return normalize(reply, this.client.model, TRANSCRIPT_PROMPT_VERSION, TRANSCRIPT_DIMENSIONS, speech, true);
+  }
+
+  private async generate<T>(request: GenerateJsonRequest): Promise<T> {
+    if (!this.circuit.tryAcquire()) throw new Error("EVALUATOR_CIRCUIT_OPEN");
+    try {
+      const result = await this.client.generateJson<T>(request);
+      this.circuit.success();
+      return result;
+    } catch (error) {
+      this.circuit.failure(error instanceof GeminiError && error.kind === "RATE_LIMITED");
+      throw error;
+    }
   }
 }
 

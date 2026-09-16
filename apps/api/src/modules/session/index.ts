@@ -30,6 +30,7 @@ import { registerEventsSocket } from "./ws.js";
 import { FinalInputsPendingError, type SessionLifecycle } from "./lifecycle.js";
 import { RuntimeOwnerHandles, type RuntimeOwnership } from "./runtime-ownership.js";
 import { AdmissionError } from "../admission/index.js";
+import { ProviderCircuit } from "../../lib/provider-circuit.js";
 
 /**
  * Session module — session lifecycle, the app WebSocket, and the event log.
@@ -122,6 +123,7 @@ export interface SessionModuleOptions {
    */
   realtimeTokenMinter?: RealtimeTokenMinter;
   maxRealtimeMintsPerSession?: number;
+  realtimeCircuit?: ProviderCircuit;
 }
 
 export async function registerSessionModule(
@@ -172,6 +174,7 @@ export async function registerSessionModule(
 
   /** Caps realtime credential minting per session. Cleared when the session ends. */
   const mintLimiter = new MintLimiter(opts.maxRealtimeMintsPerSession);
+  const realtimeCircuit = opts.realtimeCircuit ?? new ProviderCircuit(3, 60_000);
   // Handles are reported by the browser and read back here at mint time. The
   // mint route never reads a handle out of its own request body — see
   // VoiceResumptionStore for why that distinction is the whole point.
@@ -318,8 +321,8 @@ export async function registerSessionModule(
     try {
       const history = await eventLog.read(session.id);
       runtime.restore(beforeSeq === undefined ? history : history.filter((event) => event.seq < beforeSeq));
-    } catch (err) {
-      app.log.error({ sessionId, err }, "session runtime could not be restored");
+    } catch (error) {
+      app.log.error({ sessionId, errorType: error instanceof Error ? error.name : typeof error }, "session runtime could not be restored");
       liveSessions.delete(session.id);
       return null;
     }
@@ -371,8 +374,8 @@ export async function registerSessionModule(
     try {
       const result = await runtime.ingest(event);
       if (runtimes.get(event.sessionId) === runtime) await deliverOwned(event.sessionId, result);
-    } catch (err) {
-      app.log.error({ sessionId: event.sessionId, err }, "orchestrator ingest failed");
+    } catch (error) {
+      app.log.error({ sessionId: event.sessionId, errorType: error instanceof Error ? error.name : typeof error }, "orchestrator ingest failed");
     }
   }
 
@@ -475,7 +478,7 @@ export async function registerSessionModule(
         onUnavailable: (request, error) => {
           // Logged, not thrown. A runner outage must not end the interview.
           runContext.delete(request.runId);
-          app.log.warn({ runId: request.runId, err: error.message }, "runner unavailable");
+          app.log.warn({ runId: request.runId, errorType: error.name }, "runner unavailable");
           pushToSession(request.sessionId, {
             kind: "ERROR",
             code: "RUNNER_UNAVAILABLE",
@@ -658,7 +661,7 @@ export async function registerSessionModule(
       const scenario = opts.library.get(session.scenarioVersionId);
       if (opts.evaluationQueue) {
         void opts.evaluationQueue.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1")
-          .catch((err: unknown) => app.log.error({ sessionId: session.id, err }, "report job enqueue failed"));
+          .catch((error: unknown) => app.log.error({ sessionId: session.id, errorType: error instanceof Error ? error.name : typeof error }, "report job enqueue failed"));
       }
 
       return session;
@@ -688,9 +691,9 @@ export async function registerSessionModule(
             code: "SESSION_ENDED",
             message: "Interview time is complete. Your report is being prepared.",
           });
-        } catch (err) {
-          if (!(err instanceof SessionNotFoundError)) {
-            app.log.error({ sessionId: id, err }, "automatic session completion failed");
+        } catch (error) {
+          if (!(error instanceof SessionNotFoundError)) {
+            app.log.error({ sessionId: id, errorType: error instanceof Error ? error.name : typeof error }, "automatic session completion failed");
           }
         }
       }
@@ -813,7 +816,15 @@ export async function registerSessionModule(
       });
     }
 
+    if (!realtimeCircuit.tryAcquire()) {
+      return reply.code(503).header("Retry-After", "60").send({
+        error: "REALTIME_CIRCUIT_OPEN",
+        message: "Voice credentials are temporarily unavailable. Retry shortly.",
+      });
+    }
+
     if (!mintLimiter.take(id)) {
+      realtimeCircuit.release();
       // Almost always a client retry loop rather than an attacker, and the
       // symptom of not catching it — voice dying for every session once the
       // quota is gone — looks nothing like the cause.
@@ -831,6 +842,7 @@ export async function registerSessionModule(
         tone: session.interviewerTone ?? "NORMAL",
         ...(storedHandle ? { resumptionHandle: storedHandle } : {}),
       });
+      realtimeCircuit.success();
 
       app.log.info(
         {
@@ -848,10 +860,10 @@ export async function registerSessionModule(
     } catch (err) {
       const kind = err instanceof RealtimeTokenError ? err.kind : "PROVIDER_ERROR";
 
-      // Full detail to the log — a rejected constraint is explained precisely in
-      // the provider's body and that is the first thing anyone debugging this
-      // will want. The client gets a code and nothing else.
-      app.log.error({ sessionId: id, kind, err }, "realtime token mint failed");
+      realtimeCircuit.failure(kind === "RATE_LIMITED");
+      // Provider bodies can contain request fragments. Keep routine diagnostics
+      // to an opaque session id and typed failure kind.
+      app.log.error({ sessionId: id, kind }, "realtime token mint failed");
 
       // A handle the provider will not accept would fail every retry the same
       // way. Drop it so the next attempt opens a fresh provider session; the

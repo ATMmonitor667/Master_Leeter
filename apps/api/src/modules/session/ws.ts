@@ -77,7 +77,7 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
   void deps.channel
     .resume(sessionId, -1)
     .then((result) => write(result.messages.filter((m) => m.kind === "STATE")))
-    .catch((err: unknown) => deps.log?.warn({ sessionId, err }, "initial state push failed"));
+    .catch((error: unknown) => deps.log?.warn({ sessionId, errorType: error instanceof Error ? error.name : typeof error }, "initial state push failed"));
 
   const processFrame = async (raw: { toString(): string }): Promise<void> => {
       if (closed || expired()) return;
@@ -105,8 +105,8 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
         // wait on Tree-sitter or a gate decision, and the orchestrator reads
         // committed evidence either way.
         if (result.event) await deps.dispatch(result.event);
-      } catch (err) {
-        deps.log?.error({ sessionId, err }, "session channel failed");
+      } catch (error) {
+        deps.log?.error({ sessionId, errorType: error instanceof Error ? error.name : typeof error }, "session channel failed");
         write([{ kind: "ERROR", code: "INTERNAL", message: "event could not be processed" }]);
       }
   };
@@ -128,8 +128,8 @@ export function handleConnection(socket: SocketLike, sessionId: string, deps: Ev
     deps.channel.forget(sessionId);
   });
 
-  socket.on("error", (err) => {
-    deps.log?.warn({ sessionId, err: err.message }, "session socket error");
+  socket.on("error", (error) => {
+    deps.log?.warn({ sessionId, errorType: error.name }, "session socket error");
   });
 }
 

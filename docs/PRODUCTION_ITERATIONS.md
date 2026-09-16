@@ -319,6 +319,10 @@ Implementation checkpoint (branch `codex-production-06-launch-hardening`):
   active cap, monthly account allowance and an operator kill switch before the
   session/start event commit. Account create/preparation/voice/run bursts use
   atomic Supabase rate buckets; voice credentials retain a session-lifetime cap.
+- Added shared voice/grader provider breakers with single-probe recovery, safe
+  `/health/status` capability state, request support IDs, redacted failure logs,
+  throttled recovery errors and an exhausted-report alert signal. The operations
+  runbook names the host alerts that still require staging configuration/drills.
 - Root production build and API/web/contracts typechecks pass. The compiled API
   started locally, exposed five scenarios and passed live/ready smoke requests.
   The Docker daemon was unavailable, so migration 012 execution, Linux image,
