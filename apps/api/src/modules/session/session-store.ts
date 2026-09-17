@@ -50,6 +50,11 @@ export interface SessionStore {
   create(req: CreateSessionRequest): Promise<InterviewSession>;
   findByIdempotencyKey(userId: string, key: string): Promise<InterviewSession | null>;
   idsForUser(userId: string): Promise<string[]>;
+  listForUser(
+    userId: string,
+    limit: number,
+    before?: { createdAt: string; id: string },
+  ): Promise<InterviewSession[]>;
   /** Question versions previously assigned to this account, excluding deleted sessions. */
   scenarioVersionIdsForUser(userId: string): Promise<string[]>;
   get(id: string): Promise<InterviewSession | null>;
@@ -149,6 +154,19 @@ export class InMemorySessionStore implements SessionStore {
   /** Every session belonging to a user. Drives account-scope deletion (M7-3). */
   async idsForUser(userId: string): Promise<string[]> {
     return [...this.sessions.values()].filter((s) => s.userId === userId && !this.tombstones.has(s.id)).map((s) => s.id);
+  }
+
+  async listForUser(
+    userId: string,
+    limit: number,
+    before?: { createdAt: string; id: string },
+  ): Promise<InterviewSession[]> {
+    return [...this.sessions.values()]
+      .filter((session) => session.userId === userId && !this.tombstones.has(session.id))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+      .filter((session) => !before || session.createdAt < before.createdAt ||
+        (session.createdAt === before.createdAt && session.id < before.id))
+      .slice(0, limit);
   }
 
   async scenarioVersionIdsForUser(userId: string): Promise<string[]> {

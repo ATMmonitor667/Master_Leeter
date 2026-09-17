@@ -35,6 +35,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
     are implemented. Redacted critical webhook delivery is implemented;
     configured paging drills, backup/restore, hosted checks and the owner-assisted
     pilot remain.
+[~] I07 product completion on codex-production-07-product-completion: durable,
+    owner-scoped interview history plus resume/report navigation implemented;
+    settings, export, accessibility review, runner and recovery tooling remain.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md
 Question bank setup (no cloud data has been written):
@@ -95,7 +98,8 @@ INTERVIEW / EXECUTION / REPORTS
 
 PRODUCT / PRIVACY / OPERATIONS
 [ ] P19 Retention/consent/export/delete, append-only design, restore erasure ledger.
-[ ] P20 Onboarding, dashboard/history, recovery UX, settings and accessibility.
+[~] P20 Owner-scoped paginated history and active/report navigation implemented;
+    onboarding polish, settings, deletion/export UX and accessibility remain.
 [ ] P21 Atomic credits/capacity, provider-cost enforcement, caps and kill switch.
 [~] P22 Redacted diagnostics, service status and bounded critical webhook alerts
     are implemented; configure escalation and prove delivery on staging.

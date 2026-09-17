@@ -344,6 +344,27 @@ Implementation checkpoint (branch `codex-production-06-launch-hardening`):
   CI image run, hosted signal/socket, configured-cap concurrency and cloud
   readiness checks remain external acceptance.
 
+## I07 — Product completion and recovery tooling
+
+Tasks:
+
+- Complete account history, recovery, settings, export/deletion and accessible
+  status flows without exposing scenario content or cross-account metadata.
+- Add explicit migration, backup/restore and rollback tooling with safe operator
+  boundaries and evidence capture.
+- Prepare additional original scenarios for human review and production import.
+
+Implementation checkpoint (branch `codex-production-07-product-completion`):
+
+- Added owner-scoped session history at the repository boundary with stable
+  cursor pagination for memory and Supabase stores. The public projection omits
+  scenario identity/content, user IDs, traces and internal policy.
+- Added a private `/history` page with sign-in return, active-session resume,
+  completed-report links, empty/error/loading states and incremental loading.
+  Account navigation now exposes history without weakening route ownership.
+- API/web typechecks, compiled owner-isolation/pagination smoke and the web
+  production build pass. Tests were not added or run by owner instruction.
+
 ## Handoff after every iteration
 
 Update checklist, run scoped tests and affected regressions, record unverified

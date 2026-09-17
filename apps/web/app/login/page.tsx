@@ -4,7 +4,7 @@ import { authClient, authEnabled } from "../../lib/auth";
 
 function destination(): string {
   const next = new URLSearchParams(window.location.search).get("next");
-  return next && /^\/(?:interview|report)\/[a-f0-9-]{36}$/.test(next) ? next : "/#start";
+  return next && (/^\/(?:interview|report)\/[a-f0-9-]{36}$/.test(next) || next === "/history") ? next : "/#start";
 }
 export default function LoginPage() {
   const [email, setEmail] = useState("");

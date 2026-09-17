@@ -93,6 +93,16 @@ const EndBody = z.object({
   finalClientSeq: z.number().int().min(-1).default(-1),
 });
 
+const SessionListQuery = z.object({
+  cursor: z.string().max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+}).strict();
+
+const SessionCursor = z.object({
+  createdAt: z.string().datetime(),
+  id: z.string().uuid(),
+}).strict();
+
 export interface SessionModuleOptions {
   library: Map<string, LoadedScenario>;
   questionBank?: QuestionBank;
@@ -575,6 +585,41 @@ export async function registerSessionModule(
       req.log.error({ code: "CANNOT_CREATE" }, "interview creation failed");
       return reply.code(409).send({ error: "CANNOT_CREATE", message: "Unable to create interview. Please retry." });
     }
+  });
+
+  app.get("/interview-sessions", async (req, reply) => {
+    const query = SessionListQuery.safeParse(req.query);
+    if (!query.success) return reply.code(400).send({ error: "INVALID_SESSION_LIST" });
+    let before: z.infer<typeof SessionCursor> | undefined;
+    if (query.data.cursor) {
+      try {
+        const decoded: unknown = JSON.parse(Buffer.from(query.data.cursor, "base64url").toString("utf8"));
+        const parsed = SessionCursor.safeParse(decoded);
+        if (!parsed.success) throw new Error("INVALID_CURSOR");
+        before = parsed.data;
+      } catch {
+        return reply.code(400).send({ error: "INVALID_SESSION_CURSOR" });
+      }
+    }
+    const rows = await store.listForUser(userIdFor(req), query.data.limit + 1, before);
+    const page = rows.slice(0, query.data.limit);
+    const tail = page.at(-1);
+    const nextCursor = rows.length > query.data.limit && tail
+      ? Buffer.from(JSON.stringify({ createdAt: tail.createdAt, id: tail.id })).toString("base64url")
+      : null;
+    return reply.header("Cache-Control", "no-store").send({
+      sessions: page.map((session) => ({
+        sessionId: session.id,
+        mode: session.mode,
+        state: session.state,
+        createdAt: session.createdAt,
+        startedAt: session.startedAt,
+        endedAt: session.endedAt,
+        expectedSeconds: session.expectedSeconds,
+        remainingSeconds: remainingSeconds(session, Date.now()),
+      })),
+      nextCursor,
+    });
   });
 
   app.get("/interview-sessions/:id", async (req, reply) => {

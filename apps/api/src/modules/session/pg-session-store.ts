@@ -79,6 +79,20 @@ export class PgSessionStore implements SessionStore {
     return rows.map((row) => row.id);
   }
 
+  async listForUser(
+    userId: string,
+    limit: number,
+    before?: { createdAt: string; id: string },
+  ): Promise<InterviewSession[]> {
+    const { rows } = await this.db.query<Row>(`
+      SELECT * FROM public.interview_sessions
+      WHERE user_id=$1 AND deleted_at IS NULL
+        AND ($2::timestamptz IS NULL OR (created_at,id) < ($2::timestamptz,$3::uuid))
+      ORDER BY created_at DESC,id DESC
+      LIMIT $4`, [userId, before?.createdAt ?? null, before?.id ?? null, limit]);
+    return rows.map(session);
+  }
+
   async scenarioVersionIdsForUser(userId: string): Promise<string[]> {
     const { rows } = await this.db.query<{ scenario_version_id: string }>(
       "SELECT DISTINCT scenario_version_id FROM public.interview_sessions WHERE user_id=$1 AND deleted_at IS NULL",

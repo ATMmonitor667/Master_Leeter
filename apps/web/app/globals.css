@@ -83,6 +83,8 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .auth-caption { font-size: 12px; }
 .account-menu { display: flex; align-items: center; gap: 10px; }
 .account-email { max-width: 170px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
+.account-link { color: var(--muted-strong); font-size: 12px; text-decoration: none; }
+.account-link:hover { color: var(--text); }
 @media (max-width: 640px) { .account-email { display: none; } .landing-nav > .pill { display: none; } }
 
 /* 2026 cockpit pass — editorial setup + focused developer workspace */
@@ -303,6 +305,24 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 
 /* Report */
 .report-shell { max-width: 980px; margin: 0 auto; padding: 36px 28px 100px; }
+.history-shell { max-width: 980px; min-height: 100vh; margin: 0 auto; padding: 36px 28px 100px; }
+.history-nav, .history-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.history-nav { padding-bottom: 28px; border-bottom: 1px solid var(--border); }
+.history-heading { margin: 68px 0 28px; }
+.history-heading h1 { margin: 12px 0 0; font-size: clamp(38px, 5vw, 58px); letter-spacing: -.055em; }
+.history-list { display: grid; gap: 12px; }
+.history-card { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 24px; padding: 20px; border: 1px solid var(--border); border-radius: 15px; background: var(--panel); }
+.history-card h2 { margin: 8px 0 4px; font-size: 17px; }
+.history-card p, .history-meta { color: var(--muted); font-size: 12px; }
+.history-meta { display: grid; gap: 6px; text-align: right; }
+.history-status { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.history-status::before { width: 7px; height: 7px; border-radius: 50%; background: currentColor; content: ""; }
+.history-status.active { color: var(--blue); }
+.history-status.complete { color: var(--ok); }
+.history-empty, .history-loading { padding: 48px 24px; border: 1px solid var(--border); border-radius: 15px; background: var(--panel); text-align: center; }
+.history-empty h2 { margin-top: 0; }
+.history-empty p, .history-loading { color: var(--muted); }
+.history-more { display: block; margin: 22px auto 0; }
 .report-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 74px; }
 .report-hero {
   position: relative; isolation: isolate;
@@ -396,7 +416,7 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
   .grader-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
-  .landing-shell, .report-shell { padding-left: 18px; padding-right: 18px; }
+  .landing-shell, .report-shell, .history-shell { padding-left: 18px; padding-right: 18px; }
   .landing-nav .pill { display: none; }
   .landing-copy h1 { font-size: 44px; }
   .scenario-card { grid-template-columns: 40px 1fr; }
@@ -423,6 +443,9 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
   .voice-onboarding small { display: none; }
   .timer small { display: none; }
   .report-highlights { grid-template-columns: 1fr; }
+  .history-heading { align-items: stretch; flex-direction: column; }
+  .history-card { grid-template-columns: 1fr; gap: 14px; }
+  .history-meta { text-align: left; }
   .dialog-actions { flex-direction: column-reverse; }
 }
 

@@ -609,3 +609,13 @@ I06 FIRST CODE CHECKPOINT — RELEASE BOUNDARY
   gates, alert paging drills and the invite pilot. Migration 012 must be applied
   before this checkpoint can boot against development Supabase; the CI artifact
   job must also pass on GitHub because no local Docker daemon was available.
+
+I07 FIRST CODE CHECKPOINT — ACCOUNT HISTORY
+- Branch: codex-production-07-product-completion, based on merged main 197e27b.
+- Session repositories now expose stable owner-scoped cursor pagination without
+  loading another account's records or returning private scenario content.
+- GET /v1/interview-sessions returns safe active/completed summaries. The web
+  /history page redirects through sign-in, resumes active rounds, opens completed
+  reports and loads older pages without caching account data.
+- Validation: API/web typechecks PASS, compiled owner/pagination smoke PASS and
+  web production build PASS. Tests were not added or run by owner instruction.

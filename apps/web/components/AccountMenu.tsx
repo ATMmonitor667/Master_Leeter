@@ -17,7 +17,7 @@ export function AccountMenu() {
   if (!enabled) return null;
   return <div className="account-menu">
     {error && <span role="alert">{error}</span>}
-    {email ? <><span className="account-email">{email}</span><button className="ghost-button" onClick={async () => {
+    {email ? <><a className="account-link" href="/history">History</a><span className="account-email">{email}</span><button className="ghost-button" onClick={async () => {
       const { error: failure } = await authClient().auth.signOut();
       if (failure) setError("Could not sign out. Please retry.");
       else window.location.assign("/");
