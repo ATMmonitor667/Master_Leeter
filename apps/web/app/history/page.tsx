@@ -24,6 +24,7 @@ export default function HistoryPage() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (next?: string) => {
@@ -48,6 +49,41 @@ export default function HistoryPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  async function download(sessionId: string) {
+    setBusyId(sessionId);
+    setError(null);
+    try {
+      const response = await apiFetch(`/v1/privacy/sessions/${sessionId}/export`);
+      if (!response.ok) throw new Error(`Export failed (${response.status}).`);
+      const data: unknown = await response.json();
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `master-leeter-${sessionId.slice(0, 8)}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (cause) {
+      if (cause instanceof SignInRequired) window.location.replace("/login?next=%2Fhistory");
+      else setError(cause instanceof Error ? cause.message : "Export failed.");
+    } finally { setBusyId(null); }
+  }
+
+  async function remove(sessionId: string) {
+    if (!window.confirm("Permanently remove this interview, its report, and its candidate-authored content?")) return;
+    setBusyId(sessionId);
+    setError(null);
+    try {
+      const response = await apiFetch(`/v1/privacy/sessions/${sessionId}`, { method: "DELETE" });
+      const receipt = await response.json().catch(() => ({})) as { unreachable?: string[]; error?: string };
+      if (!response.ok) throw new Error(receipt.error ?? `Deletion failed (${response.status}).`);
+      setSessions((current) => current.filter((session) => session.sessionId !== sessionId));
+      if (receipt.unreachable?.length) setError("The interview was hidden, but some deletion systems could not be reached. Contact support with the session reference.");
+    } catch (cause) {
+      if (cause instanceof SignInRequired) window.location.replace("/login?next=%2Fhistory");
+      else setError(cause instanceof Error ? cause.message : "Deletion failed.");
+    } finally { setBusyId(null); }
+  }
 
   return <main className="history-shell">
     <nav className="history-nav">
@@ -80,7 +116,11 @@ export default function HistoryPage() {
             <span>{completed ? "Report ready or processing" : `${Math.ceil(session.remainingSeconds / 60)} min remaining`}</span>
             <span className="meta-mono">{session.sessionId.slice(0, 8).toUpperCase()}</span>
           </div>
-          <a className="secondary-button" href={destination}>{completed ? "View report" : "Resume"} <span>→</span></a>
+          <div className="history-actions">
+            <a className="secondary-button" href={destination}>{completed ? "View report" : "Resume"} <span>→</span></a>
+            <button className="ghost-button" disabled={busyId === session.sessionId} onClick={() => void download(session.sessionId)}>Export</button>
+            {completed && <button className="ghost-button danger-button" disabled={busyId === session.sessionId} onClick={() => void remove(session.sessionId)}>Delete</button>}
+          </div>
         </article>;
       })}
       {loading && <div className="history-loading" role="status">Loading interview history…</div>}

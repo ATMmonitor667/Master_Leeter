@@ -362,6 +362,10 @@ Implementation checkpoint (branch `codex-production-07-product-completion`):
 - Added a private `/history` page with sign-in return, active-session resume,
   completed-report links, empty/error/loading states and incremental loading.
   Account navigation now exposes history without weakening route ownership.
+- Added session export/delete actions and an account practice-data erasure page.
+  Destructive actions use the existing owner checks and tombstone-first redaction
+  pipeline; receipts expose unreachable systems and the UI does not claim to
+  remove the separate Supabase Auth identity.
 - API/web typechecks, compiled owner-isolation/pagination smoke and the web
   production build pass. Tests were not added or run by owner instruction.
 

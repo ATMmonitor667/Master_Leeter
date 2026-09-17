@@ -315,6 +315,8 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .history-card h2 { margin: 8px 0 4px; font-size: 17px; }
 .history-card p, .history-meta { color: var(--muted); font-size: 12px; }
 .history-meta { display: grid; gap: 6px; text-align: right; }
+.history-actions { display: flex; align-items: center; gap: 7px; }
+.danger-button { color: var(--err); }
 .history-status { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .history-status::before { width: 7px; height: 7px; border-radius: 50%; background: currentColor; content: ""; }
 .history-status.active { color: var(--blue); }
@@ -323,6 +325,18 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .history-empty h2 { margin-top: 0; }
 .history-empty p, .history-loading { color: var(--muted); }
 .history-more { display: block; margin: 22px auto 0; }
+.settings-shell { max-width: 780px; min-height: 100vh; margin: 0 auto; padding: 36px 28px 100px; }
+.settings-heading { margin: 68px 0 28px; }
+.settings-heading h1 { margin: 12px 0; font-size: clamp(38px, 5vw, 58px); letter-spacing: -.055em; }
+.settings-heading p, .settings-card p, .settings-receipt p { color: var(--muted); line-height: 1.65; }
+.settings-card, .settings-receipt { padding: 24px; border: 1px solid var(--border); border-radius: 15px; background: var(--panel); }
+.settings-card h2, .settings-receipt h2 { margin-top: 0; font-size: 18px; }
+.settings-card label { display: block; margin: 24px 0 8px; color: var(--muted-strong); font-size: 12px; }
+.settings-delete-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+.settings-delete-row input { min-height: 44px; }
+.destructive-button { border-color: color-mix(in srgb, var(--err) 55%, transparent); background: var(--err); color: white; }
+.settings-receipt { margin-bottom: 16px; }
+.settings-warning { color: var(--err) !important; }
 .report-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 74px; }
 .report-hero {
   position: relative; isolation: isolate;
@@ -416,7 +430,7 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
   .grader-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
-  .landing-shell, .report-shell, .history-shell { padding-left: 18px; padding-right: 18px; }
+  .landing-shell, .report-shell, .history-shell, .settings-shell { padding-left: 18px; padding-right: 18px; }
   .landing-nav .pill { display: none; }
   .landing-copy h1 { font-size: 44px; }
   .scenario-card { grid-template-columns: 40px 1fr; }
@@ -446,6 +460,7 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
   .history-heading { align-items: stretch; flex-direction: column; }
   .history-card { grid-template-columns: 1fr; gap: 14px; }
   .history-meta { text-align: left; }
+  .settings-delete-row { grid-template-columns: 1fr; }
   .dialog-actions { flex-direction: column-reverse; }
 }
 

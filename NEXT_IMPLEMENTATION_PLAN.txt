@@ -619,3 +619,9 @@ I07 FIRST CODE CHECKPOINT — ACCOUNT HISTORY
   reports and loads older pages without caching account data.
 - Validation: API/web typechecks PASS, compiled owner/pagination smoke PASS and
   web production build PASS. Tests were not added or run by owner instruction.
+- Follow-up: History downloads the existing owner-filtered session export and
+  deletes ended sessions through the tombstone/redaction pipeline. Settings can
+  erase all practice data only after typed confirmation, displays the deletion
+  receipt and preserves partial-failure warnings instead of claiming success.
+- The UI explicitly distinguishes practice-data deletion from removal of the
+  Supabase Auth identity; auth-identity deletion and retention automation remain.

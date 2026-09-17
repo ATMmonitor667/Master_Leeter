@@ -97,9 +97,12 @@ INTERVIEW / EXECUTION / REPORTS
 [ ] P18 Evaluator/observer wiring audit, grounded feedback and human calibration.
 
 PRODUCT / PRIVACY / OPERATIONS
-[ ] P19 Retention/consent/export/delete, append-only design, restore erasure ledger.
+[~] P19 Owner-scoped session export/deletion and account practice-data deletion
+    are implemented; automated expiry, auth-identity deletion, reviewed policy
+    copy and restore erasure-ledger replay remain.
 [~] P20 Owner-scoped paginated history and active/report navigation implemented;
-    onboarding polish, settings, deletion/export UX and accessibility remain.
+    export/deletion settings are implemented; onboarding polish, profile settings
+    and accessibility acceptance remain.
 [ ] P21 Atomic credits/capacity, provider-cost enforcement, caps and kill switch.
 [~] P22 Redacted diagnostics, service status and bounded critical webhook alerts
     are implemented; configure escalation and prove delivery on staging.
