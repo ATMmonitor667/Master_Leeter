@@ -55,12 +55,21 @@ export async function registerPreparationModule(app: FastifyInstance, opts: Prep
   const restater = opts.restater ?? new CanonicalScenarioRestater();
   const analysisWork = new Map<string, Promise<PreparationRecord>>();
   const completionWork = new Map<string, Promise<PreparationRecord>>();
-  const purgeExpired = () => store.purgeExpiredResumes(new Date().toISOString())
-    .catch(() => app.log.error("expired resume purge failed"));
+  let purgeWork: Promise<void> | undefined;
+  const purgeExpired = (): Promise<void> => {
+    purgeWork ??= store.purgeExpiredResumes(new Date().toISOString())
+      .then(() => undefined)
+      .catch(() => app.log.error("expired resume purge failed"))
+      .finally(() => { purgeWork = undefined; });
+    return purgeWork;
+  };
   const retentionTimer = setInterval(() => { void purgeExpired(); }, 60 * 60_000);
   retentionTimer.unref();
   app.addHook("onReady", purgeExpired);
-  app.addHook("onClose", async () => { clearInterval(retentionTimer); });
+  app.addHook("onClose", async () => {
+    clearInterval(retentionTimer);
+    await purgeWork;
+  });
 
   async function owned(id: string, userId: string): Promise<PreparationRecord | null> {
     const record = await store.get(id);
@@ -69,7 +78,7 @@ export async function registerPreparationModule(app: FastifyInstance, opts: Prep
 
   async function ensureAnalysis(record: PreparationRecord): Promise<PreparationRecord> {
     if (record.analysis) return record;
-    if (!record.resumeText) throw new Error("RESUME_DELETED");
+    if (!record.resumeText || record.resumeExpiresAt <= new Date().toISOString()) throw new Error("RESUME_DELETED");
     const existing = analysisWork.get(record.id);
     if (existing) return existing;
     const token = randomUUID();

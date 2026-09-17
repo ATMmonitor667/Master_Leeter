@@ -611,6 +611,9 @@ I06 FIRST CODE CHECKPOINT — RELEASE BOUNDARY
   job must also pass on GitHub because no local Docker daemon was available.
 
 I07 FIRST CODE CHECKPOINT — ACCOUNT HISTORY
+- Preparation follow-up: removed private scenario wording/identity from public
+  responses; fenced analysis after resume deletion/expiry; prevented overlapping
+  retention sweeps; recovered confirmed/ready preparations during browser retries.
 - Branch: codex-production-07-product-completion, based on merged main 197e27b.
 - Session repositories now expose stable owner-scoped cursor pagination without
   loading another account's records or returning private scenario content.
@@ -625,3 +628,10 @@ I07 FIRST CODE CHECKPOINT — ACCOUNT HISTORY
   receipt and preserves partial-failure warnings instead of claiming success.
 - The UI explicitly distinguishes practice-data deletion from removal of the
   Supabase Auth identity; auth-identity deletion and retention automation remain.
+- Follow-up: operator-only PostgreSQL commands now create a custom-format public
+  schema archive plus a SHA-256/release manifest, verify the archive catalogue,
+  and restore only after source/destination fingerprint separation, exact target
+  confirmation and an isolation acknowledgement. The restore verifies every
+  current application table. `docs/DATABASE_RECOVERY.md` records the full drill
+  and forward-rollback boundary; PostgreSQL client tools and a disposable target
+  are unavailable locally, so a real archive/restore remains external evidence.

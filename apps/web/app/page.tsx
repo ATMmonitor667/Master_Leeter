@@ -28,6 +28,7 @@ interface Preparation {
   status: "ANALYZING" | "REVIEW" | "CONFIRMED" | "READY";
   analysis: { summary: string; facts: ResumeFact[] } | null;
   sessionId: string | null;
+  confirmedFactIds: string[];
 }
 
 const MODES = ["LEARNING", "MOCK", "STRICT"] as const;
@@ -103,11 +104,26 @@ export default function Home() {
     setStarting(true);
     setError(null);
     try {
-      const reviewed = await apiFetch(`/v1/preparations/${preparation.id}/facts`, {
-        method: "PATCH", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ confirmedFactIds: [...confirmedFacts] }),
-      });
-      if (!reviewed.ok) throw new Error(`Resume confirmation failed (${reviewed.status}).`);
+      // A previous completion may have succeeded even if its response was lost.
+      const latest = await apiFetch(`/v1/preparations/${preparation.id}`);
+      if (!latest.ok) throw new Error("Could not recover the interview preparation. Please retry.");
+      const current = await latest.json() as Preparation;
+      setPreparation(current);
+      if (current.status !== "REVIEW") setConfirmedFacts(new Set(current.confirmedFactIds));
+      if (current.status === "READY" && current.sessionId) {
+        window.location.href = `/interview/${current.sessionId}`;
+        return;
+      }
+      if (current.status === "REVIEW") {
+        const reviewed = await apiFetch(`/v1/preparations/${current.id}/facts`, {
+          method: "PATCH", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ confirmedFactIds: [...confirmedFacts] }),
+        });
+        if (!reviewed.ok) throw new Error(`Resume confirmation failed (${reviewed.status}).`);
+        setPreparation(await reviewed.json() as Preparation);
+      } else if (current.status !== "CONFIRMED") {
+        throw new Error("Resume review is still running. Please retry shortly.");
+      }
       const completed = await apiFetch(`/v1/preparations/${preparation.id}/complete`, {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ scenarioRef, mode, language: "python" }),
@@ -125,9 +141,15 @@ export default function Home() {
 
   async function eraseResume() {
     if (!preparation) return;
-    const res = await apiFetch(`/v1/preparations/${preparation.id}/resume`, { method: "DELETE" });
-    if (!res.ok) { setError("Could not erase the resume text."); return; }
-    setResumeText("");
+    try {
+      const res = await apiFetch(`/v1/preparations/${preparation.id}/resume`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Could not erase the resume text. Please retry.");
+      setResumeText("");
+      setError(null);
+    } catch (err) {
+      if (err instanceof SignInRequired) { window.location.assign("/login"); return; }
+      setError(err instanceof Error ? err.message : "Could not erase the resume text. Please retry.");
+    }
   }
 
   const selected = scenarios.find((scenario) => scenario.ref === selectedRef) ?? null;
@@ -217,7 +239,7 @@ export default function Home() {
             <div className="review-heading"><strong>Confirm what the interviewer may use</strong><button type="button" onClick={eraseResume}>Erase source text</button></div>
             <p>{preparation.analysis?.summary}</p>
             {(preparation.analysis?.facts ?? []).map((fact) => <label className="fact-row" key={fact.id}>
-              <input type="checkbox" checked={confirmedFacts.has(fact.id)} onChange={() => setConfirmedFacts((current) => {
+              <input type="checkbox" disabled={starting || preparation.status !== "REVIEW"} checked={confirmedFacts.has(fact.id)} onChange={() => setConfirmedFacts((current) => {
                 const next = new Set(current); next.has(fact.id) ? next.delete(fact.id) : next.add(fact.id); return next;
               })} />
               <span><b>{fact.category.toLowerCase()}</b>{fact.claim}<small>Source: “{fact.evidence}”</small></span>

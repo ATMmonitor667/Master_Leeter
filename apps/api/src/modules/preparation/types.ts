@@ -57,7 +57,7 @@ export interface PreparationRecord {
   updatedAt: string;
 }
 
-/** The API never echoes the raw resume. */
+/** Candidate projection excludes raw resumes and private oral scenario content. */
 export interface PublicPreparation {
   id: string;
   tone: InterviewerTone;
@@ -65,8 +65,6 @@ export interface PublicPreparation {
   hasResume: boolean;
   analysis: ResumeAnalysis | null;
   confirmedFactIds: string[];
-  scenarioVersionId: string | null;
-  restatement: Restatement | null;
   sessionId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -77,11 +75,9 @@ export function publicPreparation(record: PreparationRecord): PublicPreparation 
     id: record.id,
     tone: record.tone,
     status: record.status,
-    hasResume: record.resumeText !== null,
+    hasResume: record.resumeText !== null && record.resumeExpiresAt > new Date().toISOString(),
     analysis: record.analysis,
     confirmedFactIds: [...record.confirmedFactIds],
-    scenarioVersionId: record.scenarioVersionId,
-    restatement: record.restatement,
     sessionId: record.sessionId,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,

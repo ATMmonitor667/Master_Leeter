@@ -23,6 +23,9 @@
     "check:bundle": "node scripts/check-bundle.mjs",
     "check:sorted": "node scripts/check-sorted-corruption.mjs",
     "check:env": "node scripts/check-env-not-tracked.mjs",
+    "db:backup": "node scripts/database-recovery.mjs backup",
+    "db:backup:verify": "node scripts/database-recovery.mjs verify",
+    "db:restore": "node scripts/database-recovery.mjs restore",
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {

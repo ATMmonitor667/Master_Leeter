@@ -42,7 +42,8 @@ export class InMemoryPreparationStore implements PreparationStore {
     const existingId = this.idempotency.get(key);
     if (existingId) {
       const existing = this.records.get(existingId);
-      if (existing && existing.status !== "DELETED") return { record: structuredClone(existing), created: false };
+      if (existing?.status === "DELETED") throw new Error("PREPARATION_DELETED");
+      if (existing) return { record: structuredClone(existing), created: false };
     }
     const at = this.now();
     const record: PreparationRecord = {
@@ -65,6 +66,8 @@ export class InMemoryPreparationStore implements PreparationStore {
   }
 
   async claimAnalysis(id: string, token: string, staleBefore: string): Promise<boolean> {
+    const record = this.records.get(id);
+    if (!record || record.status !== "ANALYZING" || record.resumeText === null || record.resumeExpiresAt <= this.now()) return false;
     const existing = this.analysisClaims.get(id);
     if (existing && existing.at >= Date.parse(staleBefore)) return false;
     this.analysisClaims.set(id, { token, at: Date.now() });
@@ -72,6 +75,8 @@ export class InMemoryPreparationStore implements PreparationStore {
   }
 
   async saveAnalysis(id: string, analysis: ResumeAnalysis, token: string): Promise<PreparationRecord> {
+    const record = this.records.get(id);
+    if (!record || record.status !== "ANALYZING" || record.resumeText === null || record.resumeExpiresAt <= this.now()) throw new Error("PREPARATION_CLAIM_LOST");
     if (this.analysisClaims.get(id)?.token !== token) throw new Error("PREPARATION_CLAIM_LOST");
     this.analysisClaims.delete(id);
     return this.update(id, (record) => ({ ...record, analysis, status: "REVIEW", updatedAt: this.now() }));
@@ -118,6 +123,7 @@ export class InMemoryPreparationStore implements PreparationStore {
   }
 
   async deleteResume(id: string): Promise<PreparationRecord> {
+    this.analysisClaims.delete(id);
     return this.update(id, (record) => ({ ...record, resumeText: null, updatedAt: this.now() }));
   }
 
@@ -147,6 +153,7 @@ export class InMemoryPreparationStore implements PreparationStore {
     let purged = 0;
     for (const record of this.records.values()) {
       if (record.resumeText !== null && record.resumeExpiresAt <= at) {
+        this.analysisClaims.delete(record.id);
         this.records.set(record.id, { ...record, resumeText: null, updatedAt: this.now() });
         purged += 1;
       }

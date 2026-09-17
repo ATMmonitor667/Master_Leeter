@@ -366,8 +366,32 @@ Implementation checkpoint (branch `codex-production-07-product-completion`):
   Destructive actions use the existing owner checks and tombstone-first redaction
   pipeline; receipts expose unreachable systems and the UI does not claim to
   remove the separate Supabase Auth identity.
+- Added cross-platform operator commands for a custom-format `public` schema
+  archive, streaming SHA-256 manifest verification and isolated transactional
+  restore. Restore refuses the source database, requires the exact destination
+  name plus an explicit isolation acknowledgement, and verifies every current
+  application table without printing database credentials. The runbook keeps
+  managed Supabase recovery and post-backup erasure reconciliation as release
+  gates rather than overstating what an application-schema archive protects.
 - API/web typechecks, compiled owner-isolation/pagination smoke and the web
   production build pass. Tests were not added or run by owner instruction.
+
+I07 preparation hardening follow-up:
+
+- Removed the private scenario identity and restated oral wording from every
+  public preparation response. The server retains the immutable scenario pin.
+- Resume deletion and expiry now fence outstanding analysis writes in both
+  stores. Expired sources cannot acquire an analysis lease or save derived facts;
+  deletion-key reuse cannot recreate an erased preparation in the memory store.
+- Resume cleanup does not overlap itself and shutdown waits for an active purge.
+- Browser completion retries reload durable preparation state and resume after
+  confirmation or redirect to an already-created interview. Resume erasure now
+  handles network and expired-auth failures in the UI.
+
+Validation: workspace typechecks and production builds pass. Recovery syntax,
+repository-path refusal, environment tracking and whitespace guards pass. No
+test suites were added or run. Real database backup/restore and browser/provider
+failure drills remain unverified.
 
 ## Handoff after every iteration
 

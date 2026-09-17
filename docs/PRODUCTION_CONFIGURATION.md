@@ -78,6 +78,15 @@ validation rejects localhost, insecure schemes and secret Supabase keys.
 The browser receives only `NEXT_PUBLIC_*` values. Database, Supabase secret and
 model-provider keys remain API-only.
 
+## Database recovery
+
+The operator-only backup and restore commands, archive manifest, isolation
+guards and recovery checklist are documented in
+[`DATABASE_RECOVERY.md`](DATABASE_RECOVERY.md). They cover the application
+`public` schema only; Supabase managed backups or PITR remain required for the
+full project. Restore drills stay isolated until post-backup erasures can be
+reconciled and application smoke checks pass.
+
 ## Health and shutdown
 
 - `GET /health/live` proves the process and event loop are responsive.

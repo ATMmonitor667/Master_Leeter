@@ -68,6 +68,7 @@ export class PgPreparationStore implements PreparationStore {
     const result = await this.db.query<{ id: string }>(`UPDATE public.interview_preparations SET
       analysis_token=$2::uuid,analysis_started_at=now(),updated_at=now()
       WHERE id=$1::uuid AND status='ANALYZING'
+        AND resume_text IS NOT NULL AND resume_expires_at>now()
         AND (analysis_token IS NULL OR analysis_started_at<$3::timestamptz) RETURNING id`, [id, token, staleBefore]);
     return Boolean(result.rows[0]);
   }
@@ -75,7 +76,8 @@ export class PgPreparationStore implements PreparationStore {
   async saveAnalysis(id: string, analysis: ResumeAnalysis, token: string): Promise<PreparationRecord> {
     return this.update(id, `UPDATE public.interview_preparations SET analysis=$2::jsonb,status='REVIEW',
       analysis_token=NULL,analysis_started_at=NULL,updated_at=now()
-      WHERE id=$1::uuid AND status='ANALYZING' AND analysis_token=$3::uuid RETURNING *`, [id, JSON.stringify(analysis), token]);
+      WHERE id=$1::uuid AND status='ANALYZING' AND analysis_token=$3::uuid
+        AND resume_text IS NOT NULL AND resume_expires_at>now() RETURNING *`, [id, JSON.stringify(analysis), token]);
   }
 
   async releaseAnalysis(id: string, token: string): Promise<void> {
@@ -131,7 +133,9 @@ export class PgPreparationStore implements PreparationStore {
   }
 
   async deleteResume(id: string): Promise<PreparationRecord> {
-    return this.update(id, "UPDATE public.interview_preparations SET resume_text=NULL,updated_at=now() WHERE id=$1::uuid AND status<>'DELETED' RETURNING *", [id]);
+    return this.update(id, `UPDATE public.interview_preparations SET resume_text=NULL,
+      analysis_token=NULL,analysis_started_at=NULL,updated_at=now()
+      WHERE id=$1::uuid AND status<>'DELETED' RETURNING *`, [id]);
   }
 
   async delete(id: string): Promise<boolean> {
@@ -163,7 +167,8 @@ export class PgPreparationStore implements PreparationStore {
 
   async purgeExpiredResumes(at: string): Promise<number> {
     const result = await this.db.query<{ id: string }>(`UPDATE public.interview_preparations SET
-      resume_text=NULL,updated_at=now() WHERE resume_text IS NOT NULL AND resume_expires_at<=$1::timestamptz
+      resume_text=NULL,analysis_token=NULL,analysis_started_at=NULL,updated_at=now()
+      WHERE resume_text IS NOT NULL AND resume_expires_at<=$1::timestamptz
       RETURNING id`, [at]);
     return result.rows.length;
   }

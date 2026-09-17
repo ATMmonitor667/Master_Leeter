@@ -37,7 +37,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
     pilot remain.
 [~] I07 product completion on codex-production-07-product-completion: durable,
     owner-scoped interview history plus resume/report navigation implemented;
-    settings, export, accessibility review, runner and recovery tooling remain.
+    settings and export are implemented. Verified application-schema backup and
+    isolated restore tooling is implemented; accessibility review, runner,
+    erasure-ledger replay and live recovery drills remain.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md
 Question bank setup (no cloud data has been written):
@@ -111,7 +113,10 @@ PRODUCT / PRIVACY / OPERATIONS
     compatibility and hosted release evidence remain.
 [~] P25 Render staging blueprint and Vercel configuration are documented;
     provisioning, protection, worker/domain wiring and hosted evidence remain.
-[ ] P26 Backup restore, deployment rollback and incident rehearsal.
+[~] P26 Verified public-schema archive and guarded isolated restore commands are
+    implemented with a recovery/forward-rollback runbook. Supabase managed
+    backup/PITR configuration, external erasure-ledger replay, live restore,
+    deployment rollback and incident rehearsal remain.
 
 LAUNCH / GROWTH
 [ ] P27 Invite 5–10 users; observe ten full interviews and fix activation failures.
