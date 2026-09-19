@@ -5,6 +5,7 @@ interface Counts {
   completed_interviews: string;
   activated_voice: string;
   reports_ready: string;
+  reports_viewed: string;
   report_failures: string;
   accounts_with_interviews: string;
   returning_accounts: string;
@@ -29,7 +30,7 @@ function rate(numerator: number, denominator: number): number | null {
 
 async function main() {
   const days = daysArgument(process.argv.slice(2));
-  const connectionString = process.env["METRICS_DATABASE_URL"]?.trim() || process.env["DATABASE_URL"]?.trim();
+  const connectionString = process.env["METRICS_DATABASE_URL"]?.trim();
   if (!connectionString) throw new Error("METRICS_DATABASE_URL_REQUIRED");
   const db = new PgDatabase(connectionString);
   try {
@@ -49,6 +50,7 @@ async function main() {
         (SELECT count(*) FROM recent WHERE ended_at IS NOT NULL)::text AS completed_interviews,
         (SELECT count(*) FROM event_flags WHERE voice)::text AS activated_voice,
         (SELECT count(*) FROM public.session_reports r JOIN recent s ON s.id=r.session_id WHERE r.status='READY')::text AS reports_ready,
+        (SELECT count(*) FROM public.session_reports r JOIN recent s ON s.id=r.session_id WHERE r.viewed_at IS NOT NULL)::text AS reports_viewed,
         (SELECT count(*) FROM public.session_reports r JOIN recent s ON s.id=r.session_id WHERE r.status='FAILED')::text AS report_failures,
         (SELECT count(*) FROM account_counts)::text AS accounts_with_interviews,
         (SELECT count(*) FROM account_counts WHERE interviews >= 2)::text AS returning_accounts,
@@ -74,6 +76,7 @@ async function main() {
         completedInterviews: completed,
         activatedVoice: voice,
         reportsReady: number(row.reports_ready),
+        reportsViewed: number(row.reports_viewed),
         reportFailures: number(row.report_failures),
         accountsWithInterviews: number(row.accounts_with_interviews),
         returningAccounts: number(row.returning_accounts),
@@ -86,6 +89,7 @@ async function main() {
         voiceActivation: rate(voice, attempted),
         completion: rate(completed, attempted),
         reportReadyAfterCompletion: rate(number(row.reports_ready), completed),
+        reportEngagement: rate(number(row.reports_viewed), number(row.reports_ready)),
         recoveryAfterDisconnect: rate(number(row.recovered_interviews), disconnected),
         returningAccounts: rate(number(row.returning_accounts), number(row.accounts_with_interviews)),
       },

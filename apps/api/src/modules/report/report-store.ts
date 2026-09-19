@@ -25,6 +25,7 @@ export interface ReportJobStore {
   complete(sessionId: string, token: string, report: SessionReport, completedAt: string): Promise<ReportJob | null>;
   saveProgress(sessionId: string, token: string, progress: EvaluationProgress): Promise<ReportJob | null>;
   fail(sessionId: string, token: string, error: string, completedAt: string): Promise<ReportJob | null>;
+  markViewed(sessionId: string, viewedAt: string): Promise<boolean>;
   delete(sessionId: string): Promise<boolean>;
 }
 
@@ -42,6 +43,7 @@ interface StoredJob extends ReportJob {
 
 export class InMemoryReportJobStore implements ReportJobStore {
   private readonly jobs = new Map<string, StoredJob>();
+  private readonly viewed = new Set<string>();
 
   async enqueue(sessionId: string, rubricId: string, queuedAt: string): Promise<ReportJob> {
     const existing = this.jobs.get(sessionId);
@@ -122,7 +124,16 @@ export class InMemoryReportJobStore implements ReportJobStore {
     return this.public(job);
   }
 
-  async delete(sessionId: string): Promise<boolean> { return this.jobs.delete(sessionId); }
+  async markViewed(sessionId: string): Promise<boolean> {
+    if (this.jobs.get(sessionId)?.status !== "READY") return false;
+    this.viewed.add(sessionId);
+    return true;
+  }
+
+  async delete(sessionId: string): Promise<boolean> {
+    this.viewed.delete(sessionId);
+    return this.jobs.delete(sessionId);
+  }
 
   private claimed(sessionId: string, token: string): StoredJob | null {
     const job = this.jobs.get(sessionId);

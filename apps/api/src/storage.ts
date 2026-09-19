@@ -43,12 +43,14 @@ export async function assertDurableSchema(db: QueryClient): Promise<void> {
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
       AND table_name='session_reports' AND column_name='progress') AS grader_progress,
     EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+      AND table_name='session_reports' AND column_name='viewed_at') AS report_engagement,
+    EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
       AND table_name='interview_sessions' AND column_name='interviewer_tone') AS preparation_tone,
     EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public'
       AND indexname='one_active_interview_per_user') AS one_active_interview,
     has_function_privilege(current_user, to_regprocedure('public.redact_session_events(uuid)'), 'EXECUTE') AS redaction`);
   const row = result.rows[0];
-  if (!row || Object.keys(row).length !== accessChecks.length + 7 ||
+  if (!row || Object.keys(row).length !== accessChecks.length + 8 ||
       Object.values(row).some((value) => value !== true)) throw new Error("STORAGE_SCHEMA_INCOMPLETE");
 }
 

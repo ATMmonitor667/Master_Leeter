@@ -106,6 +106,13 @@ export class PgReportJobStore implements ReportJobStore {
     return this.finish(sessionId, token, "FAILED", null, error.slice(0, 2_000), completedAt);
   }
 
+  async markViewed(sessionId: string, viewedAt: string): Promise<boolean> {
+    const result = await this.db.query<{ session_id: string }>(
+      `UPDATE public.session_reports SET viewed_at=COALESCE(viewed_at,$2::timestamptz)
+       WHERE session_id=$1::uuid AND status='READY' RETURNING session_id`, [sessionId, viewedAt]);
+    return result.rows.length > 0;
+  }
+
   async delete(sessionId: string): Promise<boolean> {
     const result = await this.db.query<{ session_id: string }>("DELETE FROM public.session_reports WHERE session_id=$1::uuid RETURNING session_id", [sessionId]);
     return result.rows.length > 0;

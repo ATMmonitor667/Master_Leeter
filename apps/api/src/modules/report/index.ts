@@ -79,6 +79,10 @@ export class EvaluationQueue {
     return this.jobs.delete(sessionId);
   }
 
+  async markViewed(sessionId: string): Promise<boolean> {
+    return this.jobs.markViewed(sessionId, this.now());
+  }
+
   /** Claim atomically in the store; concurrent workers may discover the same IDs. */
   async recover(limit = 10): Promise<void> {
     const ids = await this.jobs.recoverable(this.now(), limit);
@@ -212,6 +216,10 @@ export async function registerReportModule(
       });
     }
 
+    // Measurement must never block the candidate from receiving a completed
+    // report. The timestamp is useful operational evidence, not product state.
+    try { await queue.markViewed(id); }
+    catch { req.log.warn({ sessionId: id }, "report engagement timestamp unavailable"); }
     return reply.send({ status: job.status, report: toPublicReport(job.report) });
   });
 
