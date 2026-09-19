@@ -16,6 +16,7 @@ import {
 import { InMemoryConsentStore, type ConsentStore } from "./consent-store.js";
 import { type Deletable, type DeletionRequest, executeDeletion } from "./deletion.js";
 import { InMemoryDeletionStore, type DeletionClaim, type DeletionStore, type NewDeletion } from "./deletion-store.js";
+import type { SupportIncidentStore } from "../support/store.js";
 
 export {
   CONSENT_SCOPES,
@@ -97,6 +98,7 @@ export interface PrivacyModuleOptions {
   deletionStore?: DeletionStore;
   sessionRetentionDays?: number;
   identityAdmin?: IdentityAdmin;
+  supportStore?: SupportIncidentStore;
 }
 
 export async function registerPrivacyModule(
@@ -109,6 +111,7 @@ export async function registerPrivacyModule(
   const stores: Deletable[] = [
     new ReportStore(opts.evaluationQueue ?? {}),
     new AudioStore(),
+    ...(opts.supportStore ? [opts.supportStore] : []),
     ...(opts.preparationStore ? [{
       name: "preparations",
       deleteForSession: (sessionId: string) => opts.preparationStore!.deleteForSession(sessionId),

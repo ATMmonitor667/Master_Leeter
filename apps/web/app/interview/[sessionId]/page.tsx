@@ -37,6 +37,9 @@ const STARTER = `# Write your Python solution here.
 
 `;
 
+type SupportCategory = "VOICE" | "CONNECTION" | "SAVING" | "REPORT" | "OTHER";
+type SupportState = "IDLE" | "SENDING" | "SENT" | "ERROR";
+
 export default function InterviewPage({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
 
@@ -49,6 +52,11 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
   const [pendingSaves, setPendingSaves] = useState(0);
   const [ending, setEnding] = useState(false);
   const [confirmingEnd, setConfirmingEnd] = useState(false);
+  const [reportingProblem, setReportingProblem] = useState(false);
+  const [supportCategory, setSupportCategory] = useState<SupportCategory>("VOICE");
+  const [supportState, setSupportState] = useState<SupportState>("IDLE");
+  const [supportReportId, setSupportReportId] = useState("");
+  const [supportReference, setSupportReference] = useState("");
   const [restored, setRestored] = useState(false);
   const [resumeCursor, setResumeCursor] = useState({ clientSeq: 0, codeRevision: 0 });
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("IDLE");
@@ -271,6 +279,44 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     }
   }, [sessionId]);
 
+  const openProblemReport = useCallback(() => {
+    setSupportCategory("VOICE");
+    setSupportState("IDLE");
+    setSupportReference("");
+    setSupportReportId(crypto.randomUUID());
+    setReportingProblem(true);
+  }, []);
+
+  const sendProblemReport = useCallback(async () => {
+    if (!supportReportId) return;
+    setSupportState("SENDING");
+    try {
+      const response = await apiFetch(`/v1/interview-sessions/${sessionId}/support-incidents`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reportId: supportReportId,
+          category: supportCategory,
+          consentDiagnostics: true,
+          diagnostics: {
+            connected,
+            online: navigator.onLine,
+            visibility: document.visibilityState === "hidden" ? "hidden" : "visible",
+            pendingSaves,
+            stage,
+            voiceStatus,
+          },
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as { incidentId?: string };
+      if (!response.ok || !body.incidentId) throw new Error("REPORT_FAILED");
+      setSupportReference(body.incidentId);
+      setSupportState("SENT");
+    } catch {
+      setSupportState("ERROR");
+    }
+  }, [connected, pendingSaves, sessionId, stage, supportCategory, supportReportId, voiceStatus]);
+
   const header = useMemo(
     () => (
       <header className="workspace-header">
@@ -299,6 +345,9 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
             running={connected && stage !== "ORAL_PROBLEM_DELIVERY"}
             ready={restored}
           />
+          <button onClick={openProblemReport} className="ghost-button problem-button">
+            Report a problem
+          </button>
           {/* Deliberately plain. Ending an interview is a decision, not a
               call to action, and a prominent button invites misclicks. */}
           <button onClick={() => setConfirmingEnd(true)} disabled={ending} className="ghost-button end-button">
@@ -322,6 +371,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       onToggleMute,
       onSwitchDevice,
       onSwitchSpeaker,
+      openProblemReport,
       stage,
     ],
   );
@@ -374,6 +424,35 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
               <button className="secondary-button" onClick={() => setConfirmingEnd(false)}>Keep interviewing</button>
               <button className="danger-button" onClick={onEnd} disabled={ending}>{ending ? "Saving final inputs…" : "Complete and view report"}</button>
             </div>
+          </section>
+        </div>
+      )}
+
+      {reportingProblem && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => supportState !== "SENDING" && setReportingProblem(false)}>
+          <section className="end-dialog support-dialog" role="dialog" aria-modal="true" aria-labelledby="support-title" onMouseDown={(event) => event.stopPropagation()}>
+            <span className="dialog-kicker">Private diagnostic report</span>
+            <h2 id="support-title">Report a problem</h2>
+            {supportState === "SENT" ? <>
+              <p role="status">Your report was saved. Reference: <code>{supportReference}</code></p>
+              <p>The diagnostic record expires after 30 days.</p>
+              <div className="dialog-actions"><button className="primary-button" onClick={() => setReportingProblem(false)}>Done</button></div>
+            </> : <>
+              <p>This sends connection, voice, stage, save-backlog, online, and page-visibility state. It never sends your code, notes, transcript, audio, device names, or free text.</p>
+              <label htmlFor="support-category">What stopped working?</label>
+              <select id="support-category" value={supportCategory} onChange={(event) => setSupportCategory(event.target.value as SupportCategory)} disabled={supportState === "SENDING"}>
+                <option value="VOICE">Voice or microphone</option>
+                <option value="CONNECTION">Connection</option>
+                <option value="SAVING">Code or notes saving</option>
+                <option value="REPORT">Final report</option>
+                <option value="OTHER">Something else</option>
+              </select>
+              {supportState === "ERROR" && <p className="support-error" role="alert">The report could not be saved. Retry, or use the Support page after the interview.</p>}
+              <div className="dialog-actions">
+                <button className="secondary-button" onClick={() => setReportingProblem(false)} disabled={supportState === "SENDING"}>Cancel</button>
+                <button className="primary-button" onClick={sendProblemReport} disabled={supportState === "SENDING"}>{supportState === "SENDING" ? "Sending…" : "Send diagnostic report"}</button>
+              </div>
+            </>}
           </section>
         </div>
       )}

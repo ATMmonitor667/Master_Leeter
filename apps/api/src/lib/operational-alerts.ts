@@ -13,6 +13,13 @@ export type OperationalAlert =
       kind: "REALTIME_CIRCUIT_OPEN";
       sessionId: string;
       failureKind: string;
+    }
+  | {
+      kind: "USER_REPORTED_INCIDENT";
+      incidentId: string;
+      sessionId: string;
+      category: "VOICE" | "CONNECTION" | "SAVING" | "REPORT" | "OTHER";
+      requestId: string;
     };
 
 export interface OperationalAlertSink {
@@ -44,7 +51,8 @@ export class WebhookAlertSink implements OperationalAlertSink {
   }
 
   async publish(alert: OperationalAlert): Promise<void> {
-    const body = JSON.stringify({ ...alert, severity: "critical", release: this.opts.release, occurredAt: this.now() });
+    const severity = alert.kind === "USER_REPORTED_INCIDENT" ? "warning" : "critical";
+    const body = JSON.stringify({ ...alert, severity, release: this.opts.release, occurredAt: this.now() });
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         const response = await this.fetcher(this.opts.url, {

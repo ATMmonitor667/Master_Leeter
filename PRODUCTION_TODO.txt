@@ -122,8 +122,9 @@ PRODUCT / PRIVACY / OPERATIONS
 [~] P21 Atomic monthly/account/global admission, shared rate limits, provider
     breakers, voice mint caps and kill switch are implemented; hard provider
     voice-lifetime enforcement and measured cost acceptance remain.
-[~] P22 Redacted diagnostics, service status and bounded critical webhook alerts
-    are implemented; configure escalation and prove delivery on staging.
+[~] P22 Redacted service status, bounded critical webhook alerts and durable,
+    rate-limited in-session diagnostic reports with 30-day expiry are implemented;
+    configure escalation/support ownership and prove delivery on staging.
 [ ] P23 Real DB/queue, browser, two-instance, load and human voice acceptance.
 [~] P24 Production CI builds/smokes the API image; migration execution,
     compatibility and hosted release evidence remain.

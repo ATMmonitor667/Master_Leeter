@@ -17,7 +17,7 @@ not release gates for this scope.
 | P17–P18 | Run live report recovery/deletion races and human calibration of independent grades and observer behavior. |
 | P19 | Review privacy copy and operate the deletion-ledger export/replay procedure. Automatic resume and completed-session expiry, durable deletion recovery and user export/delete are implemented. |
 | P20 | Add final onboarding/support copy and complete keyboard, screen-reader, contrast, reduced-motion and supported-browser acceptance. |
-| P21–P22 | Confirm provider-enforced voice lifetime/cost bounds, configure alerts and support ownership, and measure operational signals on staging. |
+| P21–P22 | Confirm provider-enforced voice lifetime/cost bounds, configure alerts and support ownership, and measure the implemented redacted in-session incident signal on staging. |
 | P23–P26 | Run database/browser/load/provider acceptance, required CI checks, protected staging, managed backup/PITR, restore and rollback rehearsals. |
 | P27 | Invite 5–10 people and complete ten observed full interviews. |
 | P28 | Author and review enough original scenarios for repeat use. Five are currently packaged; the target remains 12–20 after human and grading review. |

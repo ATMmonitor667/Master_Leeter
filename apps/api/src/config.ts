@@ -94,6 +94,7 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
     preparationsPerMinute: limit("PREPARATIONS_PER_MINUTE", "5"),
     realtimeMintsPerMinute: limit("REALTIME_MINTS_PER_MINUTE", "6"),
     runRequestsPerMinute: limit("RUN_REQUESTS_PER_MINUTE", "10"),
+    supportReportsPerMinute: limit("SUPPORT_REPORTS_PER_MINUTE", "3"),
   };
   const sessionRetentionDays = limit("SESSION_RETENTION_DAYS", "365");
 
@@ -114,6 +115,7 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
       "PREPARATIONS_PER_MINUTE",
       "REALTIME_MINTS_PER_MINUTE",
       "RUN_REQUESTS_PER_MINUTE",
+      "SUPPORT_REPORTS_PER_MINUTE",
       "SESSION_RETENTION_DAYS",
     ] as const;
     for (const name of required) if (!env[name]?.trim()) invalid.add(name);

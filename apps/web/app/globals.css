@@ -177,6 +177,10 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 .end-dialog { width: min(470px, 100%); padding: 26px; border: 1px solid var(--border-strong); border-radius: 20px; background: linear-gradient(155deg, var(--panel-raised), var(--bg-soft)); box-shadow: 0 40px 100px rgba(0,0,0,.6); animation: dialog-in 180ms ease-out; }
 .dialog-kicker { color: var(--err); font: 700 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }.end-dialog h2 { margin: 10px 0 12px; font-size: 24px; line-height: 1.18; letter-spacing: -.035em; }.end-dialog p { margin: 0; color: var(--muted); line-height: 1.6; }.dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 24px; }
 .danger-button { border: 1px solid rgba(255,122,134,.35); border-radius: 10px; padding: 9px 14px; background: rgba(255,122,134,.12); color: #ffabb3; }.danger-button:hover { background: rgba(255,122,134,.2); }
+.support-dialog label { display: block; margin: 20px 0 8px; color: var(--muted-strong); font-size: 12px; }
+.support-dialog select { width: 100%; min-height: 44px; }
+.support-dialog code { overflow-wrap: anywhere; color: var(--blue); font: 11px var(--mono); }
+.support-error { margin-top: 14px !important; color: var(--err) !important; }
 
 /* Report signal cards */
 .report-highlights { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 14px; }

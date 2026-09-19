@@ -55,6 +55,7 @@ name invalid variables and never include their values.
 | `PREPARATIONS_PER_MINUTE` | Per-account resume-analysis request bucket |
 | `REALTIME_MINTS_PER_MINUTE` | Per-account voice credential request bucket |
 | `RUN_REQUESTS_PER_MINUTE` | Per-account run-feedback request bucket |
+| `SUPPORT_REPORTS_PER_MINUTE` | Per-account in-session incident-report bucket |
 | `SESSION_RETENTION_DAYS` | Days after completion before interview evidence is tombstoned and redacted; current policy is 365 |
 
 `ALLOW_INSECURE_DEV=1`, file questions, HTTP origins, in-memory storage and

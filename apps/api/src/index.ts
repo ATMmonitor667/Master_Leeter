@@ -39,6 +39,7 @@ import {
   type SessionLifecycle,
 } from "./modules/session/index.js";
 import { createSupabaseStorage } from "./storage.js";
+import { InMemorySupportIncidentStore, registerSupportModule, type SupportIncidentStore } from "./modules/support/index.js";
 
 /**
  * Modular monolith (ADR-005).
@@ -72,6 +73,7 @@ export interface ServerOptions {
   evaluator?: Evaluator;
   consentStore?: ConsentStore;
   deletionStore?: DeletionStore;
+  supportStore?: SupportIncidentStore;
   sessionRetentionDays?: number;
   lifecycle?: SessionLifecycle;
   runtimeOwnership?: RuntimeOwnership;
@@ -141,6 +143,7 @@ export function buildServer(opts: ServerOptions) {
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const store = opts.sessionStore ?? new InMemorySessionStore();
   const preparationStore = opts.preparationStore ?? new InMemoryPreparationStore();
+  const supportStore = opts.supportStore ?? new InMemorySupportIncidentStore();
   const pendingAlerts = new Set<Promise<void>>();
   const publishAlert = (alert: OperationalAlert) => {
     if (!opts.alertSink) return;
@@ -156,6 +159,7 @@ export function buildServer(opts: ServerOptions) {
     preparationsPerMinute: 5,
     realtimeMintsPerMinute: 6,
     runRequestsPerMinute: 10,
+    supportReportsPerMinute: 3,
   };
   app.addHook("preHandler", async (req, reply) => {
     if (req.method !== "POST") return;
@@ -164,6 +168,7 @@ export function buildServer(opts: ServerOptions) {
       : route === "/v1/preparations" ? rateLimits.preparationsPerMinute
         : route === "/v1/interview-sessions/:id/realtime-token" ? rateLimits.realtimeMintsPerMinute
           : route === "/v1/interview-sessions/:id/runs" ? rateLimits.runRequestsPerMinute
+            : route === "/v1/interview-sessions/:id/support-incidents" ? rateLimits.supportReportsPerMinute
             : undefined;
     if (!limit) return;
     try {
@@ -261,6 +266,17 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.scenarioRestater ? { restater: opts.scenarioRestater } : {}),
   });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
+  void app.register(registerSupportModule, {
+    prefix: "/v1",
+    store: supportStore,
+    onCreated: (incident) => publishAlert({
+      kind: "USER_REPORTED_INCIDENT",
+      incidentId: incident.id,
+      sessionId: incident.sessionId,
+      category: incident.category,
+      requestId: incident.requestId,
+    }),
+  });
   void app.register(registerPrivacyModule, {
     prefix: "/v1",
     eventLog,
@@ -270,6 +286,7 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.deletionStore ? { deletionStore: opts.deletionStore } : {}),
     ...(opts.sessionRetentionDays ? { sessionRetentionDays: opts.sessionRetentionDays } : {}),
     preparationStore,
+    supportStore,
     ...(opts.identityAdmin ? { identityAdmin: opts.identityAdmin } : {}),
   });
 

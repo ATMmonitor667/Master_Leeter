@@ -9,6 +9,7 @@ import { PgSessionStore } from "./modules/session/pg-session-store.js";
 import { PgRuntimeOwnership } from "./modules/session/runtime-ownership.js";
 import { PgPreparationStore } from "./modules/preparation/pg-store.js";
 import { PgRateLimitStore, type SessionAdmissionPolicy } from "./modules/admission/index.js";
+import { PgSupportIncidentStore } from "./modules/support/index.js";
 
 export interface StorageDatabase extends TransactionPool { close(): Promise<void> }
 
@@ -24,6 +25,7 @@ const tableRequirements = [
   ["interview_preparations", ["SELECT", "INSERT", "UPDATE"]],
   ["api_rate_limits", ["SELECT", "INSERT", "UPDATE"]],
   ["privacy_deletion_requests", ["SELECT", "INSERT", "UPDATE"]],
+  ["support_incidents", ["SELECT", "INSERT", "UPDATE", "DELETE"]],
 ] as const;
 
 export async function assertDurableSchema(db: QueryClient): Promise<void> {
@@ -78,6 +80,7 @@ export async function createSupabaseStorage(
     socketTickets: new PgSocketTickets(db),
     consentStore: new PgConsentStore(db),
     deletionStore: new PgDeletionStore(db),
+    supportStore: new PgSupportIncidentStore(db),
     reportJobStore: new PgReportJobStore(db),
     preparationStore: new PgPreparationStore(db),
     rateLimiter: new PgRateLimitStore(db),

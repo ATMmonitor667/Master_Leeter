@@ -13,6 +13,7 @@ export interface RateLimitPolicy {
   preparationsPerMinute: number;
   realtimeMintsPerMinute: number;
   runRequestsPerMinute: number;
+  supportReportsPerMinute: number;
 }
 
 export interface RateLimitDecision { allowed: boolean; retryAfterSeconds: number }
