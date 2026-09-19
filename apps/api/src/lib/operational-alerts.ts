@@ -6,7 +6,7 @@ export type OperationalAlert =
       code: string;
     }
   | {
-      kind: "REPORT_RECOVERY_UNAVAILABLE";
+      kind: "REPORT_RECOVERY_UNAVAILABLE" | "PRIVACY_MAINTENANCE_UNAVAILABLE";
       consecutiveFailures: number;
     }
   | {
@@ -66,8 +66,8 @@ export class WebhookAlertSink implements OperationalAlertSink {
           redirect: "error",
           signal: AbortSignal.timeout(this.timeoutMs),
         });
-        if (response.ok) return;
         await response.body?.cancel();
+        if (response.ok) return;
         if (response.status < 500 && response.status !== 408 && response.status !== 429) break;
       } catch {
         // Retry transient network/timeout failures below; never expose the URL.

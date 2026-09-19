@@ -99,6 +99,7 @@ export interface PrivacyModuleOptions {
   sessionRetentionDays?: number;
   identityAdmin?: IdentityAdmin;
   supportStore?: SupportIncidentStore;
+  onMaintenanceFailure?: (consecutiveFailures: number) => void;
 }
 
 export async function registerPrivacyModule(
@@ -155,12 +156,14 @@ export async function registerPrivacyModule(
   }
 
   let maintenance: Promise<void> | undefined;
+  let consecutiveFailures = 0;
   const maintain = (): Promise<void> => {
     maintenance ??= (async () => {
+      let incomplete = false;
       const recovered = await deletions.recoverable(20, leaseMs);
       for (const claim of recovered) {
         try { await processDeletion(claim); }
-        catch { await deletions.release(claim.id, claim.token); app.log.error("privacy deletion recovery failed"); }
+        catch { incomplete = true; await deletions.release(claim.id, claim.token); app.log.error("privacy deletion recovery failed"); }
       }
       const days = opts.sessionRetentionDays ?? RETENTION_DAYS.TRANSCRIPT;
       const before = new Date(Date.now() - days * 86_400_000).toISOString();
@@ -170,12 +173,22 @@ export async function registerPrivacyModule(
             dedupeKey: `session:${session.id}`, scope: "SESSION", reason: "RETENTION",
             userId: session.userId, sessionIds: [session.id], requestedAt: new Date().toISOString(),
           });
-        } catch { app.log.error("expired session deletion failed"); }
+        } catch { incomplete = true; app.log.error("expired session deletion failed"); }
       }
-    })().finally(() => { maintenance = undefined; });
+      if (incomplete) throw new Error("PRIVACY_MAINTENANCE_INCOMPLETE");
+      consecutiveFailures = 0;
+    })().catch(() => {
+      // A database outage must not leave a rejected interval promise that can
+      // terminate the API. Durable requests stay pending for the next attempt.
+      consecutiveFailures += 1;
+      if (consecutiveFailures === 1 || consecutiveFailures % 12 === 0) {
+        app.log.error({ consecutiveFailures }, "privacy maintenance unavailable");
+        opts.onMaintenanceFailure?.(consecutiveFailures);
+      }
+    }).finally(() => { maintenance = undefined; });
     return maintenance;
   };
-  const maintenanceTimer = setInterval(() => { void maintain(); }, 60 * 60_000);
+  const maintenanceTimer = setInterval(() => { void maintain(); }, 60_000);
   maintenanceTimer.unref();
   app.addHook("onReady", maintain);
   app.addHook("onClose", async () => { clearInterval(maintenanceTimer); await maintenance; });

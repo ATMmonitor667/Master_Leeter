@@ -7,11 +7,14 @@ import { QuestionBankError, SupabaseQuestionBank, questionRowFromSource } from "
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2).filter((arg) => arg !== "--");
-  if (args.some((arg) => arg !== "--apply")) throw new Error("Usage: pnpm questions:import [--apply]");
-  const library = await loadScenarioLibrary(join(dirname(fileURLToPath(import.meta.url)), "../../../content/scenarios"));
+  if (args.some((arg) => !["--apply", "--drafts"].includes(arg))) throw new Error("Usage: pnpm questions:import [--drafts] [--apply]");
+  const drafts = args.includes("--drafts");
+  const library = await loadScenarioLibrary(join(dirname(fileURLToPath(import.meta.url)),
+    drafts ? "../../../content/scenario-drafts" : "../../../content/scenarios"));
   // Validate the complete batch before making any remote writes.
   const sources: string[] = [];
   for (const question of library.values()) {
+    if (drafts && question.version.status !== "DRAFT") throw new QuestionBankError("INVALID_CONTENT");
     const raw = await readFile(question.sourcePath, "utf8");
     const current = questionRowFromSource(raw);
     if (current.content_hash !== question.contentHash) {
@@ -20,7 +23,7 @@ async function main(): Promise<void> {
     sources.push(raw);
   }
   if (!args.includes("--apply")) {
-    console.log(`Validated ${sources.length} original/licensed question versions. Dry run: no network calls or writes. Use --apply after applying the Supabase migration.`);
+    console.log(`Validated ${sources.length} ${drafts ? "DRAFT" : "original/licensed"} question versions. Dry run: no network calls or writes. Use --apply after applying the Supabase migration.`);
     return;
   }
   loadEnv();

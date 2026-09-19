@@ -29,7 +29,7 @@ function rate(numerator: number, denominator: number): number | null {
 }
 
 async function main() {
-  const days = daysArgument(process.argv.slice(2));
+  const days = daysArgument(process.argv.slice(2).filter((value) => value !== "--"));
   const connectionString = process.env["METRICS_DATABASE_URL"]?.trim();
   if (!connectionString) throw new Error("METRICS_DATABASE_URL_REQUIRED");
   const db = new PgDatabase(connectionString);
@@ -50,7 +50,7 @@ async function main() {
         (SELECT count(*) FROM recent WHERE ended_at IS NOT NULL)::text AS completed_interviews,
         (SELECT count(*) FROM event_flags WHERE voice)::text AS activated_voice,
         (SELECT count(*) FROM public.session_reports r JOIN recent s ON s.id=r.session_id WHERE r.status='READY')::text AS reports_ready,
-        (SELECT count(*) FROM public.session_reports r JOIN recent s ON s.id=r.session_id WHERE r.viewed_at IS NOT NULL)::text AS reports_viewed,
+        (SELECT count(*) FROM public.session_reports r JOIN recent s ON s.id=r.session_id WHERE r.status='READY' AND r.viewed_at IS NOT NULL)::text AS reports_viewed,
         (SELECT count(*) FROM public.session_reports r JOIN recent s ON s.id=r.session_id WHERE r.status='FAILED')::text AS report_failures,
         (SELECT count(*) FROM account_counts)::text AS accounts_with_interviews,
         (SELECT count(*) FROM account_counts WHERE interviews >= 2)::text AS returning_accounts,

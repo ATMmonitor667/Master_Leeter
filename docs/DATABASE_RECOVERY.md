@@ -62,7 +62,7 @@ restore can find every record that must remain deleted.
 Create a fresh isolated database with no public traffic. Set:
 
 ```text
-RESTORE_DATABASE_URL=postgresql://<user>:<password>@<isolated-host>:5432/<isolated-database>?sslmode=require
+RESTORE_DATABASE_URL=postgresql://<user>:<password>@<isolated-host>:5432/<isolated-database>?sslmode=verify-full
 RESTORE_CONFIRM_DATABASE=<isolated-database>
 RESTORE_ISOLATED_ACK=I_UNDERSTAND_THIS_REPLACES_THE_TARGET
 ```

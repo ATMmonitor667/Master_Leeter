@@ -1,6 +1,6 @@
 # Aggregate product metrics
 
-Use the read-only summary after migrations 001–014 are applied:
+Use the read-only summary after migrations 001–015 are applied:
 
 ```powershell
 $env:METRICS_DATABASE_URL = "postgresql://..."

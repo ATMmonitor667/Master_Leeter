@@ -1,0 +1,140 @@
+# Private draft. Do not activate before recorded review.
+id: "courier-grid@1"
+scenarioId: "courier-grid"
+version: 1
+status: "DRAFT"
+provenance:
+  type: "ORIGINAL"
+  author: "Codex assisted draft"
+  reviewNotes: "New framing authored for Master Leeter from a standard algorithmic concept. Human technical, similarity and oral review pending. No completed review or licensing clearance is claimed."
+target:
+  level: "JUNIOR"
+  topics:
+    - "breadth-first search"
+    - "graphs"
+  expectedMinutes: 45
+oralBrief:
+  openingScript: "A courier moves around a rectangular storage floor. Zero cells are open and one cells are blocked. Starting at a given open cell, find the fewest moves to a given destination. A move goes one cell up, down, left, or right. Return minus one if it cannot be reached."
+  repeatVariants:
+    - "A courier moves around a rectangular storage floor. Zero cells are open and one cells are blocked. Starting at a given open cell, find the fewest moves to a given destination. A move goes one cell up, down, left, or right. Return minus one if it cannot be reached."
+facts:
+  -
+    key: "signature"
+    value: "fewest_moves(floor: list[list[int]], start: list[int], destination: list[int]) -> int"
+    disclosure: "ALWAYS"
+    askedAs:
+      - "what is the function signature"
+      - "what should the function return"
+  -
+    key: "limits"
+    value: "The nonempty rectangular grid contains at most 200,000 cells. Coordinates are zero-based [row, column] pairs within the grid. Start and destination are open."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "how large is the input"
+      - "what are the constraints"
+  -
+    key: "edge_cases"
+    value: "Every legal move costs one. There are no diagonal moves or wrapping. If start equals destination return zero. Do not modify the supplied floor."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "what about empty input"
+      - "what are the boundary cases"
+      - "how are ties handled"
+examples:
+  -
+    input: "[[[0,1,0],[0,0,0]],[0,0],[0,2]]"
+    output: "4"
+    note: "Input is a JSON array of positional function arguments."
+visibleStarterTests:
+  -
+    id: "t-basic"
+    input: "[[[0,1,0],[0,0,0]],[0,0],[0,2]]"
+    expectedOutput: "4"
+    hidden: false
+hiddenTests:
+  -
+    id: "h-1"
+    input: "[[[0]],[0,0],[0,0]]"
+    expectedOutput: "0"
+    hidden: true
+  -
+    id: "h-2"
+    input: "[[[0,1,0]],[0,0],[0,2]]"
+    expectedOutput: "-1"
+    hidden: true
+  -
+    id: "h-3"
+    input: "[[[0,0,0]],[0,0],[0,2]]"
+    expectedOutput: "2"
+    hidden: true
+  -
+    id: "h-4"
+    input: "[[[0,0],[0,0]],[0,0],[1,1]]"
+    expectedOutput: "2"
+    hidden: true
+  -
+    id: "h-5"
+    input: "[[[0,1],[1,0]],[0,0],[1,1]]"
+    expectedOutput: "-1"
+    hidden: true
+solutionFamilies:
+  -
+    id: "sf-optimal"
+    name: "Breadth-first search"
+    timeComplexity: "O(rows * columns)"
+    spaceComplexity: "O(rows * columns)"
+    isOptimal: true
+    recognitionSignals:
+      - "FIFO queue"
+      - "visited coordinates"
+      - "distance increases by one for neighboring cells"
+    invariants:
+      - "Cells leave the FIFO queue in nondecreasing shortest distance. Marking when enqueued prevents repeated work."
+    failureModes:
+      - "depth-first first-found path is not necessarily shortest"
+      - "marking visited only after repeated enqueues"
+      - "modifying the input floor"
+probes:
+  -
+    id: "invariant_proof"
+    trigger: "milestone(FIRST_COMPILES)"
+    questionIntent: "Check the argument supporting the proposed data structure or recurrence."
+    authoredVariants:
+      - "Why does the first time you reach the destination establish the shortest route here?"
+    maxUses: 1
+    priority: 80
+  -
+    id: "complexity_claim"
+    trigger: "claimedTime.present && claimedTime != detectedFamily.timeComplexity"
+    questionIntent: "Ask the candidate to justify their own complexity claim."
+    authoredVariants:
+      - "Which operations dominate your running time, and how often can each occur?"
+    maxUses: 1
+    priority: 100
+hintLadder:
+  -
+    level: 1
+    text: "What does one additional move mean for the set of reachable cells?"
+    scoreImpact: 0.05
+  -
+    level: 2
+    text: "Explore all positions at one distance before positions farther away."
+    scoreImpact: 0.15
+  -
+    level: 3
+    text: "A first-in first-out worklist preserves that distance order."
+    scoreImpact: 0.3
+  -
+    level: 4
+    text: "Run BFS from start using a queue of cell and distance. Mark open neighbors visited on enqueue and return the distance when destination is reached."
+    scoreImpact: 0.5
+followUps:
+  -
+    id: "fu-extension"
+    trigger: "solvedOptimally && remainingMinutes >= 5"
+    oralDelta: "Some moves now take longer than others; each open cell has a positive entry cost."
+    rubricDelta:
+      adaptability: 0.1
+    expectedAdaptation: "FIFO ordering no longer establishes shortest cost; use a priority queue and Dijkstra's relaxation, including stale-entry rejection."
+rubricId: "rubric-coding-v1"
+

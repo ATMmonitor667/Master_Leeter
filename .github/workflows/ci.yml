@@ -95,6 +95,14 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Validate release migration plan and private content
+        run: |
+          pnpm db:migrate --plan
+          pnpm questions:import
+          pnpm questions:import --drafts
+          node --check scripts/release-smoke.mjs
+          node --check scripts/database-recovery.mjs
+
       - name: Test
         run: pnpm test
 

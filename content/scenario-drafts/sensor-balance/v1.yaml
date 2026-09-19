@@ -1,0 +1,145 @@
+# Private draft. Do not activate before recorded review.
+id: "sensor-balance@1"
+scenarioId: "sensor-balance"
+version: 1
+status: "DRAFT"
+provenance:
+  type: "ORIGINAL"
+  author: "Codex assisted draft"
+  reviewNotes: "New framing authored for Master Leeter from a standard algorithmic concept. Human technical, similarity and oral review pending. No completed review or licensing clearance is claimed."
+target:
+  level: "MID"
+  topics:
+    - "prefix sums"
+    - "hashing"
+  expectedMinutes: 45
+oralBrief:
+  openingScript: "A device reports signed calibration adjustments in order. Find the longest contiguous block whose adjustments add to a target value. Return the block's start and exclusive end indexes; among equally long blocks choose the earliest start. Return [-1, -1] when no nonempty block qualifies."
+  repeatVariants:
+    - "A device reports signed calibration adjustments in order. Find the longest contiguous block whose adjustments add to a target value. Return the block's start and exclusive end indexes; among equally long blocks choose the earliest start. Return [-1, -1] when no nonempty block qualifies."
+facts:
+  -
+    key: "signature"
+    value: "calibration_block(adjustments: list[int], target: int) -> list[int]"
+    disclosure: "ALWAYS"
+    askedAs:
+      - "what is the function signature"
+      - "what should the function return"
+  -
+    key: "limits"
+    value: "There are at most 200,000 adjustments, each between -1,000,000 and 1,000,000. The target is an integer in the same total-sum range. Input order must be preserved."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "how large is the input"
+      - "what are the constraints"
+  -
+    key: "edge_cases"
+    value: "Negative values and zeros are allowed. Empty input has no nonempty qualifying block. End indexes are exclusive. A zero target does not allow an empty block."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "what about empty input"
+      - "what are the boundary cases"
+      - "how are ties handled"
+examples:
+  -
+    input: "[[3,-1,-2,5,-5],0]"
+    output: "[0,5]"
+    note: "Input is a JSON array of positional function arguments."
+visibleStarterTests:
+  -
+    id: "t-basic"
+    input: "[[3,-1,-2,5,-5],0]"
+    expectedOutput: "[0,5]"
+    hidden: false
+hiddenTests:
+  -
+    id: "h-1"
+    input: "[[],0]"
+    expectedOutput: "[-1,-1]"
+    hidden: true
+  -
+    id: "h-2"
+    input: "[[0,0],0]"
+    expectedOutput: "[0,2]"
+    hidden: true
+  -
+    id: "h-3"
+    input: "[[1,2,4],3]"
+    expectedOutput: "[0,2]"
+    hidden: true
+  -
+    id: "h-4"
+    input: "[[2,1,2],3]"
+    expectedOutput: "[0,2]"
+    hidden: true
+  -
+    id: "h-5"
+    input: "[[-2,5,-3],0]"
+    expectedOutput: "[0,3]"
+    hidden: true
+  -
+    id: "h-6"
+    input: "[[1,2],8]"
+    expectedOutput: "[-1,-1]"
+    hidden: true
+solutionFamilies:
+  -
+    id: "sf-optimal"
+    name: "Prefix sums with earliest positions"
+    timeComplexity: "O(n)"
+    spaceComplexity: "O(n)"
+    isOptimal: true
+    recognitionSignals:
+      - "running sum"
+      - "dictionary from prefix sum to earliest index"
+      - "lookup current sum minus target"
+    invariants:
+      - "Before each endpoint is considered, the dictionary holds the earliest occurrence of each earlier prefix sum. Pairing it with the current prefix gives the longest block ending here."
+    failureModes:
+      - "overwriting the earliest prefix position"
+      - "sliding-window logic assuming nonnegative values"
+      - "accepting an empty block for target zero"
+probes:
+  -
+    id: "invariant_proof"
+    trigger: "milestone(FIRST_COMPILES)"
+    questionIntent: "Check the argument supporting the proposed data structure or recurrence."
+    authoredVariants:
+      - "Why would storing the most recent position of a repeated running sum change the answer?"
+    maxUses: 1
+    priority: 80
+  -
+    id: "complexity_claim"
+    trigger: "claimedTime.present && claimedTime != detectedFamily.timeComplexity"
+    questionIntent: "Ask the candidate to justify their own complexity claim."
+    authoredVariants:
+      - "Which operations dominate your running time, and how often can each occur?"
+    maxUses: 1
+    priority: 100
+hintLadder:
+  -
+    level: 1
+    text: "Compare totals at the two boundaries of a block."
+    scoreImpact: 0.05
+  -
+    level: 2
+    text: "Which earlier cumulative total would make the block ending here reach the target?"
+    scoreImpact: 0.15
+  -
+    level: 3
+    text: "Remember where cumulative totals first occurred."
+    scoreImpact: 0.3
+  -
+    level: 4
+    text: "Maintain a running sum and a map initialized with zero at position zero. Look up sum minus target; keep the longest nonempty interval and record only the first position for each sum."
+    scoreImpact: 0.5
+followUps:
+  -
+    id: "fu-extension"
+    trigger: "solvedOptimally && remainingMinutes >= 5"
+    oralDelta: "Now return the number of nonempty blocks reaching the target, instead of the longest block."
+    rubricDelta:
+      adaptability: 0.1
+    expectedAdaptation: "Store frequencies of prior prefix sums rather than earliest indexes; add the frequency for current sum minus target before recording the current sum."
+rubricId: "rubric-coding-v1"
+
