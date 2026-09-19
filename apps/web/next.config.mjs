@@ -3,8 +3,11 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const hostedBuild = process.env.VERCEL === "1" || process.env.DEPLOYMENT_ENV === "production";
 const publicAppEnv = process.env.NEXT_PUBLIC_APP_ENV;
+const hostedBuild = process.env.VERCEL === "1" ||
+  process.env.DEPLOYMENT_ENV === "production" ||
+  publicAppEnv === "production" ||
+  publicAppEnv === "preview";
 
 function secureEndpoint(name, protocols) {
   const value = process.env[name];
@@ -29,6 +32,7 @@ if (hostedBuild) {
   }
   const api = secureEndpoint("NEXT_PUBLIC_API_URL", ["https:"]);
   const supabase = secureEndpoint("NEXT_PUBLIC_SUPABASE_URL", ["https:"]);
+  secureEndpoint("NEXT_PUBLIC_SITE_URL", ["https:"]);
   if (!process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY.startsWith("sb_secret_")) {
     throw new Error("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY must be a public key for a hosted build");
   }
@@ -80,8 +84,11 @@ const nextConfig = {
     ];
     return [
       { source: "/(.*)", headers: security },
-      { source: "/interview/:path*", headers: [{ key: "Cache-Control", value: "private, no-store" }] },
-      { source: "/report/:path*", headers: [{ key: "Cache-Control", value: "private, no-store" }] },
+      { source: "/interview/:path*", headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "X-Robots-Tag", value: "noindex, nofollow" }] },
+      { source: "/report/:path*", headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "X-Robots-Tag", value: "noindex, nofollow" }] },
+      { source: "/history", headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "X-Robots-Tag", value: "noindex, nofollow" }] },
+      { source: "/settings", headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "X-Robots-Tag", value: "noindex, nofollow" }] },
+      { source: "/login", headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }] },
     ];
   },
 };

@@ -7,7 +7,8 @@ Status: ITERATION 1 implemented locally; external acceptance remains open.
 CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [x] I01 Private Supabase bank migration, adapter, importer and session wiring.
 [ ] I01-CLOUD Owner applies development migration/import and verifies permissions.
-[ ] I02 Authentication, ownership, durable sessions/events and private-data lifecycle.
+[~] I02 Authentication, ownership, durable sessions/events and private-data lifecycle
+    are implemented; live Supabase and multi-instance acceptance remain.
     I02a auth committed (dc5a1a7); configuration/reconnect hardening follows.
     I02b durable storage/recovery remains open; single API process only for now.
     I02b.1 repository foundation implemented; real PostgreSQL tests and API wiring
@@ -16,7 +17,9 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
     await PostgreSQL or CI execution. See docs/DATABASE_TESTING.md.
 [x] I02a Supabase email-code sign-in, verified ownership and session-bound sockets.
 [ ] I02a-CLOUD Real sign-in/email/token-expiry acceptance with development project.
-[ ] I02b Durable storage, atomic lifecycle, replay and cross-process recovery.
+[~] I02b Durable storage, atomic lifecycle, replay obligations, fenced runtime
+    ownership and report/privacy recovery are implemented. Live database and
+    cross-process acceptance remain.
 [~] I03 production code implemented on codex-production-03-preparation; automated,
     live Supabase/Gemini and human conversational acceptance remain open.
 [~] I04 core code implemented on codex-production-04-live-experience: minimal
@@ -39,7 +42,8 @@ CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
     owner-scoped interview history plus resume/report navigation implemented;
     settings and export are implemented. Verified application-schema backup and
     isolated restore tooling is implemented; accessibility review, runner,
-    erasure-ledger replay and live recovery drills remain.
+    live erasure-ledger replay and recovery drills remain. The release scope is
+    a free capped beta with model-estimated grades; sandbox execution is deferred.
 Full per-iteration tasks, acceptance and owner dependencies:
   docs/PRODUCTION_ITERATIONS.md
 Question bank setup (no cloud data has been written):
@@ -72,15 +76,23 @@ FOUNDATION / ACCESS
     implemented; worker artifact/start path and a successful CI image run remain.
 [~] P03 Typed config, production validation, readiness and browser endpoints are
     implemented; hosted configuration and probe evidence remain.
-[ ] P04 Managed authentication, accounts and token refresh.
-[ ] P05 Ownership on every HTTP/WS route and single-use socket tickets.
-[ ] P06 Origins, input limits, rate limits, browser headers and abuse controls.
+[~] P04 Supabase authentication and browser session refresh are implemented;
+    server-side Auth identity deletion is implemented after practice-data erasure;
+    live expiry/revocation/deletion acceptance remains.
+[~] P05 HTTP/WS ownership and durable single-use socket tickets are implemented;
+    two-account hosted acceptance remains.
+[~] P06 Exact origins, bounded inputs, shared route rates and browser headers are
+    implemented; hosted abuse/browser acceptance remains.
 
 DATA / RECOVERY
-[ ] P07 Real PostgreSQL repositories, migrations, identities/drafts/history.
-[ ] P08 Transactional event sequencing, state writes, idempotency and outbox.
-[ ] P09 Runtime checkpoint/replay and safe delivery-state recovery.
-[ ] P10 Single session owner, fenced leases, cross-instance commands, durable jobs.
+[~] P07 PostgreSQL repositories, numbered migration runner, preparations and
+    history are implemented; managed migration execution remains.
+[~] P08 Transactional event sequencing, lifecycle, idempotency and durable input
+    obligations are implemented; live concurrency acceptance remains.
+[~] P09 Runtime reconstruction, checkpoints and pending-input discovery are
+    implemented; forced replacement acceptance remains.
+[~] P10 Fenced runtime ownership and durable report/privacy jobs are implemented;
+    cross-instance command and replacement acceptance remain.
 
 INTERVIEW / EXECUTION / REPORTS
 [~] P11 Provider transcription is independent of captions; completion waits for
@@ -92,20 +104,24 @@ INTERVIEW / EXECUTION / REPORTS
     verification remains.
 [~] P13 Durable server deadline discovery, atomic finalization, late-write rejection
     and abandoned-tab completion are implemented; cloud race drills remain.
-[ ] P14 Sandbox provider spike: actual enforced isolation/resource/cleanup tests.
-[ ] P15 Actual CodeRunner adapter and correct test harness for all five scenarios.
-[ ] P16 Runner queues, fairness, admission, idempotency and recovery.
-[ ] P17 Durable report worker, persisted results, retries and deletion races.
-[ ] P18 Evaluator/observer wiring audit, grounded feedback and human calibration.
+[>] P14–P16 External sandbox execution deferred from the selected free capped beta;
+    model-estimated feedback remains explicitly labelled and Run is not required.
+[~] P17 Durable report jobs, fenced recovery, persisted partial results/retries and
+    deletion are implemented; live failure/deletion-race acceptance remains.
+[~] P18 Independent grounded graders and observer wiring are implemented; live
+    calibration and human review remain.
 
 PRODUCT / PRIVACY / OPERATIONS
 [~] P19 Owner-scoped session export/deletion and account practice-data deletion
-    are implemented; automated expiry, auth-identity deletion, reviewed policy
-    copy and restore erasure-ledger replay remain.
+    are implemented. Durable deletion recovery, 365-day automatic expiry and
+    external restore-replay artifacts and Auth identity deletion are implemented;
+    reviewed policy copy and live replay evidence remain.
 [~] P20 Owner-scoped paginated history and active/report navigation implemented;
-    export/deletion settings are implemented; onboarding polish, profile settings
-    and accessibility acceptance remain.
-[ ] P21 Atomic credits/capacity, provider-cost enforcement, caps and kill switch.
+    export/deletion settings, beta FAQ, privacy and support surfaces are
+    implemented; onboarding polish and accessibility acceptance remain.
+[~] P21 Atomic monthly/account/global admission, shared rate limits, provider
+    breakers, voice mint caps and kill switch are implemented; hard provider
+    voice-lifetime enforcement and measured cost acceptance remain.
 [~] P22 Redacted diagnostics, service status and bounded critical webhook alerts
     are implemented; configure escalation and prove delivery on staging.
 [ ] P23 Real DB/queue, browser, two-instance, load and human voice acceptance.
@@ -114,8 +130,8 @@ PRODUCT / PRIVACY / OPERATIONS
 [~] P25 Render staging blueprint and Vercel configuration are documented;
     provisioning, protection, worker/domain wiring and hosted evidence remain.
 [~] P26 Verified public-schema archive and guarded isolated restore commands are
-    implemented with a recovery/forward-rollback runbook. Supabase managed
-    backup/PITR configuration, external erasure-ledger replay, live restore,
+    implemented with migration controls, erasure-ledger export/replay and a
+    recovery/forward-rollback runbook. Supabase managed backup/PITR, live restore,
     deployment rollback and incident rehearsal remain.
 
 LAUNCH / GROWTH
@@ -123,9 +139,11 @@ LAUNCH / GROWTH
 [~] P28 Account-aware repetition avoidance is implemented; expand to 12–20
     reviewed original/licensed scenarios for repeat use.
 [ ] P29 Meet public-beta reliability, capacity, quality and cost thresholds.
-[ ] P30 Landing/demo/FAQ, measured activation funnel and two acquisition cohorts.
+[~] P30 Truthful landing, FAQ/privacy/support pages, canonical metadata, social
+    preview, sitemap and private-route indexing controls are implemented; demo,
+    privacy-preserving activation measurement and two cohorts remain.
 [ ] P31 Gradual public signup, first-48-hour monitoring and operational ownership.
-[ ] P32 If charging: billing, entitlements, webhooks, refunds and paid-launch test.
+[>] P32 Billing is deferred; the selected release is a free capped beta.
 
 ORDER NOTES
   Begin P01–P03, then P07/P08 and P04–P06, then P09/P10.

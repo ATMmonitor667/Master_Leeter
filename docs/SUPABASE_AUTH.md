@@ -1,5 +1,12 @@
 # Authentication setup and acceptance
 
+Account deletion now uses the backend-only Supabase Admin client after the
+durable practice-data deletion queue fully succeeds. The browser never receives
+the secret key. A failed Auth deletion remains retryable, and retries reuse an
+unfinished application deletion before identity removal. Supabase's
+[Admin delete-user reference](https://supabase.com/docs/reference/javascript/auth-admin-deleteuser)
+requires this operation to stay server-side.
+
 Implemented in iteration I02a on `codex/production-02-auth-storage`, based on the
 question-bank commit `d1c9354`. This is an access-control release, not a public
 launch: session, event, consent, ticket and report state still lives in one API

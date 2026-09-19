@@ -74,6 +74,13 @@ export class PgSessionStore implements SessionStore {
     return rows.map(session);
   }
 
+  async expiredEnded(before: string, limit = 100): Promise<InterviewSession[]> {
+    const { rows } = await this.db.query<Row>(`SELECT * FROM public.interview_sessions
+      WHERE deleted_at IS NULL AND ended_at IS NOT NULL AND ended_at<=$1::timestamptz
+      ORDER BY ended_at,id LIMIT $2`, [before,limit]);
+    return rows.map(session);
+  }
+
   async idsForUser(userId: string): Promise<string[]> {
     const { rows } = await this.db.query<{ id: string }>("SELECT id FROM public.interview_sessions WHERE user_id=$1 AND deleted_at IS NULL ORDER BY created_at,id", [userId]);
     return rows.map((row) => row.id);

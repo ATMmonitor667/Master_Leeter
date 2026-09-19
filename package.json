@@ -24,8 +24,12 @@
     "check:sorted": "node scripts/check-sorted-corruption.mjs",
     "check:env": "node scripts/check-env-not-tracked.mjs",
     "db:backup": "node scripts/database-recovery.mjs backup",
+    "db:migrate": "pnpm --filter @master-leeter/api exec tsx scripts/migrate.ts",
     "db:backup:verify": "node scripts/database-recovery.mjs verify",
     "db:restore": "node scripts/database-recovery.mjs restore",
+    "privacy:ledger:export": "pnpm --filter @master-leeter/api exec tsx scripts/privacy-ledger.ts export",
+    "privacy:ledger:replay": "pnpm --filter @master-leeter/api exec tsx scripts/privacy-ledger.ts replay",
+    "privacy:ledger:status": "pnpm --filter @master-leeter/api exec tsx scripts/privacy-ledger.ts status",
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {

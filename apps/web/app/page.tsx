@@ -314,7 +314,7 @@ export default function Home() {
         </div>
       </section>
 
-      <footer className="landing-footer"><span>Master Leeter</span><span>Built for deliberate practice, not puzzle memorization.</span></footer>
+      <footer className="landing-footer"><span>Master Leeter · Built for deliberate practice.</span><span className="footer-links"><a href="/faq">FAQ</a><a href="/privacy">Privacy</a><a href="/support">Support</a></span></footer>
     </main>
   );
 }

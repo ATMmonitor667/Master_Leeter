@@ -7,6 +7,7 @@ import { ProviderCircuit } from "./lib/provider-circuit.js";
 import { WebhookAlertSink, type OperationalAlert, type OperationalAlertSink } from "./lib/operational-alerts.js";
 import { InMemoryRateLimitStore, type RateLimitPolicy, type RateLimitStore } from "./modules/admission/index.js";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
+import { identityAdminFromEnv, type IdentityAdmin } from "./modules/auth/identity-admin.js";
 import { EvaluationQueue, IndependentGeminiEvaluator, MAX_REPORT_ATTEMPTS, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
 import { startReportRecovery } from "./modules/report/recovery-worker.js";
 import type { RuntimeOwnership } from "./modules/session/runtime-ownership.js";
@@ -23,7 +24,7 @@ import {
   type ScenarioRestater,
 } from "./modules/preparation/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
-import { registerPrivacyModule, type ConsentStore } from "./modules/privacy/index.js";
+import { registerPrivacyModule, type ConsentStore, type DeletionStore } from "./modules/privacy/index.js";
 import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
@@ -62,6 +63,7 @@ export interface ServerOptions {
   logger?: boolean;
   production?: boolean;
   authenticator?: Authenticator;
+  identityAdmin?: IdentityAdmin;
   webOrigin?: string;
   eventLog?: EventLog;
   sessionStore?: SessionStore;
@@ -69,6 +71,8 @@ export interface ServerOptions {
   reportJobStore?: ReportJobStore;
   evaluator?: Evaluator;
   consentStore?: ConsentStore;
+  deletionStore?: DeletionStore;
+  sessionRetentionDays?: number;
   lifecycle?: SessionLifecycle;
   runtimeOwnership?: RuntimeOwnership;
   preparationStore?: PreparationStore;
@@ -263,7 +267,10 @@ export function buildServer(opts: ServerOptions) {
     sessions: store,
     evaluationQueue,
     ...(opts.consentStore ? { consentStore: opts.consentStore } : {}),
+    ...(opts.deletionStore ? { deletionStore: opts.deletionStore } : {}),
+    ...(opts.sessionRetentionDays ? { sessionRetentionDays: opts.sessionRetentionDays } : {}),
     preparationStore,
+    ...(opts.identityAdmin ? { identityAdmin: opts.identityAdmin } : {}),
   });
 
   return app;
@@ -334,6 +341,7 @@ export async function start(): Promise<void> {
   // durable repositories; local development may still run explicitly in memory.
   const databaseUrl = config.databaseUrl;
   const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl, undefined, config.admission) : undefined;
+  const identityAdmin = identityAdminFromEnv(process.env);
 
   const app = buildServer({
     library,
@@ -343,6 +351,7 @@ export async function start(): Promise<void> {
     webOrigin: config.webOrigin,
     release: config.release,
     rateLimits: config.rateLimits,
+    sessionRetentionDays: config.sessionRetentionDays,
     maxRealtimeMintsPerSession: config.admission.maxRealtimeMintsPerSession,
     realtimeCircuit,
     status: () => ({
@@ -357,6 +366,7 @@ export async function start(): Promise<void> {
     }),
     ...(durableStorage ? { readinessChecks: [{ name: "storage", check: durableStorage.storageReadiness }] } : {}),
     ...(authenticator ? { authenticator } : {}),
+    ...(identityAdmin ? { identityAdmin } : {}),
     ...(runner ? { runner } : {}),
     classifier,
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),

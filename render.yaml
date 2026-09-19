@@ -31,6 +31,8 @@ services:
         value: "6"
       - key: RUN_REQUESTS_PER_MINUTE
         value: "10"
+      - key: SESSION_RETENTION_DAYS
+        value: "365"
       - key: WEB_ORIGIN
         sync: false
       - key: DATABASE_URL

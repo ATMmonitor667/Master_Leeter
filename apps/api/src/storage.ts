@@ -1,5 +1,6 @@
 import { PgSocketTickets } from "./modules/auth/pg-socket-tickets.js";
 import { PgConsentStore } from "./modules/privacy/pg-consent-store.js";
+import { PgDeletionStore } from "./modules/privacy/pg-deletion-store.js";
 import { PgReportJobStore } from "./modules/report/pg-report-store.js";
 import { PgDatabase } from "./modules/session/pg-database.js";
 import { PgEventLog, type QueryClient, type TransactionPool } from "./modules/session/pg-event-log.js";
@@ -22,6 +23,7 @@ const tableRequirements = [
   ["runtime_inputs", ["SELECT", "INSERT", "UPDATE"]],
   ["interview_preparations", ["SELECT", "INSERT", "UPDATE"]],
   ["api_rate_limits", ["SELECT", "INSERT", "UPDATE"]],
+  ["privacy_deletion_requests", ["SELECT", "INSERT", "UPDATE"]],
 ] as const;
 
 export async function assertDurableSchema(db: QueryClient): Promise<void> {
@@ -75,6 +77,7 @@ export async function createSupabaseStorage(
     runtimeOwnership: new PgRuntimeOwnership(db),
     socketTickets: new PgSocketTickets(db),
     consentStore: new PgConsentStore(db),
+    deletionStore: new PgDeletionStore(db),
     reportJobStore: new PgReportJobStore(db),
     preparationStore: new PgPreparationStore(db),
     rateLimiter: new PgRateLimitStore(db),

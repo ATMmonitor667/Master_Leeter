@@ -373,6 +373,21 @@ Implementation checkpoint (branch `codex-production-07-product-completion`):
   application table without printing database credentials. The runbook keeps
   managed Supabase recovery and post-backup erasure reconciliation as release
   gates rather than overstating what an application-schema archive protects.
+- Added a checksum-pinned numbered migration command with offline plan, remote
+  status, exact target confirmation, advisory locking, drift detection and one
+  transaction for schema plus journal updates. Pre-existing untracked schemas
+  are refused for explicit reconciliation instead of being silently adopted.
+- Added migration 013 and a fenced privacy queue. User deletion is durable before
+  redaction, unfinished work recovers after restart, and completed interviews are
+  automatically tombstoned/redacted after the configured 365-day window.
+  Erasure-ledger export/replay artifacts keep post-backup deletions enforceable on
+  an isolated restore before admission is reopened.
+- Added server-only Supabase Auth identity deletion after the practice-data queue
+  fully succeeds. Account retries attach to an existing unfinished erasure so a
+  second request cannot delete authentication while private data is still pending.
+- Added public beta FAQ, privacy and support pages, canonical/Open Graph metadata,
+  sitemap and robots controls. History, login, settings, interview and report
+  routes emit no-index headers; preview deployments disallow all crawlers.
 - API/web typechecks, compiled owner-isolation/pagination smoke and the web
   production build pass. Tests were not added or run by owner instruction.
 

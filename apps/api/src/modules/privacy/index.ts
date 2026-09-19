@@ -1,17 +1,21 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
+import type { IdentityAdmin } from "../auth/identity-admin.js";
 import type { EvaluationQueue } from "../report/index.js";
 import type { EventLog } from "../session/event-log.js";
 import type { SessionStore } from "../session/session-store.js";
 import type { PreparationStore } from "../preparation/store.js";
+import { SessionNotFoundError } from "../session/session-store.js";
 import {
   CURRENT_NOTICE_VERSION,
   ConsentScopeSchema,
+  RETENTION_DAYS,
   isPermitted,
 } from "./consent.js";
 import { InMemoryConsentStore, type ConsentStore } from "./consent-store.js";
 import { type Deletable, type DeletionRequest, executeDeletion } from "./deletion.js";
+import { InMemoryDeletionStore, type DeletionClaim, type DeletionStore, type NewDeletion } from "./deletion-store.js";
 
 export {
   CONSENT_SCOPES,
@@ -28,6 +32,8 @@ export {
   type ConsentState,
 } from "./consent.js";
 export { InMemoryConsentStore, type ConsentStore } from "./consent-store.js";
+export { InMemoryDeletionStore, type DeletionClaim, type DeletionReason, type DeletionStore } from "./deletion-store.js";
+export { PgDeletionStore } from "./pg-deletion-store.js";
 export {
   REDACTED,
   executeDeletion,
@@ -88,6 +94,9 @@ export interface PrivacyModuleOptions {
   evaluationQueue?: EvaluationQueue;
   consentStore?: ConsentStore;
   preparationStore?: PreparationStore;
+  deletionStore?: DeletionStore;
+  sessionRetentionDays?: number;
+  identityAdmin?: IdentityAdmin;
 }
 
 export async function registerPrivacyModule(
@@ -95,6 +104,7 @@ export async function registerPrivacyModule(
   opts: PrivacyModuleOptions,
 ): Promise<void> {
   const consents = opts.consentStore ?? new InMemoryConsentStore();
+  const deletions = opts.deletionStore ?? new InMemoryDeletionStore();
 
   const stores: Deletable[] = [
     new ReportStore(opts.evaluationQueue ?? {}),
@@ -107,6 +117,65 @@ export async function registerPrivacyModule(
   ];
 
   const principal = userIdFor;
+  const leaseMs = 2 * 60_000;
+
+  async function processDeletion(claim: DeletionClaim) {
+    const available: string[] = [];
+    for (const id of claim.sessionIds) {
+      try { await opts.sessions.tombstone(id, claim.requestedAt); available.push(id); }
+      catch (error) { if (!(error instanceof SessionNotFoundError)) throw error; }
+    }
+    const request: DeletionRequest = {
+      scope: claim.scope, userId: claim.userId, requestedAt: claim.requestedAt,
+      ...(claim.scope === "SESSION" && available[0] ? { sessionId: available[0] } : {}),
+    };
+    const receipt = await executeDeletion(request, {
+      eventLog: opts.eventLog,
+      sessionsOf: async () => available,
+      stores,
+    });
+    if (receipt.unreachable.length) throw new Error("DELETION_INCOMPLETE");
+    if (claim.scope === "ACCOUNT") await consents.deleteForUser(claim.userId);
+    await deletions.complete(claim.id, claim.token, receipt);
+    return receipt;
+  }
+
+  async function submitDeletion(input: NewDeletion) {
+    const queued = input.scope === "ACCOUNT"
+      ? await deletions.pendingForUser(input.userId) ?? await deletions.enqueue(input)
+      : await deletions.enqueue(input);
+    if (queued.completedAt && queued.receipt) return queued.receipt;
+    const claim = await deletions.claim(queued.id, leaseMs);
+    if (!claim) throw new Error("DELETION_BUSY");
+    try { return await processDeletion(claim); }
+    catch (error) { await deletions.release(claim.id, claim.token); throw error; }
+  }
+
+  let maintenance: Promise<void> | undefined;
+  const maintain = (): Promise<void> => {
+    maintenance ??= (async () => {
+      const recovered = await deletions.recoverable(20, leaseMs);
+      for (const claim of recovered) {
+        try { await processDeletion(claim); }
+        catch { await deletions.release(claim.id, claim.token); app.log.error("privacy deletion recovery failed"); }
+      }
+      const days = opts.sessionRetentionDays ?? RETENTION_DAYS.TRANSCRIPT;
+      const before = new Date(Date.now() - days * 86_400_000).toISOString();
+      for (const session of await opts.sessions.expiredEnded(before, 20)) {
+        try {
+          await submitDeletion({
+            dedupeKey: `session:${session.id}`, scope: "SESSION", reason: "RETENTION",
+            userId: session.userId, sessionIds: [session.id], requestedAt: new Date().toISOString(),
+          });
+        } catch { app.log.error("expired session deletion failed"); }
+      }
+    })().finally(() => { maintenance = undefined; });
+    return maintenance;
+  };
+  const maintenanceTimer = setInterval(() => { void maintain(); }, 60 * 60_000);
+  maintenanceTimer.unref();
+  app.addHook("onReady", maintain);
+  app.addHook("onClose", async () => { clearInterval(maintenanceTimer); await maintenance; });
 
   app.get("/privacy/consent", async (req, reply) => {
     const userId = principal(req);
@@ -145,33 +214,18 @@ export async function registerPrivacyModule(
     const session = await opts.sessions.get(id);
     if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
 
-    // M2-8 fills this in properly. Until then the check is honest about being
-    // a placeholder rather than pretending to be authorization.
     if (session.userId !== userId) {
       return reply.code(403).send({ error: "NOT_YOURS" });
     }
 
-    const request: DeletionRequest = {
-      // Active deletion is refused until finalization drains live observations.
-      scope: "SESSION",
-      userId,
-      sessionId: id,
-      requestedAt: new Date().toISOString(),
-    };
-
     if (!session.endedAt) return reply.code(409).send({ error: "END_SESSION_BEFORE_DELETION" });
-
-    await opts.sessions.tombstone(id, request.requestedAt);
-
-    const receipt = await executeDeletion(request, {
-      eventLog: opts.eventLog,
-      sessionsOf: async () => [id],
-      stores,
-    });
-
-    // 200 with a receipt, not 204. The user should be able to see what was
-    // reached and what was not.
-    return reply.send(receipt);
+    const requestedAt = new Date().toISOString();
+    try {
+      return reply.send(await submitDeletion({
+        dedupeKey: `session:${id}`, scope: "SESSION", reason: "USER_REQUEST",
+        userId, sessionIds: [id], requestedAt,
+      }));
+    } catch { return reply.code(503).send({ error: "DELETION_PENDING" }); }
   });
 
   app.delete("/privacy/account", async (req, reply) => {
@@ -181,15 +235,30 @@ export async function registerPrivacyModule(
       if (!(await opts.sessions.get(id))?.endedAt) return reply.code(409).send({ error: "END_SESSION_BEFORE_DELETION" });
     }
     const requestedAt = new Date().toISOString();
-    for (const id of sessionIds) await opts.sessions.tombstone(id, requestedAt);
+    try {
+      return reply.send(await submitDeletion({
+        dedupeKey: `account:${userId}:${requestedAt}`, scope: "ACCOUNT", reason: "USER_REQUEST",
+        userId, sessionIds, requestedAt,
+      }));
+    } catch { return reply.code(503).send({ error: "DELETION_PENDING" }); }
+  });
 
-    const receipt = await executeDeletion(
-      { scope: "ACCOUNT", userId, requestedAt },
-      { eventLog: opts.eventLog, sessionsOf: async () => sessionIds, stores },
-    );
-
-    await consents.deleteForUser(userId);
-    return reply.send(receipt);
+  app.delete("/privacy/account/identity", async (req, reply) => {
+    if (!opts.identityAdmin) return reply.code(503).send({ error: "IDENTITY_DELETION_UNAVAILABLE" });
+    const userId = principal(req);
+    const sessionIds = await opts.sessions.idsForUser(userId);
+    for (const id of sessionIds) {
+      if (!(await opts.sessions.get(id))?.endedAt) return reply.code(409).send({ error: "END_SESSION_BEFORE_DELETION" });
+    }
+    const requestedAt = new Date().toISOString();
+    try {
+      const receipt = await submitDeletion({
+        dedupeKey: `account:${userId}:${requestedAt}`, scope: "ACCOUNT", reason: "USER_REQUEST",
+        userId, sessionIds, requestedAt,
+      });
+      await opts.identityAdmin.deleteUser(userId);
+      return reply.send({ ...receipt, identityDeleted: true });
+    } catch { return reply.code(503).send({ error: "ACCOUNT_DELETION_PENDING" }); }
   });
 
   /**

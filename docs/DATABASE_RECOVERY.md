@@ -46,6 +46,17 @@ count, streams the checksum, and asks `pg_restore` to read the archive catalogue
 Record the archive location, manifest digest, release identifier, operator,
 start/end time, and verification result in the incident or release record.
 
+Export the durable erasure ledger after the archive and copy both artifacts to
+the protected recovery location:
+
+```text
+pnpm privacy:ledger:export -- C:\secure-backups\master-leeter-erasure-2026-09-17.json
+```
+
+Set `ERASURE_LEDGER_DATABASE_URL` to the current source database. The JSON is
+private operational data: it contains pseudonymous account and session IDs so a
+restore can find every record that must remain deleted.
+
 ## Restore drill
 
 Create a fresh isolated database with no public traffic. Set:
@@ -62,6 +73,20 @@ Then run:
 npm run db:restore -- C:\secure-backups\master-leeter-2026-09-16.dump
 ```
 
+After migrations are current, queue the separately exported erasures against
+the isolated restore:
+
+```text
+ERASURE_REPLAY_ACK=I_UNDERSTAND_THIS_REPLAYS_PRIVATE_DATA_DELETIONS
+pnpm privacy:ledger:replay -- C:\secure-backups\master-leeter-erasure-2026-09-17.json
+```
+
+Boot the API with `ADMISSION_ENABLED=false`. Its fenced privacy worker reapplies
+the queued tombstones, event redaction, report/preparation removal and account
+consent removal. Point `ERASURE_LEDGER_DATABASE_URL` at the isolated restore and
+run `pnpm privacy:ledger:status`; exit code 2 means work is still pending. Do not
+expose the restore until it reports zero pending requests and the checks below pass.
+
 Restore verifies the manifest before connecting, rejects a destination with the
 same fingerprint as the backup source, cleans archive-owned objects inside one
 transaction, and checks all current application tables. A successful command is
@@ -72,9 +97,8 @@ default `postgres` database name is supported; template databases are refused.
 Before enabling any application against the
 restored database:
 
-1. Reconcile every deletion and retention action recorded after the backup.
-   The durable, external erasure ledger is still an open production gate, so a
-   restored database must remain isolated until that control exists and passes.
+1. Export and replay every deletion and retention action recorded after the
+   backup. Verify the replay queue drains before the database is exposed.
 2. Apply only forward migrations that are newer than the archive and record
    their exact revisions.
 3. Boot the matching API release with admission disabled and run liveness,

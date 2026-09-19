@@ -17,6 +17,7 @@ export interface RuntimeConfig {
   alertWebhookToken?: string;
   admission: SessionAdmissionPolicy;
   rateLimits: RateLimitPolicy;
+  sessionRetentionDays: number;
 }
 
 function validOrigin(value: string | undefined, protocols: readonly string[]): boolean {
@@ -94,6 +95,7 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
     realtimeMintsPerMinute: limit("REALTIME_MINTS_PER_MINUTE", "6"),
     runRequestsPerMinute: limit("RUN_REQUESTS_PER_MINUTE", "10"),
   };
+  const sessionRetentionDays = limit("SESSION_RETENTION_DAYS", "365");
 
   if (production) {
     const required = [
@@ -112,6 +114,7 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
       "PREPARATIONS_PER_MINUTE",
       "REALTIME_MINTS_PER_MINUTE",
       "RUN_REQUESTS_PER_MINUTE",
+      "SESSION_RETENTION_DAYS",
     ] as const;
     for (const name of required) if (!env[name]?.trim()) invalid.add(name);
     if (!(env["SUPABASE_SECRET_KEY"] || env["SUPABASE_SERVICE_ROLE_KEY"])?.trim()) {
@@ -140,5 +143,6 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConf
     ...(alertWebhookToken ? { alertWebhookToken } : {}),
     admission,
     rateLimits,
+    sessionRetentionDays,
   };
 }

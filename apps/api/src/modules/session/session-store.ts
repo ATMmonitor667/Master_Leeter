@@ -60,6 +60,8 @@ export interface SessionStore {
   get(id: string): Promise<InterviewSession | null>;
   /** Started sessions whose server-owned interview budget has elapsed. */
   dueForCompletion(at?: string, limit?: number): Promise<InterviewSession[]>;
+  /** Ended sessions whose private evidence has exceeded the retention window. */
+  expiredEnded(before: string, limit?: number): Promise<InterviewSession[]>;
   /** Immutable private scenario snapshot used to rebuild a runtime after restart. */
   pinnedScenario(id: string): Promise<LoadedScenario | null>;
   /** Idempotent. Ending an ended session returns it unchanged. */
@@ -142,6 +144,13 @@ export class InMemorySessionStore implements SessionStore {
     return [...this.sessions.values()]
       .filter((session) => !this.tombstones.has(session.id) && !session.endedAt &&
         Boolean(session.startedAt) && remainingSeconds(session, nowMs) === 0)
+      .slice(0, limit);
+  }
+
+  async expiredEnded(before: string, limit = 100): Promise<InterviewSession[]> {
+    return [...this.sessions.values()]
+      .filter((session) => !this.tombstones.has(session.id) && Boolean(session.endedAt) && session.endedAt! <= before)
+      .sort((a, b) => a.endedAt!.localeCompare(b.endedAt!) || a.id.localeCompare(b.id))
       .slice(0, limit);
   }
 

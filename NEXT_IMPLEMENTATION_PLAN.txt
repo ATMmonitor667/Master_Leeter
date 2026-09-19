@@ -626,8 +626,9 @@ I07 FIRST CODE CHECKPOINT — ACCOUNT HISTORY
   deletes ended sessions through the tombstone/redaction pipeline. Settings can
   erase all practice data only after typed confirmation, displays the deletion
   receipt and preserves partial-failure warnings instead of claiming success.
-- The UI explicitly distinguishes practice-data deletion from removal of the
-  Supabase Auth identity; auth-identity deletion and retention automation remain.
+- Settings separates practice-data erasure from permanent account deletion.
+  Server-side Auth identity deletion runs only after durable private-data erasure;
+  completed interview evidence now expires automatically after 365 days.
 - Follow-up: operator-only PostgreSQL commands now create a custom-format public
   schema archive plus a SHA-256/release manifest, verify the archive catalogue,
   and restore only after source/destination fingerprint separation, exact target
@@ -635,3 +636,8 @@ I07 FIRST CODE CHECKPOINT — ACCOUNT HISTORY
   current application table. `docs/DATABASE_RECOVERY.md` records the full drill
   and forward-rollback boundary; PostgreSQL client tools and a disposable target
   are unavailable locally, so a real archive/restore remains external evidence.
+- Follow-up: numbered migration planning/apply with checksum drift protection,
+  durable privacy deletion/retention recovery, external erasure-ledger replay,
+  Auth identity deletion and public beta FAQ/privacy/support surfaces are now
+  implemented. Scope is a free capped beta with model-estimated grades; sandbox
+  execution and billing are explicitly deferred. See docs/PRODUCTION_REMAINING.md.
