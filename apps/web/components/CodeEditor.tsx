@@ -25,7 +25,7 @@ export function CodeEditor({
 }) {
   return (
     <div className="editor-shell">
-      <PanelLabel><span>{language} · solution.py</span><span className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "offline" ? "Waiting for connection" : "Saving…"}</span></PanelLabel>
+      <PanelLabel><span>{language} · solution.py</span><span role="status" aria-live="polite" aria-atomic="true" className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "offline" ? "Waiting for connection" : "Saving…"}</span></PanelLabel>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Editor
           height="100%"
@@ -53,6 +53,8 @@ export function CodeEditor({
             smoothScrolling: true,
             cursorBlinking: "smooth",
             padding: { top: 14, bottom: 14 },
+            accessibilitySupport: "on",
+            ariaLabel: `${language} solution editor`,
             // Hover stays on: reading a docstring is not the same as being told
             // which data structure to use.
           }}

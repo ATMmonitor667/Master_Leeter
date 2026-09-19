@@ -23,6 +23,7 @@ export function Notepad({
     <div className="panel-shell">
       <PanelLabel>Notes</PanelLabel>
       <textarea
+        aria-label="Interview notes"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         spellCheck={false}

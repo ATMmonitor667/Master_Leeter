@@ -1,4 +1,4 @@
-import { InterviewModeSchema, type InterviewState, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
+import { InterviewModeSchema, InterviewerToneSchema, type InterviewState, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
@@ -70,6 +70,7 @@ const CreateSessionBody = z.object({
   scenarioRef: z.string().min(1).max(200).optional(),
   mode: InterviewModeSchema.default("MOCK"),
   language: z.string().default("python"),
+  interviewerTone: InterviewerToneSchema.default("NORMAL"),
 });
 
 const VoiceToolBody = z.object({
@@ -538,6 +539,7 @@ export async function registerSessionModule(
           scenario,
           mode: body.data.mode,
           language: body.data.language,
+          interviewerTone: body.data.interviewerTone,
           idempotencyKey,
         };
         session = opts.lifecycle

@@ -13,6 +13,7 @@ import { SessionClient } from "../../../lib/session-client";
 import { apiFetch } from "../../../lib/auth";
 import { apiBaseUrl } from "../../../lib/public-config";
 import { connectSessionTransport } from "../../../lib/session-transport";
+import { useDialogFocus } from "../../../lib/use-dialog-focus";
 import { VoiceSession, type VoiceDeviceState, type VoiceStatus } from "../../../lib/voice-session";
 
 /**
@@ -317,6 +318,16 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
     }
   }, [connected, pendingSaves, sessionId, stage, supportCategory, supportReportId, voiceStatus]);
 
+  const closeEndDialog = useCallback(() => { if (!ending) setConfirmingEnd(false); }, [ending]);
+  const closeSupportDialog = useCallback(() => {
+    if (supportState !== "SENDING") setReportingProblem(false);
+  }, [supportState]);
+  const endDialogRef = useDialogFocus<HTMLElement>(confirmingEnd, closeEndDialog);
+  const supportDialogRef = useDialogFocus<HTMLElement>(reportingProblem, closeSupportDialog);
+  useEffect(() => {
+    if (supportState === "SENT") supportDialogRef.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+  }, [supportState, supportDialogRef]);
+
   const header = useMemo(
     () => (
       <header className="workspace-header">
@@ -415,13 +426,13 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       </div>
 
       {confirmingEnd && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setConfirmingEnd(false)}>
-          <section className="end-dialog" role="dialog" aria-modal="true" aria-labelledby="end-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeEndDialog}>
+          <section ref={endDialogRef} tabIndex={-1} className="end-dialog" role="dialog" aria-modal="true" aria-labelledby="end-title" onMouseDown={(event) => event.stopPropagation()}>
             <span className="dialog-kicker">Complete this session?</span>
             <h2 id="end-title">Your report will use everything captured so far.</h2>
             <p>You can&apos;t return to the live interview after ending it. Your latest code and notes will be saved first.</p>
             <div className="dialog-actions">
-              <button className="secondary-button" onClick={() => setConfirmingEnd(false)}>Keep interviewing</button>
+              <button data-autofocus className="secondary-button" onClick={closeEndDialog}>Keep interviewing</button>
               <button className="danger-button" onClick={onEnd} disabled={ending}>{ending ? "Saving final inputs…" : "Complete and view report"}</button>
             </div>
           </section>
@@ -429,18 +440,18 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       )}
 
       {reportingProblem && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => supportState !== "SENDING" && setReportingProblem(false)}>
-          <section className="end-dialog support-dialog" role="dialog" aria-modal="true" aria-labelledby="support-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeSupportDialog}>
+          <section ref={supportDialogRef} tabIndex={-1} className="end-dialog support-dialog" role="dialog" aria-modal="true" aria-labelledby="support-title" onMouseDown={(event) => event.stopPropagation()}>
             <span className="dialog-kicker">Private diagnostic report</span>
             <h2 id="support-title">Report a problem</h2>
             {supportState === "SENT" ? <>
               <p role="status">Your report was saved. Reference: <code>{supportReference}</code></p>
               <p>The diagnostic record expires after 30 days.</p>
-              <div className="dialog-actions"><button className="primary-button" onClick={() => setReportingProblem(false)}>Done</button></div>
+              <div className="dialog-actions"><button data-autofocus className="primary-button" onClick={closeSupportDialog}>Done</button></div>
             </> : <>
               <p>This sends connection, voice, stage, save-backlog, online, and page-visibility state. It never sends your code, notes, transcript, audio, device names, or free text.</p>
               <label htmlFor="support-category">What stopped working?</label>
-              <select id="support-category" value={supportCategory} onChange={(event) => setSupportCategory(event.target.value as SupportCategory)} disabled={supportState === "SENDING"}>
+              <select data-autofocus id="support-category" value={supportCategory} onChange={(event) => setSupportCategory(event.target.value as SupportCategory)} disabled={supportState === "SENDING"}>
                 <option value="VOICE">Voice or microphone</option>
                 <option value="CONNECTION">Connection</option>
                 <option value="SAVING">Code or notes saving</option>
@@ -449,7 +460,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
               </select>
               {supportState === "ERROR" && <p className="support-error" role="alert">The report could not be saved. Retry, or use the Support page after the interview.</p>}
               <div className="dialog-actions">
-                <button className="secondary-button" onClick={() => setReportingProblem(false)} disabled={supportState === "SENDING"}>Cancel</button>
+                <button className="secondary-button" onClick={closeSupportDialog} disabled={supportState === "SENDING"}>Cancel</button>
                 <button className="primary-button" onClick={sendProblemReport} disabled={supportState === "SENDING"}>{supportState === "SENDING" ? "Sending…" : "Send diagnostic report"}</button>
               </div>
             </>}

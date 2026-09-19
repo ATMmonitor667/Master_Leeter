@@ -78,7 +78,7 @@ export function VoiceControls({
   return (
     <div className="voice-controls">
       {error && (
-        <span className="voice-error" title={error}>
+        <span className="voice-error" title={error} role="alert">
           {error}
         </span>
       )}

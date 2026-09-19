@@ -6,8 +6,9 @@ const items = [
   ["How long is an interview?", "The interview budget is 45 minutes. Preparation happens before the clock. The server owns the deadline, and reconnecting does not start a new interview."],
   ["Will the interviewer constantly talk?", "No. Silence is an application decision. The interviewer speaks only for the oral prompt, an allowed clarification or probe, a bounded hint, a transition, or completion."],
   ["Do the tones change my grade?", "No. Extra nice, Normal and Mean change presentation only. Tone is not a scoring dimension."],
+  ["Do I have to paste a resume?", "No. Resume context is optional. If you add it, you review every extracted fact before the interviewer may use it."],
   ["Is this a hiring assessment?", "No. It is deliberate practice. Scores are feedback on one simulated session and are not validated predictions of hiring performance."],
-  ["What happens to my data?", "Raw audio is not retained. Resume text expires after 24 hours; completed interview evidence expires after 365 days. You can export or delete it sooner."],
+  ["What happens to my data?", "Raw audio is not retained. Resume text expires after 24 hours, diagnostic reports after 30 days, and completed interview evidence after 365 days. You can export or delete interview data sooner."],
 ];
 
 export default function FaqPage() {

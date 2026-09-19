@@ -38,7 +38,7 @@ export function Timer({
   const seconds = local % 60;
 
   return (
-    <div aria-label="Time remaining" className="timer">
+    <div aria-label={ready ? `${minutes} minutes ${seconds} seconds remaining` : "Time remaining is loading"} className="timer">
       <span>{ready ? `${minutes}:${String(seconds).padStart(2, "0")}` : "--:--"}</span>
       <small>remaining</small>
     </div>

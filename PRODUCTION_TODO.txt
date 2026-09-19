@@ -116,9 +116,10 @@ PRODUCT / PRIVACY / OPERATIONS
     are implemented. Durable deletion recovery, 365-day automatic expiry and
     external restore-replay artifacts and Auth identity deletion are implemented;
     reviewed policy copy and live replay evidence remain.
-[~] P20 Owner-scoped paginated history and active/report navigation implemented;
-    export/deletion settings, beta FAQ, privacy and support surfaces are
-    implemented; onboarding polish and accessibility acceptance remain.
+[~] P20 Owner-scoped history, account/public surfaces, optional-resume launch,
+    skip navigation, keyboard radio groups, trapped/Escape dialogs, status/error
+    announcements and reduced motion are implemented; real screen-reader,
+    contrast and supported-device acceptance remain.
 [~] P21 Atomic monthly/account/global admission, shared rate limits, provider
     breakers, voice mint caps and kill switch are implemented; hard provider
     voice-lifetime enforcement and measured cost acceptance remain.

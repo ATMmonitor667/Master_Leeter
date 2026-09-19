@@ -388,6 +388,17 @@ Implementation checkpoint (branch `codex-production-07-product-completion`):
 - Added public beta FAQ, privacy and support pages, canonical/Open Graph metadata,
   sitemap and robots controls. History, login, settings, interview and report
   routes emit no-index headers; preview deployments disallow all crawlers.
+- Added durable, rate-limited in-session incident reports with a closed diagnostic
+  schema, 30-day expiry, deletion participation and redacted warning delivery to
+  the operational webhook. Code, notes, transcripts, audio, device names and
+  free text cannot enter the report payload.
+- Resume personalization is now optional in the actual launch path. Direct
+  sessions preserve tone and mode with an idempotent retry key; reviewed-resume
+  sessions keep their existing preparation flow.
+- Added skip navigation, roving-keyboard radio groups, trapped focus and Escape
+  handling for dialogs, explicit editor/note labels, live save/stage/error status,
+  a microphone level meter and timer labels. Real assistive-technology and device
+  acceptance remain release evidence rather than a code claim.
 - API/web typechecks, compiled owner-isolation/pagination smoke and the web
   production build pass. Tests were not added or run by owner instruction.
 

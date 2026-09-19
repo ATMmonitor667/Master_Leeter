@@ -25,7 +25,7 @@ export function StageProgress({ stage }: { stage: InterviewState }) {
   const active = STAGES.findIndex((item) => item.state === stage);
 
   return (
-    <div className="stage-progress" aria-label={`Interview stage: ${STAGE_LABELS[stage]}`}>
+    <div className="stage-progress" role="status" aria-live="polite" aria-atomic="true" aria-label={`Interview stage: ${STAGE_LABELS[stage]}`}>
       {STAGES.map((item, index) => (
         <div
           key={item.state}

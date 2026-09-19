@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listMicrophones } from "../lib/voice-session";
+import { useDialogFocus } from "../lib/use-dialog-focus";
 
 export function VoicePreflight({
   onCancel,
@@ -19,6 +20,7 @@ export function VoicePreflight({
   const streamRef = useRef<MediaStream | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const frameRef = useRef<number | null>(null);
+  const dialogRef = useDialogFocus<HTMLElement>(true, onCancel);
 
   const browserReady = typeof window !== "undefined" &&
     Boolean(navigator.mediaDevices?.getUserMedia) &&
@@ -105,7 +107,7 @@ export function VoicePreflight({
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
-      <section className="voice-preflight" role="dialog" aria-modal="true" aria-labelledby="preflight-title" onMouseDown={(event) => event.stopPropagation()}>
+      <section ref={dialogRef} tabIndex={-1} className="voice-preflight" role="dialog" aria-modal="true" aria-labelledby="preflight-title" onMouseDown={(event) => event.stopPropagation()}>
         <span className="dialog-kicker">Voice check</span>
         <h2 id="preflight-title">Check your microphone and speaker</h2>
         <p>Your interview starts only after voice connects and the opening brief finishes.</p>
@@ -126,7 +128,7 @@ export function VoicePreflight({
                   {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || "Microphone"}</option>)}
                 </select>
               )}
-              <div className="mic-meter" aria-label="Microphone input level"><span style={{ width: `${Math.round(level * 100)}%` }} /></div>
+              <div className="mic-meter" role="meter" aria-label="Microphone input level" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(level * 100)}><span style={{ width: `${Math.round(level * 100)}%` }} /></div>
               <button className="secondary-button" type="button" onClick={() => void checkMicrophone()} disabled={!browserReady || checking}>
                 {checking ? "Checking…" : micReady ? "Retry microphone" : "Allow microphone"}
               </button>
@@ -143,7 +145,7 @@ export function VoicePreflight({
         <p className="preflight-help">If a device disconnects during the interview, reconnect it and use Retry voice. Saved code, notes, and interview time remain on the server.</p>
 
         <div className="dialog-actions">
-          <button className="secondary-button" type="button" onClick={() => { stopMeter(); onCancel(); }}>Cancel</button>
+          <button data-autofocus className="secondary-button" type="button" onClick={() => { stopMeter(); onCancel(); }}>Cancel</button>
           <button className="primary-button" type="button" onClick={continueToInterview} disabled={!browserReady || !micReady}>Start interview voice</button>
         </div>
       </section>

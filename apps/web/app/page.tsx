@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AccountMenu } from "../components/AccountMenu";
 import { apiFetch, SignInRequired } from "../lib/auth";
 import { apiUrl } from "../lib/public-config";
@@ -43,6 +43,23 @@ const TONES: Array<{ id: Tone; title: string; description: string }> = [
   { id: "MEAN", title: "Mean", description: "Blunt and demanding, without insults or a scoring penalty." },
 ];
 
+function moveRadio<T extends string>(
+  event: ReactKeyboardEvent<HTMLButtonElement>,
+  values: readonly T[],
+  current: T,
+  select: (value: T) => void,
+) {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const currentIndex = values.indexOf(current);
+  const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? values.length - 1
+    : (currentIndex + (["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1) + values.length) % values.length;
+  const next = values[nextIndex]!;
+  select(next);
+  const radios = event.currentTarget.parentElement?.querySelectorAll<HTMLElement>("[role='radio']");
+  requestAnimationFrame(() => radios?.[nextIndex]?.focus());
+}
+
 export default function Home() {
   const [scenarios, setScenarios] = useState<CatalogueEntry[]>([]);
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
@@ -55,6 +72,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const preparationKey = useRef<string | null>(null);
+  const sessionKey = useRef<string | null>(null);
 
   useEffect(() => {
     fetch(apiUrl("/v1/scenarios"), { redirect: "error" })
@@ -139,6 +157,27 @@ export default function Home() {
     }
   }
 
+  async function startInterview(scenarioRef: string) {
+    if (preparation) { await startPrepared(scenarioRef); return; }
+    setStarting(true);
+    setError(null);
+    try {
+      sessionKey.current ??= crypto.randomUUID();
+      const response = await apiFetch("/v1/interview-sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": sessionKey.current },
+        body: JSON.stringify({ scenarioRef, mode, language: "python", interviewerTone: tone }),
+      });
+      const result = await response.json().catch(() => ({})) as { sessionId?: string; error?: string };
+      if (!response.ok || !result.sessionId) throw new Error(result.error ?? `Interview could not start (${response.status}).`);
+      window.location.href = `/interview/${result.sessionId}`;
+    } catch (err) {
+      if (err instanceof SignInRequired) { window.location.assign("/login"); return; }
+      setError(err instanceof Error ? err.message : "Interview could not start.");
+      setStarting(false);
+    }
+  }
+
   async function eraseResume() {
     if (!preparation) return;
     try {
@@ -206,8 +245,8 @@ export default function Home() {
         <div className="setup-grid">
         <div className="setup-card preparation-card">
           <header className="setup-card-header">
-            <h2>Add resume context</h2>
-            <p>Paste your resume, review every extracted fact, and erase the source text whenever you want.</p>
+            <h2>Add resume context <small>(optional)</small></h2>
+            <p>Skip this section, or paste your resume, review every extracted fact, and erase the source text whenever you want.</p>
           </header>
           {!preparation ? <>
             <label className="field-label" htmlFor="resume">Resume text</label>
@@ -222,8 +261,10 @@ export default function Home() {
             />
             <div className="tone-picker" role="radiogroup" aria-label="Interviewer tone">
               {TONES.map((item) => <button key={item.id} type="button" role="radio" aria-checked={tone === item.id}
+                tabIndex={tone === item.id ? 0 : -1}
                 className={`tone-option${tone === item.id ? " active" : ""}`}
-                onClick={() => { setTone(item.id); preparationKey.current = null; }}>
+                onKeyDown={(event) => moveRadio(event, TONES.map((option) => option.id), tone, (next) => { setTone(next); preparationKey.current = null; sessionKey.current = null; })}
+                onClick={() => { setTone(item.id); preparationKey.current = null; sessionKey.current = null; }}>
                 <strong>{item.title}</strong><span>{item.description}</span>
               </button>)}
             </div>
@@ -260,8 +301,10 @@ export default function Home() {
                 type="button"
                 role="radio"
                 aria-checked={mode === item}
+                tabIndex={mode === item ? 0 : -1}
                 className={`mode-option${mode === item ? " active" : ""}`}
-                onClick={() => setMode(item)}
+                onKeyDown={(event) => moveRadio(event, MODES, mode, (next) => { setMode(next); sessionKey.current = null; })}
+                onClick={() => { setMode(item); sessionKey.current = null; }}
               >
                 <span className="radio-ring" aria-hidden="true" />
                 <span>
@@ -284,7 +327,7 @@ export default function Home() {
               <button
                 key={scenario.ref}
                 className={`scenario-card${selectedRef === scenario.ref ? " selected" : ""}`}
-                onClick={() => setSelectedRef(scenario.ref)}
+                onClick={() => { setSelectedRef(scenario.ref); sessionKey.current = null; }}
                 disabled={starting}
                 aria-pressed={selectedRef === scenario.ref}
               >
@@ -306,7 +349,7 @@ export default function Home() {
               <span className="launch-label">Ready when you are</span>
               <strong>{selected ? `${selected.level} · 45 minutes` : "Choose a session"}</strong>
             </div>
-            <button className="primary-button launch-button" onClick={() => selected && startPrepared(selected.ref)} disabled={!selected || !preparation || starting}>
+            <button className="primary-button launch-button" onClick={() => selected && void startInterview(selected.ref)} disabled={!selected || starting}>
               {starting ? <><span className="button-spinner" /> Preparing room…</> : <>Enter interview <span>→</span></>}
             </button>
           </div>
