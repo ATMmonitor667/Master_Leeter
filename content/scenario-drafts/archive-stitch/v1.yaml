@@ -1,0 +1,145 @@
+# Private draft. Do not activate before recorded review.
+id: "archive-stitch@1"
+scenarioId: "archive-stitch"
+version: 1
+status: "DRAFT"
+provenance:
+  type: "ORIGINAL"
+  author: "Codex assisted draft"
+  reviewNotes: "New framing authored for Master Leeter from a standard algorithmic concept. Human technical, similarity and oral review pending. No completed review or licensing clearance is claimed."
+target:
+  level: "MID"
+  topics:
+    - "dynamic programming"
+    - "strings"
+  expectedMinutes: 45
+oralBrief:
+  openingScript: "An archive stores a message without separators and a dictionary of permitted labels. Find the minimum number of labels whose concatenation exactly equals the message. Labels may be reused. Return minus one if there is no exact construction."
+  repeatVariants:
+    - "An archive stores a message without separators and a dictionary of permitted labels. Find the minimum number of labels whose concatenation exactly equals the message. Labels may be reused. Return minus one if there is no exact construction."
+facts:
+  -
+    key: "signature"
+    value: "minimum_labels(message: str, labels: list[str]) -> int"
+    disclosure: "ALWAYS"
+    askedAs:
+      - "what is the function signature"
+      - "what should the function return"
+  -
+    key: "limits"
+    value: "The message contains at most 2,000 lowercase ASCII letters. There are at most 500 labels, each one to 30 lowercase letters. Duplicate labels may occur."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "how large is the input"
+      - "what are the constraints"
+  -
+    key: "edge_cases"
+    value: "An empty message needs zero labels. Labels cannot be reordered internally or partially used. An empty dictionary cannot construct a nonempty message. Choose the smallest label count, not the longest first label."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "what about empty input"
+      - "what are the boundary cases"
+      - "how are ties handled"
+examples:
+  -
+    input: "[\"aaaaab\",[\"a\",\"aa\",\"aaa\",\"ab\"]]"
+    output: "3"
+    note: "Input is a JSON array of positional function arguments."
+visibleStarterTests:
+  -
+    id: "t-basic"
+    input: "[\"aaaaab\",[\"a\",\"aa\",\"aaa\",\"ab\"]]"
+    expectedOutput: "3"
+    hidden: false
+hiddenTests:
+  -
+    id: "h-1"
+    input: "[\"\",[]]"
+    expectedOutput: "0"
+    hidden: true
+  -
+    id: "h-2"
+    input: "[\"a\",[]]"
+    expectedOutput: "-1"
+    hidden: true
+  -
+    id: "h-3"
+    input: "[\"abc\",[\"ab\",\"bc\"]]"
+    expectedOutput: "-1"
+    hidden: true
+  -
+    id: "h-4"
+    input: "[\"aaaa\",[\"a\",\"aa\"]]"
+    expectedOutput: "2"
+    hidden: true
+  -
+    id: "h-5"
+    input: "[\"ab\",[\"ab\",\"ab\",\"a\",\"b\"]]"
+    expectedOutput: "1"
+    hidden: true
+  -
+    id: "h-6"
+    input: "[\"abcd\",[\"abc\",\"ab\",\"cd\"]]"
+    expectedOutput: "2"
+    hidden: true
+solutionFamilies:
+  -
+    id: "sf-optimal"
+    name: "Prefix dynamic programming"
+    timeComplexity: "O(n * d * L)"
+    spaceComplexity: "O(n + d)"
+    isOptimal: true
+    recognitionSignals:
+      - "minimum count for each reachable prefix"
+      - "relax endpoints of matching labels"
+      - "unreachable sentinel"
+    invariants:
+      - "When prefix position i is processed, its value is the minimum number of labels forming exactly the first i characters. Every extension consumes a whole permitted label."
+    failureModes:
+      - "greedy longest label can lead to a dead end"
+      - "counting a partial label at the end"
+      - "confusing reachability with minimum count"
+probes:
+  -
+    id: "invariant_proof"
+    trigger: "milestone(FIRST_COMPILES)"
+    questionIntent: "Check the argument supporting the proposed data structure or recurrence."
+    authoredVariants:
+      - "If two constructions reach the same message position, what information from them matters for completing the rest?"
+    maxUses: 1
+    priority: 80
+  -
+    id: "complexity_claim"
+    trigger: "claimedTime.present && claimedTime != detectedFamily.timeComplexity"
+    questionIntent: "Ask the candidate to justify their own complexity claim."
+    authoredVariants:
+      - "Which operations dominate your running time, and how often can each occur?"
+    maxUses: 1
+    priority: 100
+hintLadder:
+  -
+    level: 1
+    text: "What smaller prefix would let you extend a valid construction?"
+    scoreImpact: 0.05
+  -
+    level: 2
+    text: "Two constructions ending at the same position have the same remaining suffix."
+    scoreImpact: 0.15
+  -
+    level: 3
+    text: "Keep the best label count at each prefix boundary."
+    scoreImpact: 0.3
+  -
+    level: 4
+    text: "Set dp[0] to zero and other entries unreachable. From each reachable index, match dictionary labels and minimize dp[index plus label length]. Return the final value, or minus one if unreachable."
+    scoreImpact: 0.5
+followUps:
+  -
+    id: "fu-extension"
+    trigger: "solvedOptimally && remainingMinutes >= 5"
+    oralDelta: "Also return how many constructions achieve the minimum label count. Identical duplicate labels should not multiply that number."
+    rubricDelta:
+      adaptability: 0.1
+    expectedAdaptation: "Deduplicate labels and track both best cost and count per prefix: replace count on improvement and add on equal cost."
+rubricId: "rubric-coding-v1"
+

@@ -5,6 +5,37 @@ Interviews do not require a Run button and code results remain clearly labelled
 model estimates. A real execution sandbox and paid billing are later products,
 not release gates for this scope.
 
+## I08 local completion checkpoint (2026-09-19)
+
+The release branch `codex-production-08-release-completion` closes the remaining
+implementation work that can be verified without a hosted account or a person
+using a microphone:
+
+- Preparation completion now uses the same admission and rate-limit boundary as
+  direct session creation, and shutdown refuses both preparation and session
+  admission routes while draining.
+- Privacy maintenance failures are contained, retried on the next minute, and
+  emit a redacted operational alert on the first and every twelfth consecutive
+  failure instead of becoming an unhandled interval rejection.
+- Restore validation now requires the privacy/support tables, rejects unsafe
+  remote SSL modes, and prints the next migration/preflight action explicitly.
+- `pnpm db:migrate --check` verifies a complete, checksum-matching journal with
+  no writes. `pnpm release:preflight` validates production configuration and,
+  with `--database`, checks private-table/function isolation and an active bank.
+  `pnpm release:smoke` and the manually triggered hosted-smoke workflow provide
+  bounded, read-only liveness, readiness, release, CORS, capability and invalid
+  authentication checks.
+- Seven additional original question drafts are schema-validated and held in
+  `content/scenario-drafts/`. They are never loaded by the API or activated by
+  the normal importer. Reviewers can validate them with
+  `pnpm questions:import --drafts`; activation remains an explicit reviewed
+  content operation.
+
+Validation on this branch: `pnpm typecheck`, `pnpm build`, both question-bank
+dry runs, migration plan, secret/environment scan, sorted-file scan, bundle scan
+and `git diff --check` pass. Automated test suites remain assigned to the
+separate test pass. No database, provider, hosting or user data was contacted.
+
 ## Remaining code and configuration
 
 | Production tasks | Remaining work |

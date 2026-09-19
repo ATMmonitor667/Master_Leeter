@@ -1,0 +1,43 @@
+name: Hosted release smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_origin:
+        description: Exact HTTPS API origin
+        required: true
+        type: string
+      web_origin:
+        description: Exact HTTPS browser origin allowed by the API
+        required: true
+        type: string
+      release:
+        description: Expected deployed release SHA or immutable release identifier
+        required: true
+        type: string
+      admission:
+        description: Expected admission state
+        required: true
+        default: paused
+        type: choice
+        options: [paused, open]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read-only release qualification
+        env:
+          SMOKE_API: ${{ inputs.api_origin }}
+          SMOKE_WEB: ${{ inputs.web_origin }}
+          SMOKE_RELEASE: ${{ inputs.release }}
+          SMOKE_ADMISSION: ${{ inputs.admission }}
+        run: node scripts/release-smoke.mjs --api "$SMOKE_API" --web-origin "$SMOKE_WEB" --release "$SMOKE_RELEASE" --admission "$SMOKE_ADMISSION"

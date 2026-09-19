@@ -1,0 +1,145 @@
+# Private draft. Do not activate before recorded review.
+id: "cooling-watch@1"
+scenarioId: "cooling-watch"
+version: 1
+status: "DRAFT"
+provenance:
+  type: "ORIGINAL"
+  author: "Codex assisted draft"
+  reviewNotes: "New framing authored for Master Leeter from a standard algorithmic concept. Human technical, similarity and oral review pending. No completed review or licensing clearance is claimed."
+target:
+  level: "MID"
+  topics:
+    - "monotonic stack"
+    - "arrays"
+  expectedMinutes: 45
+oralBrief:
+  openingScript: "A machine records one temperature reading each minute. For each reading, return how many minutes until the first strictly lower later reading. Return zero if there is no later lower reading."
+  repeatVariants:
+    - "A machine records one temperature reading each minute. For each reading, return how many minutes until the first strictly lower later reading. Return zero if there is no later lower reading."
+facts:
+  -
+    key: "signature"
+    value: "cooling_wait(readings: list[int]) -> list[int]"
+    disclosure: "ALWAYS"
+    askedAs:
+      - "what is the function signature"
+      - "what should the function return"
+  -
+    key: "limits"
+    value: "At most 200,000 integer readings between -100 and 1,000. The readings are in chronological order and cannot be rearranged."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "how large is the input"
+      - "what are the constraints"
+  -
+    key: "edge_cases"
+    value: "Equal temperatures do not count as lower. Empty input returns an empty list. For the final reading the answer is always zero."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "what about empty input"
+      - "what are the boundary cases"
+      - "how are ties handled"
+examples:
+  -
+    input: "[[8,8,6,7,5]]"
+    output: "[2,1,2,1,0]"
+    note: "Input is a JSON array of positional function arguments."
+visibleStarterTests:
+  -
+    id: "t-basic"
+    input: "[[8,8,6,7,5]]"
+    expectedOutput: "[2,1,2,1,0]"
+    hidden: false
+hiddenTests:
+  -
+    id: "h-1"
+    input: "[[]]"
+    expectedOutput: "[]"
+    hidden: true
+  -
+    id: "h-2"
+    input: "[[3,3,3]]"
+    expectedOutput: "[0,0,0]"
+    hidden: true
+  -
+    id: "h-3"
+    input: "[[1,2,3]]"
+    expectedOutput: "[0,0,0]"
+    hidden: true
+  -
+    id: "h-4"
+    input: "[[3,2,1]]"
+    expectedOutput: "[1,1,0]"
+    hidden: true
+  -
+    id: "h-5"
+    input: "[[-1,0,-2]]"
+    expectedOutput: "[2,1,0]"
+    hidden: true
+  -
+    id: "h-6"
+    input: "[[5]]"
+    expectedOutput: "[0]"
+    hidden: true
+solutionFamilies:
+  -
+    id: "sf-optimal"
+    name: "Monotonic stack of unresolved indexes"
+    timeComplexity: "O(n)"
+    spaceComplexity: "O(n)"
+    isOptimal: true
+    recognitionSignals:
+      - "stack of indexes"
+      - "while current value is smaller than stack top"
+      - "each index pushed once and popped once"
+    invariants:
+      - "Unresolved indexes are in increasing chronological order and their temperatures are nondecreasing from bottom to top. A pop is resolved by the first lower reading."
+    failureModes:
+      - "popping on equality"
+      - "returning temperature difference instead of elapsed minutes"
+      - "calling the amortized stack loop quadratic"
+probes:
+  -
+    id: "invariant_proof"
+    trigger: "milestone(FIRST_COMPILES)"
+    questionIntent: "Check the argument supporting the proposed data structure or recurrence."
+    authoredVariants:
+      - "An index can stay on your stack for a long time. How many times can it be removed over the whole run?"
+    maxUses: 1
+    priority: 80
+  -
+    id: "complexity_claim"
+    trigger: "claimedTime.present && claimedTime != detectedFamily.timeComplexity"
+    questionIntent: "Ask the candidate to justify their own complexity claim."
+    authoredVariants:
+      - "Which operations dominate your running time, and how often can each occur?"
+    maxUses: 1
+    priority: 100
+hintLadder:
+  -
+    level: 1
+    text: "Which earlier readings remain unanswered when a new reading arrives?"
+    scoreImpact: 0.05
+  -
+    level: 2
+    text: "A new low can resolve more than one earlier reading."
+    scoreImpact: 0.15
+  -
+    level: 3
+    text: "Keep unanswered indexes in an order that lets the new reading resolve them from one end."
+    scoreImpact: 0.3
+  -
+    level: 4
+    text: "Maintain a stack of indexes with nondecreasing readings. Pop while the current reading is strictly lower and record current index minus popped index; then push the current index."
+    scoreImpact: 0.5
+followUps:
+  -
+    id: "fu-extension"
+    trigger: "solvedOptimally && remainingMinutes >= 5"
+    oralDelta: "The readings now arrive one at a time. Emit each answer as soon as it becomes known, and emit zero for unresolved readings when the stream ends."
+    rubricDelta:
+      adaptability: 0.1
+    expectedAdaptation: "Reuse the unresolved stack and index counter; finalized answers can be emitted immediately, but worst-case pending memory remains linear."
+rubricId: "rubric-coding-v1"
+

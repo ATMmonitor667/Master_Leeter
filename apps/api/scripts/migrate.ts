@@ -11,8 +11,8 @@ const journal = "public.master_leeter_migrations";
 async function main(): Promise<void> {
   const args = process.argv.slice(2).filter((arg) => arg !== "--");
   const mode = args[0] ?? "--plan";
-  if (args.length > 1 || !["--plan", "--status", "--apply"].includes(mode)) {
-    throw new Error("Usage: pnpm db:migrate [--plan|--status|--apply]");
+  if (args.length > 1 || !["--plan", "--status", "--check", "--apply"].includes(mode)) {
+    throw new Error("Usage: pnpm db:migrate [--plan|--status|--check|--apply]");
   }
   const migrations: Array<{ name: string; sql: string; checksum: string }> = [];
   for (const directory of ["supabase/migrations", "apps/api/migrations"]) {
@@ -54,6 +54,12 @@ async function main(): Promise<void> {
           }
         }
         for (let i = 0; i < migrations.length; i++) console.log(`${i < applied.length ? "APPLIED" : "PENDING"} ${migrations[i]!.name}`);
+        if (mode === "--check") {
+          if (!present.rows[0]?.present) throw new Error("MIGRATION_JOURNAL_MISSING");
+          if (applied.length !== migrations.length) throw new Error("MIGRATION_PENDING");
+          console.log("All migration checksums match. No writes performed.");
+          return;
+        }
         if (mode === "--status") return;
         if (!present.rows[0]?.present) {
           const legacy = await client.query<{ present: boolean }>("SELECT to_regclass('public.interview_sessions') IS NOT NULL OR to_regclass('public.interview_questions') IS NOT NULL AS present");

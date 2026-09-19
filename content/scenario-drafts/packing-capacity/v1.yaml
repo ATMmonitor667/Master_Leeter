@@ -1,0 +1,145 @@
+# Private draft. Do not activate before recorded review.
+id: "packing-capacity@1"
+scenarioId: "packing-capacity"
+version: 1
+status: "DRAFT"
+provenance:
+  type: "ORIGINAL"
+  author: "Codex assisted draft"
+  reviewNotes: "New framing authored for Master Leeter from a standard algorithmic concept. Human technical, similarity and oral review pending. No completed review or licensing clearance is claimed."
+target:
+  level: "MID"
+  topics:
+    - "binary search"
+    - "greedy"
+  expectedMinutes: 45
+oralBrief:
+  openingScript: "Packages must be loaded in their given order onto at most a given number of daily trucks. Each truck takes one contiguous block of packages and all trucks share one weight capacity. Find the smallest capacity that lets every package ship. A package cannot be split."
+  repeatVariants:
+    - "Packages must be loaded in their given order onto at most a given number of daily trucks. Each truck takes one contiguous block of packages and all trucks share one weight capacity. Find the smallest capacity that lets every package ship. A package cannot be split."
+facts:
+  -
+    key: "signature"
+    value: "minimum_capacity(weights: list[int], days: int) -> int"
+    disclosure: "ALWAYS"
+    askedAs:
+      - "what is the function signature"
+      - "what should the function return"
+  -
+    key: "limits"
+    value: "There are at most 200,000 packages. Each weight is a positive integer no greater than 1,000,000,000. Days is between one and 1,000,000,000."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "how large is the input"
+      - "what are the constraints"
+  -
+    key: "edge_cases"
+    value: "Input may be empty, in which case return zero. Unused days are allowed. Package order cannot change, even if reordering would pack more tightly."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "what about empty input"
+      - "what are the boundary cases"
+      - "how are ties handled"
+examples:
+  -
+    input: "[[3,2,5,2],2]"
+    output: "7"
+    note: "Input is a JSON array of positional function arguments."
+visibleStarterTests:
+  -
+    id: "t-basic"
+    input: "[[3,2,5,2],2]"
+    expectedOutput: "7"
+    hidden: false
+hiddenTests:
+  -
+    id: "h-1"
+    input: "[[],3]"
+    expectedOutput: "0"
+    hidden: true
+  -
+    id: "h-2"
+    input: "[[7],10]"
+    expectedOutput: "7"
+    hidden: true
+  -
+    id: "h-3"
+    input: "[[1,2,3],1]"
+    expectedOutput: "6"
+    hidden: true
+  -
+    id: "h-4"
+    input: "[[1,2,3],5]"
+    expectedOutput: "3"
+    hidden: true
+  -
+    id: "h-5"
+    input: "[[4,4,4],2]"
+    expectedOutput: "8"
+    hidden: true
+  -
+    id: "h-6"
+    input: "[[1000000000,1000000000],1]"
+    expectedOutput: "2000000000"
+    hidden: true
+solutionFamilies:
+  -
+    id: "sf-optimal"
+    name: "Binary search on capacity with greedy feasibility"
+    timeComplexity: "O(n log(sum(weights)))"
+    spaceComplexity: "O(1)"
+    isOptimal: true
+    recognitionSignals:
+      - "binary search between maximum and sum"
+      - "single scan counts trucks"
+      - "monotonic feasibility predicate"
+    invariants:
+      - "A feasible capacity stays feasible when enlarged. For fixed capacity, filling the current truck until the next package does not fit uses the fewest trucks."
+    failureModes:
+      - "sorting the weights"
+      - "using an average as a sufficient capacity"
+      - "off-by-one when a package exactly fills a truck"
+probes:
+  -
+    id: "invariant_proof"
+    trigger: "milestone(FIRST_COMPILES)"
+    questionIntent: "Check the argument supporting the proposed data structure or recurrence."
+    authoredVariants:
+      - "Your checker loads as much as possible today. Why can reserving extra space today never reduce the total trucks needed?"
+    maxUses: 1
+    priority: 80
+  -
+    id: "complexity_claim"
+    trigger: "claimedTime.present && claimedTime != detectedFamily.timeComplexity"
+    questionIntent: "Ask the candidate to justify their own complexity claim."
+    authoredVariants:
+      - "Which operations dominate your running time, and how often can each occur?"
+    maxUses: 1
+    priority: 100
+hintLadder:
+  -
+    level: 1
+    text: "Can you check a proposed capacity without searching all partitions?"
+    scoreImpact: 0.05
+  -
+    level: 2
+    text: "What happens to feasibility when capacity increases?"
+    scoreImpact: 0.15
+  -
+    level: 3
+    text: "Use the monotonic answer to discard a range of capacities at once."
+    scoreImpact: 0.3
+  -
+    level: 4
+    text: "Binary search from the heaviest package to total weight. For each midpoint, scan in order, opening a new truck only when the next package would exceed capacity. Keep the smallest midpoint needing at most days trucks."
+    scoreImpact: 0.5
+followUps:
+  -
+    id: "fu-extension"
+    trigger: "solvedOptimally && remainingMinutes >= 5"
+    oralDelta: "Return a concrete shipping partition alongside the minimum capacity."
+    rubricDelta:
+      adaptability: 0.1
+    expectedAdaptation: "After finding the capacity, replay the greedy scan and emit contiguous index boundaries; the result may use fewer than days trucks."
+rubricId: "rubric-coding-v1"
+

@@ -1,0 +1,145 @@
+# Private draft. Do not activate before recorded review.
+id: "service-windows@1"
+scenarioId: "service-windows"
+version: 1
+status: "DRAFT"
+provenance:
+  type: "ORIGINAL"
+  author: "Codex assisted draft"
+  reviewNotes: "New framing authored for Master Leeter from a standard algorithmic concept. Human technical, similarity and oral review pending. No completed review or licensing clearance is claimed."
+target:
+  level: "JUNIOR"
+  topics:
+    - "sorting"
+    - "intervals"
+  expectedMinutes: 45
+oralBrief:
+  openingScript: "A service desk receives availability windows with integer start and end times. Return their union as sorted non-overlapping windows. Windows are half-open: the start is included and the end excluded. Merge overlapping windows and windows that touch."
+  repeatVariants:
+    - "A service desk receives availability windows with integer start and end times. Return their union as sorted non-overlapping windows. Windows are half-open: the start is included and the end excluded. Merge overlapping windows and windows that touch."
+facts:
+  -
+    key: "signature"
+    value: "merge_windows(windows: list[list[int]]) -> list[list[int]]"
+    disclosure: "ALWAYS"
+    askedAs:
+      - "what is the function signature"
+      - "what should the function return"
+  -
+    key: "limits"
+    value: "At most 200,000 windows, each [start, end] with -1,000,000,000 <= start <= end <= 1,000,000,000. Input is unsorted and must not be modified."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "how large is the input"
+      - "what are the constraints"
+  -
+    key: "edge_cases"
+    value: "A zero-length window covers nothing and is discarded. Duplicates add no coverage. Touching [1,3] and [3,5] become [1,5]. Empty input returns an empty list."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "what about empty input"
+      - "what are the boundary cases"
+      - "how are ties handled"
+examples:
+  -
+    input: "[[[5,8],[1,3],[3,6]]]"
+    output: "[[1,8]]"
+    note: "Input is a JSON array of positional function arguments."
+visibleStarterTests:
+  -
+    id: "t-basic"
+    input: "[[[5,8],[1,3],[3,6]]]"
+    expectedOutput: "[[1,8]]"
+    hidden: false
+hiddenTests:
+  -
+    id: "h-1"
+    input: "[[]]"
+    expectedOutput: "[]"
+    hidden: true
+  -
+    id: "h-2"
+    input: "[[[2,2]]]"
+    expectedOutput: "[]"
+    hidden: true
+  -
+    id: "h-3"
+    input: "[[[1,4],[2,3]]]"
+    expectedOutput: "[[1,4]]"
+    hidden: true
+  -
+    id: "h-4"
+    input: "[[[1,2],[4,5]]]"
+    expectedOutput: "[[1,2],[4,5]]"
+    hidden: true
+  -
+    id: "h-5"
+    input: "[[[-2,0],[0,3],[-2,0]]]"
+    expectedOutput: "[[-2,3]]"
+    hidden: true
+  -
+    id: "h-6"
+    input: "[[[4,6],[1,2],[2,4]]]"
+    expectedOutput: "[[1,6]]"
+    hidden: true
+solutionFamilies:
+  -
+    id: "sf-optimal"
+    name: "Sort then merge"
+    timeComplexity: "O(n log n)"
+    spaceComplexity: "O(n)"
+    isOptimal: true
+    recognitionSignals:
+      - "sort a copy by start"
+      - "extend the last result end"
+      - "skip empty intervals"
+    invariants:
+      - "After processing a sorted prefix, the result is its exact union, with all closed result windows disjoint and only the final window possibly extendable."
+    failureModes:
+      - "using less-than instead of less-than-or-equal for touching windows"
+      - "keeping empty windows"
+      - "sorting or modifying the caller's list in place"
+probes:
+  -
+    id: "invariant_proof"
+    trigger: "milestone(FIRST_COMPILES)"
+    questionIntent: "Check the argument supporting the proposed data structure or recurrence."
+    authoredVariants:
+      - "After sorting, why can the next window overlap only the final window in your result?"
+    maxUses: 1
+    priority: 80
+  -
+    id: "complexity_claim"
+    trigger: "claimedTime.present && claimedTime != detectedFamily.timeComplexity"
+    questionIntent: "Ask the candidate to justify their own complexity claim."
+    authoredVariants:
+      - "Which operations dominate your running time, and how often can each occur?"
+    maxUses: 1
+    priority: 100
+hintLadder:
+  -
+    level: 1
+    text: "Which input order makes already-completed coverage easy to recognize?"
+    scoreImpact: 0.05
+  -
+    level: 2
+    text: "Compare each new window with the end of the current covered window."
+    scoreImpact: 0.15
+  -
+    level: 3
+    text: "Sorting by start means you only need one open result interval."
+    scoreImpact: 0.3
+  -
+    level: 4
+    text: "Sort nonempty windows by start without changing input. Extend the last result if the next start is no greater than its end; otherwise append a new result interval."
+    scoreImpact: 0.5
+followUps:
+  -
+    id: "fu-extension"
+    trigger: "solvedOptimally && remainingMinutes >= 5"
+    oralDelta: "Now return the uncovered gaps within a requested finite time horizon."
+    rubricDelta:
+      adaptability: 0.1
+    expectedAdaptation: "Clip merged windows to the horizon, track the end of covered space and emit gaps before each window and after the final window."
+rubricId: "rubric-coding-v1"
+

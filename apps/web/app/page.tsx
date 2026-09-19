@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent }
 import { AccountMenu } from "../components/AccountMenu";
 import { apiFetch, SignInRequired } from "../lib/auth";
 import { apiUrl } from "../lib/public-config";
+import { startError } from "../lib/start-error";
 
 /**
  * Session setup.
@@ -98,7 +99,10 @@ export default function Home() {
         },
         body: JSON.stringify({ resumeText, consent, tone }),
       });
-      if (!res.ok) throw new Error(`Resume review failed (${res.status}).`);
+      if (!res.ok) {
+        const failure = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(startError(failure.error, "Resume review could not finish. Please retry."));
+      }
       let next = await res.json() as Preparation;
       for (let poll = 0; next.status === "ANALYZING" && poll < 40; poll += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 500));
@@ -146,7 +150,10 @@ export default function Home() {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ scenarioRef, mode, language: "python" }),
       });
-      if (!completed.ok) throw new Error(`Interview preparation failed (${completed.status}).`);
+      if (!completed.ok) {
+        const failure = await completed.json().catch(() => ({})) as { error?: string };
+        throw new Error(startError(failure.error, "Interview preparation could not finish. Please retry."));
+      }
       const result = await completed.json() as Preparation;
       if (!result.sessionId) throw new Error("Interview session was not created.");
       window.location.href = `/interview/${result.sessionId}`;
@@ -169,7 +176,7 @@ export default function Home() {
         body: JSON.stringify({ scenarioRef, mode, language: "python", interviewerTone: tone }),
       });
       const result = await response.json().catch(() => ({})) as { sessionId?: string; error?: string };
-      if (!response.ok || !result.sessionId) throw new Error(result.error ?? `Interview could not start (${response.status}).`);
+      if (!response.ok || !result.sessionId) throw new Error(startError(result.error));
       window.location.href = `/interview/${result.sessionId}`;
     } catch (err) {
       if (err instanceof SignInRequired) { window.location.assign("/login"); return; }

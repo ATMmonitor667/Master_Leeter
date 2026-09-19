@@ -33,13 +33,24 @@ function database(name) {
     user,
     password: decodeURIComponent(url.password),
     databaseName,
-    sslmode: url.searchParams.get("sslmode") || (isLocal(url.hostname) ? "prefer" : "require"),
+    sslmode: tlsMode(url),
     fingerprint: createHash("sha256").update(`${url.hostname.toLowerCase()}\0${port}\0${databaseName}`).digest("hex"),
   };
 }
 
 function isLocal(host) {
   return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(host.toLowerCase());
+}
+
+function tlsMode(url) {
+  const supplied = url.searchParams.get("sslmode");
+  if ([...url.searchParams.keys()].some((key) => key !== "sslmode")) fail("Unsupported PostgreSQL URL option");
+  if (!isLocal(url.hostname)) {
+    if (supplied && supplied !== "verify-full") fail("Remote recovery connections require sslmode=verify-full");
+    return "verify-full";
+  }
+  if (supplied && !["disable", "prefer", "require", "verify-ca", "verify-full"].includes(supplied)) fail("Invalid sslmode");
+  return supplied || "prefer";
 }
 
 function postgresArgs(connection) {
@@ -75,7 +86,7 @@ function artifactPath(value) {
   if (!value || !isAbsolute(value)) fail("Provide an absolute backup artifact path");
   const path = resolve(value);
   const insideRepository = relative(resolve(dirname(fileURLToPath(import.meta.url)), ".."), path);
-  if (insideRepository && !insideRepository.startsWith("..") && !isAbsolute(insideRepository)) {
+  if (!insideRepository || (!insideRepository.startsWith("..") && !isAbsolute(insideRepository))) {
     fail("Database artifacts may not be written inside the repository");
   }
   if (extname(path) !== ".dump") fail("Backup artifacts must use the .dump extension");
@@ -163,6 +174,7 @@ async function restore(path) {
     "interview_sessions", "session_events", "session_reports", "socket_tickets",
     "consent_grants", "session_runtime_owners", "runtime_inputs",
     "interview_preparations", "api_rate_limits", "interview_questions",
+    "privacy_deletion_requests", "support_incidents",
   ];
   const sql = `SELECT coalesce(string_agg(required.name, ',' ORDER BY required.name), '') FROM unnest(ARRAY[${required.map((name) => `'${name}'`).join(",")}]) AS required(name) WHERE NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=required.name);`;
   let output = "";
@@ -177,7 +189,7 @@ async function restore(path) {
     child.once("close", (code) => code === 0 ? resolvePromise() : reject(new Error(`psql failed (exit ${code})`)));
   });
   if (output.trim()) fail(`Restore completed but required application tables are missing: ${output.trim()}`);
-  console.log("Isolated restore completed and required application tables verified.");
+  console.log("Isolated restore completed and required application tables verified. Run db:migrate --status and release:preflight --database before reopening admission.");
   console.log("Do not expose this database until erasure reconciliation and application smoke checks are recorded.");
 }
 

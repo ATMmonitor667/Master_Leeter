@@ -3,6 +3,7 @@ import { InterviewModeSchema, InterviewerToneSchema, type InterviewMode } from "
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
+import { AdmissionError } from "../admission/index.js";
 import type { LoadedScenario } from "../scenario/loader.js";
 import { chooseQuestion, type QuestionBank } from "../scenario/question-bank.js";
 import type { SessionLifecycle } from "../session/lifecycle.js";
@@ -158,6 +159,10 @@ export async function registerPreparationModule(app: FastifyInstance, opts: Prep
     try {
       return reply.code(201).header("Cache-Control", "no-store").send(publicPreparation(await work));
     } catch (error) {
+      if (error instanceof AdmissionError) {
+        return reply.code(error.code === "ACTIVE_SESSION_EXISTS" ? 409 : error.code === "ADMISSION_PAUSED" ? 503 : 429)
+          .header("Retry-After", "60").send({ error: error.code });
+      }
       const code = preparationFailure(error);
       req.log.error({ preparationId: id, code }, "preparation completion failed");
       return reply.code(code === "NO_ACTIVE_QUESTIONS" ? 503 : 409).send({ error: code });

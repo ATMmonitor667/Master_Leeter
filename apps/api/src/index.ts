@@ -121,7 +121,9 @@ export function buildServer(opts: ServerOptions) {
     if (opts.production) reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   });
   app.addHook("preHandler", async (req, reply) => {
-    if (draining && req.method === "POST" && req.routeOptions.url === "/v1/interview-sessions") {
+    if (draining && req.method === "POST" && [
+      "/v1/interview-sessions", "/v1/preparations", "/v1/preparations/:id/complete",
+    ].includes(req.routeOptions.url ?? "")) {
       return reply.code(503).header("Retry-After", "10").send({ error: "SERVICE_DRAINING" });
     }
   });
@@ -165,7 +167,7 @@ export function buildServer(opts: ServerOptions) {
     if (req.method !== "POST") return;
     const route = req.routeOptions.url ?? "";
     const limit = route === "/v1/interview-sessions" ? rateLimits.sessionCreatesPerMinute
-      : route === "/v1/preparations" ? rateLimits.preparationsPerMinute
+      : route === "/v1/preparations" || route === "/v1/preparations/:id/complete" ? rateLimits.preparationsPerMinute
         : route === "/v1/interview-sessions/:id/realtime-token" ? rateLimits.realtimeMintsPerMinute
           : route === "/v1/interview-sessions/:id/runs" ? rateLimits.runRequestsPerMinute
             : route === "/v1/interview-sessions/:id/support-incidents" ? rateLimits.supportReportsPerMinute
@@ -287,6 +289,8 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.sessionRetentionDays ? { sessionRetentionDays: opts.sessionRetentionDays } : {}),
     preparationStore,
     supportStore,
+    onMaintenanceFailure: (consecutiveFailures) =>
+      publishAlert({ kind: "PRIVACY_MAINTENANCE_UNAVAILABLE", consecutiveFailures }),
     ...(opts.identityAdmin ? { identityAdmin: opts.identityAdmin } : {}),
   });
 

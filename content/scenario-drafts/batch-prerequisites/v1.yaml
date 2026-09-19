@@ -1,0 +1,146 @@
+# Private draft. Do not activate before recorded review.
+id: "batch-prerequisites@1"
+scenarioId: "batch-prerequisites"
+version: 1
+status: "DRAFT"
+provenance:
+  type: "ORIGINAL"
+  author: "Codex assisted draft"
+  reviewNotes: "New framing authored for Master Leeter from a standard algorithmic concept. Human technical, similarity and oral review pending. No completed review or licensing clearance is claimed."
+target:
+  level: "MID"
+  topics:
+    - "topological sort"
+    - "graphs"
+    - "heaps"
+  expectedMinutes: 45
+oralBrief:
+  openingScript: "A workshop has numbered jobs and prerequisite pairs. In each pair [a, b], job a must finish before job b can start. Return the lexicographically smallest valid ordering of all jobs. Return an empty list if any dependency cycle makes that impossible."
+  repeatVariants:
+    - "A workshop has numbered jobs and prerequisite pairs. In each pair [a, b], job a must finish before job b can start. Return the lexicographically smallest valid ordering of all jobs. Return an empty list if any dependency cycle makes that impossible."
+facts:
+  -
+    key: "signature"
+    value: "job_order(count: int, prerequisites: list[list[int]]) -> list[int]"
+    disclosure: "ALWAYS"
+    askedAs:
+      - "what is the function signature"
+      - "what should the function return"
+  -
+    key: "limits"
+    value: "Jobs are numbered 0 through count minus one; count is between zero and 100,000. There are at most 200,000 prerequisite pairs. All indexes are valid."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "how large is the input"
+      - "what are the constraints"
+  -
+    key: "edge_cases"
+    value: "Repeated pairs mean one dependency, not extra work. Self-dependencies are cycles. Include isolated jobs. Lexicographic order compares the first differing job number. Zero jobs returns an empty list."
+    disclosure: "IF_ASKED"
+    askedAs:
+      - "what about empty input"
+      - "what are the boundary cases"
+      - "how are ties handled"
+examples:
+  -
+    input: "[4,[[0,2],[1,2],[2,3]]]"
+    output: "[0,1,2,3]"
+    note: "Input is a JSON array of positional function arguments."
+visibleStarterTests:
+  -
+    id: "t-basic"
+    input: "[4,[[0,2],[1,2],[2,3]]]"
+    expectedOutput: "[0,1,2,3]"
+    hidden: false
+hiddenTests:
+  -
+    id: "h-1"
+    input: "[0,[]]"
+    expectedOutput: "[]"
+    hidden: true
+  -
+    id: "h-2"
+    input: "[3,[]]"
+    expectedOutput: "[0,1,2]"
+    hidden: true
+  -
+    id: "h-3"
+    input: "[2,[[0,1],[1,0]]]"
+    expectedOutput: "[]"
+    hidden: true
+  -
+    id: "h-4"
+    input: "[3,[[0,2],[0,2]]]"
+    expectedOutput: "[0,1,2]"
+    hidden: true
+  -
+    id: "h-5"
+    input: "[1,[[0,0]]]"
+    expectedOutput: "[]"
+    hidden: true
+  -
+    id: "h-6"
+    input: "[4,[[3,1]]]"
+    expectedOutput: "[0,2,3,1]"
+    hidden: true
+solutionFamilies:
+  -
+    id: "sf-optimal"
+    name: "Kahn ordering with a min-heap"
+    timeComplexity: "O(e + v log v)"
+    spaceComplexity: "O(v + e)"
+    isOptimal: true
+    recognitionSignals:
+      - "adjacency structure"
+      - "incoming dependency counts"
+      - "min-heap of zero-indegree jobs"
+    invariants:
+      - "The heap contains every remaining job with no unfinished prerequisites. Choosing its smallest element fixes the lexicographically smallest possible next position."
+    failureModes:
+      - "using a FIFO queue despite lexicographic requirement"
+      - "mismatched deduplication of edges and indegrees"
+      - "returning a partial order when a cycle exists"
+probes:
+  -
+    id: "invariant_proof"
+    trigger: "milestone(FIRST_COMPILES)"
+    questionIntent: "Check the argument supporting the proposed data structure or recurrence."
+    authoredVariants:
+      - "Two jobs are available now. Why can your choice between them be made without knowing the remainder of the schedule?"
+    maxUses: 1
+    priority: 80
+  -
+    id: "complexity_claim"
+    trigger: "claimedTime.present && claimedTime != detectedFamily.timeComplexity"
+    questionIntent: "Ask the candidate to justify their own complexity claim."
+    authoredVariants:
+      - "Which operations dominate your running time, and how often can each occur?"
+    maxUses: 1
+    priority: 100
+hintLadder:
+  -
+    level: 1
+    text: "Which jobs are legal to run before any work has finished?"
+    scoreImpact: 0.05
+  -
+    level: 2
+    text: "When a job finishes, only its direct dependents can become newly available."
+    scoreImpact: 0.15
+  -
+    level: 3
+    text: "Keep the available jobs ordered by their job number."
+    scoreImpact: 0.3
+  -
+    level: 4
+    text: "Deduplicate dependency pairs, count incoming edges and put zero-indegree jobs in a min-heap. Pop the smallest, reduce successor indegrees, and enqueue newly available jobs. Return empty if fewer than count jobs are removed."
+    scoreImpact: 0.5
+followUps:
+  -
+    id: "fu-extension"
+    trigger: "solvedOptimally && remainingMinutes >= 5"
+    oralDelta: "Instead of a schedule, report whether there is exactly one valid ordering."
+    rubricDelta:
+      adaptability: 0.1
+    expectedAdaptation: "At every Kahn step there must be exactly one available node, and all nodes must be processed. Multiple available nodes imply distinct orders; cycles imply none."
+rubricId: "rubric-coding-v1"
+
