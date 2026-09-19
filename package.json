@@ -30,6 +30,7 @@
     "privacy:ledger:export": "pnpm --filter @master-leeter/api exec tsx scripts/privacy-ledger.ts export",
     "privacy:ledger:replay": "pnpm --filter @master-leeter/api exec tsx scripts/privacy-ledger.ts replay",
     "privacy:ledger:status": "pnpm --filter @master-leeter/api exec tsx scripts/privacy-ledger.ts status",
+    "product:metrics": "pnpm --filter @master-leeter/api exec tsx scripts/product-metrics.ts",
     "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {

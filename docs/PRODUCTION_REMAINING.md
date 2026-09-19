@@ -21,7 +21,7 @@ not release gates for this scope.
 | P23–P26 | Run database/browser/load/provider acceptance, required CI checks, protected staging, managed backup/PITR, restore and rollback rehearsals. |
 | P27 | Invite 5–10 people and complete ten observed full interviews. |
 | P28 | Author and review enough original scenarios for repeat use. Five are currently packaged; the target remains 12–20 after human and grading review. |
-| P29–P31 | Measure beta reliability/cost, finish public FAQ/support/privacy/discovery surfaces, run two cohorts and assign launch monitoring ownership. |
+| P29–P31 | Run the aggregate product snapshot with matching provider cost/host/signup metrics, pass capacity gates, publish a demo, run two cohorts and assign launch monitoring ownership. |
 
 P14–P16 (external sandbox execution) and P32 (billing) are explicitly deferred by
 the selected release scope. If the product later claims executed code results or

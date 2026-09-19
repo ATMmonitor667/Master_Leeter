@@ -141,9 +141,9 @@ LAUNCH / GROWTH
 [~] P28 Account-aware repetition avoidance is implemented; expand to 12–20
     reviewed original/licensed scenarios for repeat use.
 [ ] P29 Meet public-beta reliability, capacity, quality and cost thresholds.
-[~] P30 Truthful landing, FAQ/privacy/support pages, canonical metadata, social
-    preview, sitemap and private-route indexing controls are implemented; demo,
-    privacy-preserving activation measurement and two cohorts remain.
+[~] P30 Truthful public/discovery surfaces and a read-only aggregate activation,
+    completion, recovery, support and report-latency command are implemented;
+    host/Supabase visit/signup metrics, demo and two cohorts remain.
 [ ] P31 Gradual public signup, first-48-hour monitoring and operational ownership.
 [>] P32 Billing is deferred; the selected release is a free capped beta.
 
