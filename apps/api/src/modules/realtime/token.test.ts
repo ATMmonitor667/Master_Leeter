@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { CONTENT_ROOT, buildServer } from "../../index.js";
 import { loadScenarioLibrary, scenarioRef } from "../scenario/loader.js";
 import type { LoadedScenario } from "../scenario/loader.js";
+import type { RateLimitPolicy } from "../admission/index.js";
 import {
   DEFAULT_MAX_MINTS_PER_SESSION,
   GeminiTokenMinter,
@@ -275,9 +276,17 @@ function stubMinter(overrides: Partial<RealtimeCredential> = {}): RealtimeTokenM
   };
 }
 
-function server(realtimeTokenMinter?: RealtimeTokenMinter) {
-  return buildServer({ library, ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}) });
+function server(realtimeTokenMinter?: RealtimeTokenMinter, rateLimits?: RateLimitPolicy) {
+  return buildServer({ library, ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}), ...(rateLimits ? { rateLimits } : {}) });
 }
+
+const NO_RATE_LIMITS: RateLimitPolicy = {
+  sessionCreatesPerMinute: 1000,
+  preparationsPerMinute: 1000,
+  realtimeMintsPerMinute: DEFAULT_MAX_MINTS_PER_SESSION + 2,
+  runRequestsPerMinute: 1000,
+  supportReportsPerMinute: 1000,
+};
 
 async function newSession(app: ReturnType<typeof server>): Promise<string> {
   const res = await app.inject({
@@ -350,7 +359,7 @@ describe("POST /v1/interview-sessions/:id/realtime-token", () => {
   });
 
   it("caps minting so a client retry loop cannot drain the quota", async () => {
-    const app = server(stubMinter());
+    const app = server(stubMinter(), NO_RATE_LIMITS);
     const sessionId = await newSession(app);
 
     for (let i = 0; i < DEFAULT_MAX_MINTS_PER_SESSION; i++) {

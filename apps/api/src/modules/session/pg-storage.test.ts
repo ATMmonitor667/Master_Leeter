@@ -103,7 +103,7 @@ describe("PostgreSQL session repository protocol", () => {
     expect((await store.create(createRequest())).id).toBe(id);
     expect(query.mock.calls[0]![1]).toEqual(["owner", "retry"]);
     expect(query.mock.calls[1]![0]).toContain("ON CONFLICT (user_id, idempotency_key) DO NOTHING");
-    expect(JSON.parse(query.mock.calls[1]![1][11])).toEqual(scenario);
+    expect(JSON.parse(query.mock.calls[1]![1][12])).toEqual(scenario);
     expect(query.mock.calls[2]![1]).toEqual(["owner", "retry"]);
   });
   it("uses atomic pause arithmetic and rejects invalid increments", async () => {

@@ -58,6 +58,10 @@ for (const file of files) {
   const lines = text.replace(/\r\n/g, "\n").split("\n").filter((l) => l.trim() !== "");
   if (lines.length < MIN_LINES) continue;
 
+  // Barrel files (only `export * from "…"` lines) sort harmlessly — skip them.
+  const BARREL_LINE = /^export \* from ["'][^"']+["'];?$/;
+  if (lines.every((l) => BARREL_LINE.test(l.trim()))) continue;
+
   // Byte-wise comparison, matching `LC_ALL=C sort`.
   const sorted = [...lines].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   if (lines.every((line, i) => line === sorted[i])) {

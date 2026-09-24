@@ -43,7 +43,7 @@ export class PgSessionStore implements SessionStore {
       randomUUID(), req.userId, req.scenario.version.id, req.scenario.contentHash,
       req.mode, JSON.stringify(policyFor(req.mode)), INITIAL_STATE,
       req.language ?? "python", req.interviewerTone ?? "NORMAL", randomUUID(),
-      req.expectedSeconds ?? DEFAULT_INTERVIEW_SECONDS,
+      req.expectedSeconds ?? req.scenario.version.target.expectedMinutes * 60,
       req.idempotencyKey, JSON.stringify(req.scenario),
     ]);
     if (result.rows[0]) return session(result.rows[0]);

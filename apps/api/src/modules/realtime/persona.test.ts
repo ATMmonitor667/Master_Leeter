@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INTERVIEWER_VOICE, INTERVIEWER_PERSONA, PERSONA_PROHIBITIONS } from "./persona.js";
+import { DEFAULT_INTERVIEWER_VOICE, INTERVIEWER_PERSONA, PERSONA_PROHIBITIONS, interviewerPersona } from "./persona.js";
 import { GeminiTokenMinter, constrainedSetup } from "./token.js";
 
 /**
@@ -44,7 +44,7 @@ describe("the persona travels in the credential, not from the client", () => {
       systemInstruction: { parts: Array<{ text: string }> };
     };
 
-    expect(setup.systemInstruction.parts[0]?.text).toBe(INTERVIEWER_PERSONA);
+    expect(setup.systemInstruction.parts[0]?.text).toBe(interviewerPersona());
   });
 
   it("never reaches the browser", async () => {
