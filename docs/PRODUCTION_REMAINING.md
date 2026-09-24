@@ -38,6 +38,26 @@ separate test pass. No database, provider, hosting or user data was contacted.
 
 ## Remaining code and configuration
 
+I09 correction: the database preflight now refuses to claim browser isolation
+unless both Supabase `anon` and `authenticated` roles exist. It also refuses a
+release snapshot when active interviews have unfinished durable runtime inputs.
+This detects lost dispatch; it does not reprocess potentially partial AI work.
+The automatic completion sweep now retries database discovery failures without
+an unhandled process rejection. Safe cross-instance command routing and input
+reconciliation remain separate engineering work if multiple API replicas must
+serve the same active interview. Until that is implemented and verified, use one
+API replica for the invite beta and treat a `RUNTIME_OWNED_ELSEWHERE` response as
+a deployment fault. Do not claim two-replica acceptance from the current code.
+Hosted startup now takes a session-scoped database lock and refuses a second
+API replica. Readiness checks that the lease connection is still alive. This
+enforces the current deployment limit; it does not turn missing replay/routing
+into a completed capability.
+Deadline discovery now emits a redacted alert on the first and every twelfth
+consecutive outage, while `product:metrics` shows the unresolved input count.
+These checks make the failure visible; they do not replace the missing replay
+and routing mechanism. Also complete the separately assigned automated tests
+before any external rollout.
+
 | Production tasks | Remaining work |
 |---|---|
 | P01 | Record the owner-selected region, monthly budget, supported devices, domain and incident owner. Keep product and deployment docs synchronized. |

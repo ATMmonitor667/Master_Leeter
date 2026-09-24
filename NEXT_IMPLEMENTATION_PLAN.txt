@@ -1,4 +1,12 @@
 MASTER LEETER — RESUMABLE IMPLEMENTATION HANDOFF
+CURRENT POINTER (2026-09-24): This file records historical checkpoints and its
+2026-09-14 branch/next-step text is stale. I08 is merged into main. Current
+release status and explicit remaining gates are in docs/PRODUCTION_REMAINING.md.
+The worktree at .worktrees/production-runtime is on
+codex-production-09-recovery-qualification. Root checkout voiceWorks contains
+separate work; do not overwrite it. I09 is tightening failure detection and
+operator evidence around unfinished runtime inputs and session deadlines.
+
 Updated: 2026-09-14
 
 READ THIS FIRST
