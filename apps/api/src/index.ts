@@ -162,6 +162,7 @@ export function buildServer(opts: ServerOptions) {
     realtimeMintsPerMinute: 6,
     runRequestsPerMinute: 10,
     supportReportsPerMinute: 3,
+    voiceLatencyPerMinute: 30,
   };
   app.addHook("preHandler", async (req, reply) => {
     if (req.method !== "POST") return;
@@ -171,6 +172,7 @@ export function buildServer(opts: ServerOptions) {
         : route === "/v1/interview-sessions/:id/realtime-token" ? rateLimits.realtimeMintsPerMinute
           : route === "/v1/interview-sessions/:id/runs" ? rateLimits.runRequestsPerMinute
             : route === "/v1/interview-sessions/:id/support-incidents" ? rateLimits.supportReportsPerMinute
+              : route === "/v1/interview-sessions/:id/voice-latency" ? (rateLimits.voiceLatencyPerMinute ?? 30)
             : undefined;
     if (!limit) return;
     try {

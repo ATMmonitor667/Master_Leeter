@@ -17,8 +17,70 @@ export interface ReviewEntry {
   groundedInRevision: number | null;
   codeRevisionLag: number | null;
   codeObservationAgeMs: number | null;
+  responseLatencyMs: number | null;
+  speechSource: string;
+  largestStage: string;
   judgment: "";
   notes: "";
+}
+
+interface LatencyHit {
+  responseLatencyMs: number;
+  source: string;
+  largestStage: string;
+}
+
+const MARK_ORDER = [
+  "quietOnsetMs",
+  "vadEndDetectedMs",
+  "activityEndSentMs",
+  "firstInterimTranscriptMs",
+  "transcriptFinalMs",
+  "authorizationReceivedMs",
+  "speechRequestedMs",
+  "audioFetchStartedMs",
+  "firstAudioByteMs",
+  "firstSamplePlayedMs",
+] as const;
+
+function largestStageOf(payload: Record<string, unknown>): string {
+  let best = "";
+  let bestMs = -1;
+  let prev: { mark: string; at: number } | null = null;
+  for (const mark of MARK_ORDER) {
+    const at = numOf(payload[mark]);
+    if (at === null) { prev = null; continue; }
+    if (prev !== null) {
+      const ms = at - prev.at;
+      if (ms > bestMs) { bestMs = ms; best = `${prev.mark} → ${mark}`; }
+    }
+    prev = { mark, at };
+  }
+  return best;
+}
+
+function numOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function buildLatencyMap(events: readonly SessionEvent[]): Map<string, LatencyHit> {
+  const map = new Map<string, LatencyHit>();
+  for (const event of events) {
+    if (event.type !== "VOICE_LATENCY_MEASURED") continue;
+    const p = event.payload as Record<string, unknown>;
+    const utteranceId = typeof p["utteranceId"] === "string" ? p["utteranceId"] : null;
+    if (!utteranceId) continue;
+    const quietOnsetMs = numOf(p["quietOnsetMs"]);
+    const firstSamplePlayedMs = numOf(p["firstSamplePlayedMs"]);
+    if (quietOnsetMs === null || firstSamplePlayedMs === null) continue;
+    const turnId = utteranceId.replace(/^utt-/, "");
+    map.set(turnId, {
+      responseLatencyMs: firstSamplePlayedMs - quietOnsetMs,
+      source: typeof p["source"] === "string" ? p["source"] : "",
+      largestStage: largestStageOf(p),
+    });
+  }
+  return map;
 }
 
 /** Build the replayable, annotation-ready M4-5b review rows. */
@@ -31,6 +93,7 @@ export function buildSessionReview(
       .filter((event) => event.type === "SPEECH_FINAL")
       .map((event) => [`turn-${event.seq}`, text(event.payload["transcript"]) ?? ""] as const),
   );
+  const latency = buildLatencyMap(events);
   const probeUses = new Map<string, number>();
   let briefCount = 0;
 
@@ -48,6 +111,7 @@ export function buildSessionReview(
       const turnId = text(payload["turnId"]) ?? (action === "DELIVER_BRIEF" ? "opening" : "");
       const utterance = resolveUtterance(action, payload, scenario, probeUses, briefCount);
       if (action === "DELIVER_BRIEF") briefCount++;
+      const latencyHit = latency.get(turnId);
 
       return {
         seq: event.seq,
@@ -65,6 +129,9 @@ export function buildSessionReview(
         groundedInRevision: number(payload["groundedInRevision"]),
         codeRevisionLag: number(payload["codeRevisionLag"]),
         codeObservationAgeMs: number(payload["codeObservationAgeMs"]),
+        responseLatencyMs: latencyHit?.responseLatencyMs ?? null,
+        speechSource: latencyHit?.source ?? "",
+        largestStage: latencyHit?.largestStage ?? "",
         judgment: "",
         notes: "",
       };
@@ -123,6 +190,9 @@ export function reviewAsTsv(entries: readonly ReviewEntry[]): string {
     "groundedInRevision",
     "codeRevisionLag",
     "codeObservationAgeMs",
+    "responseLatencyMs",
+    "speechSource",
+    "largestStage",
     "judgment",
     "notes",
   ];

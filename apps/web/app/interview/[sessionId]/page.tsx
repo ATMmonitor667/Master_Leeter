@@ -79,7 +79,10 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         break;
       case "ACTION":
         if (msg.utteranceId) {
-          voiceRef.current?.speak({ action: msg.action, utteranceId: msg.utteranceId });
+          voiceRef.current?.speak(
+            { action: msg.action, utteranceId: msg.utteranceId },
+            msg.serverTiming as { decisionMs?: number; classifierMs?: number } | undefined,
+          );
         }
         break;
       case "ERROR":

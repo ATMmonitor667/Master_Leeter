@@ -93,6 +93,8 @@ export interface Utterance {
 export interface RuntimeResult {
   decision: GateDecision | null;
   utterance: Utterance | null;
+  /** Server-measured deltas for latency ledger. Present only on SPEECH_FINAL turns. */
+  serverTiming?: { decisionMs: number; classifierMs: number };
 }
 
 export interface InterviewRuntimeDeps {
@@ -256,6 +258,10 @@ export class InterviewRuntime {
    */
   private briefDeliveryCount = 0;
 
+  /** Bounded log of utterance ids issued by this runtime, for latency report validation. */
+  private readonly issuedUtteranceIds: string[] = [];
+  private static readonly UTTERANCE_ID_WINDOW = 64;
+
   private readonly classifier: IntentClassifier;
   private readonly buildSnapshot: typeof buildSnapshot;
   private readonly now: () => number;
@@ -301,6 +307,11 @@ export class InterviewRuntime {
       authorized: authorized?.decision ?? null,
       utteranceId: authorized?.utteranceId ?? null,
     };
+  }
+
+  /** Returns true when this runtime minted the given utterance id. Used to gate latency reports. */
+  wasUtteranceIssued(utteranceId: string): boolean {
+    return this.issuedUtteranceIds.includes(utteranceId);
   }
 
   /** Read-only view, for tests and for the resume path. Never mutate through this. */
@@ -688,12 +699,16 @@ export class InterviewRuntime {
     const transcript = stringOf(event.payload["transcript"]) ?? "";
     const finalized = event.payload["finalized"] !== false;
 
+    const ingestStart = performance.now();
+
     // The only await between a turn arriving and the gate ruling on it. A model
     // classifier suspends here for a few hundred milliseconds, so anything read
     // into `ctx` below is read AFTER that gap, not before it — which is what we
     // want: the gate should judge the world as it is when it decides, not as it
     // was when the candidate stopped talking.
+    const classifierStart = performance.now();
     const classification = await this.classifier.classify({ transcript, finalized });
+    const classifierMs = Math.round(performance.now() - classifierStart);
 
     // Stage evidence from the words, folded BEFORE the gate rules on this turn
     // (M1-2b). Order matters: a candidate who commits to an approach while the
@@ -725,6 +740,7 @@ export class InterviewRuntime {
     };
 
     const result = await this.judge(turn, classification, silenceMs, 0);
+    const decisionMs = Math.round(performance.now() - ingestStart);
 
     // Observation starts only after this turn's gate decision. The transcript
     // can inform a later probe, but it must never race the decision about the
@@ -736,7 +752,7 @@ export class InterviewRuntime {
     });
     this.scheduleObservation();
 
-    return result;
+    return { ...result, serverTiming: { decisionMs, classifierMs } };
   }
 
   /**
@@ -1132,6 +1148,10 @@ export class InterviewRuntime {
    */
   private async realize(decision: GateDecision, turn: Turn): Promise<Utterance | null> {
     const utteranceId = `utt-${turn.turnId}`;
+    this.issuedUtteranceIds.push(utteranceId);
+    if (this.issuedUtteranceIds.length > InterviewRuntime.UTTERANCE_ID_WINDOW) {
+      this.issuedUtteranceIds.shift();
+    }
     const base = { utteranceId, action: decision.action } as const;
 
     switch (decision.action) {

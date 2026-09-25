@@ -18,6 +18,7 @@ import { InMemoryEventLog, type EventLog } from "./event-log.js";
 import { isAbandoned, type LeaseState, newLease, onDisconnect, onReconnect, pendingCredit } from "./lease.js";
 import { reconstruct } from "./resume.js";
 import { buildSessionReview } from "./review.js";
+import { voiceLatencyReport } from "../../eval/voice-latency.js";
 import { enqueueRun, handleRunRequestedEvent, type RunContext } from "./runs.js";
 import {
   InMemorySessionStore,
@@ -391,7 +392,7 @@ export async function registerSessionModule(
     }
   }
 
-  async function deliverOwned(sessionId: string, result: { decision: unknown; utterance: unknown }, expectedToken?: string): Promise<void> {
+  async function deliverOwned(sessionId: string, result: { decision: unknown; utterance: unknown; serverTiming?: { decisionMs: number; classifierMs: number } }, expectedToken?: string): Promise<void> {
     if (owners) {
       try {
         if (expectedToken && !await owners.verify(sessionId, expectedToken)) return;
@@ -410,10 +411,11 @@ export async function registerSessionModule(
    * awaiting it, so without a single place for this the interviewer would decide
    * to speak and then say nothing.
    */
-  function deliver(sessionId: string, result: { decision: unknown; utterance: unknown }): void {
+  function deliver(sessionId: string, result: { decision: unknown; utterance: unknown; serverTiming?: { decisionMs: number; classifierMs: number } }): void {
     const runtime = runtimes.get(sessionId);
     const decision = result.decision as { action: string; reason: string } | null;
     const utterance = result.utterance;
+    const serverTiming = result.serverTiming;
 
     if (decision && decision.action !== "STAY_SILENT") {
         // M3-5 wires this to realtime response creation. Until then the
@@ -440,6 +442,7 @@ export async function registerSessionModule(
           kind: "ACTION",
           action: decision.action,
           ...(utteranceId ? { utteranceId } : {}),
+          ...(serverTiming ? { serverTiming } : {}),
         } as ServerMessage);
         void utterance;
 
@@ -651,8 +654,10 @@ export async function registerSessionModule(
     const loaded = opts.library.get(session.scenarioVersionId);
     if (!loaded) return reply.code(409).send({ error: "SCENARIO_UNAVAILABLE" });
 
-    const entries = buildSessionReview(await eventLog.read(id), loaded.version);
-    return reply.send({ sessionId: id, entries });
+    const events = await eventLog.read(id);
+    const entries = buildSessionReview(events, loaded.version);
+    const latency = voiceLatencyReport(events);
+    return reply.send({ sessionId: id, entries, latency });
   });
 
   const finalizing = new Map<string, Promise<InterviewSession>>();
@@ -1015,6 +1020,55 @@ export async function registerSessionModule(
 
     await runtime.markSpeechFinished();
     return reply.send({ ok: true });
+  });
+
+  const VoiceLatencyBody = z.object({
+    utteranceId: z.string().min(1),
+    action: z.string().min(1),
+    source: z.enum(["CACHED_AUDIO", "REALTIME_MODEL"]),
+    quietOnsetMs: z.number().nonnegative(),
+    vadEndDetectedMs: z.number().nonnegative().optional(),
+    activityEndSentMs: z.number().nonnegative().optional(),
+    firstInterimTranscriptMs: z.number().nonnegative().optional(),
+    transcriptFinalMs: z.number().nonnegative().optional(),
+    transcriptChunks: z.number().int().nonnegative().optional(),
+    authorizationReceivedMs: z.number().nonnegative().optional(),
+    speechRequestedMs: z.number().nonnegative().optional(),
+    audioFetchStartedMs: z.number().nonnegative().optional(),
+    firstAudioByteMs: z.number().nonnegative().optional(),
+    firstSamplePlayedMs: z.number().nonnegative().optional(),
+    serverDecisionMs: z.number().nonnegative().optional(),
+    classifierMs: z.number().nonnegative().optional(),
+    classifierSource: z.string().optional(),
+    prosodyPull: z.boolean().optional(),
+  }).strict();
+
+  app.post("/interview-sessions/:id/voice-latency", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const session = await store.get(id);
+    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
+
+    const body = VoiceLatencyBody.safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "INVALID_BODY", detail: body.error.issues });
+    }
+
+    const runtime = runtimes.get(id);
+    if (!runtime || !runtime.wasUtteranceIssued(body.data.utteranceId)) {
+      return reply.code(409).send({ error: "UNKNOWN_UTTERANCE" });
+    }
+
+    await eventLog.append({
+      sessionId: id,
+      type: "VOICE_LATENCY_MEASURED",
+      actor: "SYSTEM",
+      scenarioVersionId: session.scenarioVersionId,
+      payload: body.data,
+      traceId: session.traceId,
+      idempotencyKey: `latency:${body.data.utteranceId}`,
+    });
+
+    return reply.code(204).send();
   });
 
   app.post("/interview-sessions/:id/voice-tool", async (req, reply) => {

@@ -6,6 +6,7 @@ import {
   type SpeechBoundary,
   type VoiceCredential,
 } from "./realtime-voice";
+import { VoiceLatencyLedger, type LatencyLedger } from "./latency-ledger";
 
 /**
  * Browser shell for the voice path (M3-2).
@@ -163,6 +164,9 @@ export class VoiceSession {
   private readonly transcriptWaiters = new Set<() => void>();
   /** Serializes handle reports so a replacement token cannot outrun its handle. */
   private resumptionReport: Promise<void> = Promise.resolve();
+  private readonly ledger = new VoiceLatencyLedger({
+    onComplete: (report) => this.postLatencyReport(report),
+  });
 
   constructor(private readonly opts: VoiceSessionOptions) {}
 
@@ -252,13 +256,22 @@ export class VoiceSession {
         onSpeechBoundary: (boundary) => {
           this.candidateSpeechOpen = boundary.type === "SPEECH_STARTED";
           this.awaitingFinalTranscript = true;
+          if (boundary.type === "SPEECH_STARTED") {
+            this.ledger.mark("quietOnsetMs", boundary.atMs);
+          } else {
+            this.ledger.mark("vadEndDetectedMs", boundary.atMs);
+            this.ledger.mark("activityEndSentMs", boundary.atMs);
+          }
           this.opts.onSpeechBoundary?.(boundary);
         },
         onInputTranscript: (transcript) => {
           if (transcript.final) {
+            this.ledger.mark("transcriptFinalMs", Date.now());
             this.awaitingFinalTranscript = false;
             for (const settle of this.transcriptWaiters) settle();
             this.transcriptWaiters.clear();
+          } else {
+            this.ledger.mark("firstInterimTranscriptMs", Date.now());
           }
           this.opts.onTranscript?.(transcript);
         },
@@ -279,10 +292,17 @@ export class VoiceSession {
           return (await res.json()) as Record<string, unknown>;
         },
         onModelAudio: (pcm) => {
+          const isFirstChunk = !this.speechInFlight;
           this.speechInFlight = true;
           this.providerTurnComplete = false;
           this.playback?.enqueue(pcm);
           this.setStatus("SPEAKING");
+          if (isFirstChunk) {
+            // Scheduling lag (~30ms lookahead) is not separated in V0.
+            const now = Date.now();
+            this.ledger.mark("firstAudioByteMs", now);
+            this.ledger.firstSamplePlayed(now);
+          }
         },
         onSpeechComplete: () => {
           this.providerTurnComplete = true;
@@ -292,6 +312,7 @@ export class VoiceSession {
           // Immediate and total. Chunks arrive faster than real time, so a
           // barge-in that only stopped future audio would keep talking over the
           // candidate for however much was already scheduled.
+          this.ledger.abandon();
           this.playback?.stop();
           this.providerTurnComplete = false;
           this.reportSpeechOutcome("INTERRUPTED");
@@ -302,6 +323,7 @@ export class VoiceSession {
           this.setStatus("LISTENING");
           if (this.pendingSpeech) {
             this.speechInFlight = true;
+            this.ledger.mark("speechRequestedMs", Date.now());
             voice.requestSpeech(this.pendingSpeech);
             this.pendingSpeech = null;
           }
@@ -416,6 +438,18 @@ export class VoiceSession {
     ).catch(() => {});
   }
 
+  private postLatencyReport(report: LatencyLedger): void {
+    void apiFetch(
+      `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-latency`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(report),
+        keepalive: true,
+      },
+    ).catch(() => {});
+  }
+
   /**
    * The server authorized speech; ask the model to produce it.
    *
@@ -423,9 +457,24 @@ export class VoiceSession {
    * authorization carries a server-minted utterance id, and no wording — the
    * model fetches that through the relay above, under the same check.
    */
-  speak(authorization: SpeechAuthorization): void {
+  speak(
+    authorization: SpeechAuthorization,
+    serverTiming?: { decisionMs?: number; classifierMs?: number },
+  ): void {
+    const now = Date.now();
+    const opened = this.ledger.authorized(
+      authorization.utteranceId,
+      authorization.action,
+      "REALTIME_MODEL",
+      now,
+    );
+    if (opened && serverTiming) {
+      this.ledger.setServerTiming(serverTiming.decisionMs, serverTiming.classifierMs);
+    }
+
     if (this.voice?.isReady) {
       this.speechInFlight = true;
+      this.ledger.mark("speechRequestedMs", now);
       this.voice.requestSpeech(authorization);
       return;
     }

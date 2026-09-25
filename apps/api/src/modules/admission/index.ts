@@ -14,6 +14,8 @@ export interface RateLimitPolicy {
   realtimeMintsPerMinute: number;
   runRequestsPerMinute: number;
   supportReportsPerMinute: number;
+  /** One per utterance; optional — defaults to 30 in buildServer. */
+  voiceLatencyPerMinute?: number;
 }
 
 export interface RateLimitDecision { allowed: boolean; retryAfterSeconds: number }

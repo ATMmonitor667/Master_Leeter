@@ -67,6 +67,10 @@ export const EVENT_TYPES = [
   /** Compact authoritative runtime state used for restart recovery. */
   "RUNTIME_CHECKPOINT",
 
+  // ── Telemetry ────────────────────────────────────────────────────────────
+  /** Client-measured per-utterance latency breakdown. Server-only (never in CLIENT_EVENT_TYPES). */
+  "VOICE_LATENCY_MEASURED",
+
   // ── Faults ───────────────────────────────────────────────────────────────
   "CONNECTION_LOST",
   "CONNECTION_RESTORED",
@@ -234,6 +238,11 @@ export const ServerMessageSchema = z.discriminatedUnion("kind", [
     action: InterviewActionSchema,
     /** Present only for actions that produce speech. */
     utteranceId: z.string().optional(),
+    /** Server-measured deltas (never cross-clock with browser marks). */
+    serverTiming: z.object({
+      decisionMs: z.number().nonnegative(),
+      classifierMs: z.number().nonnegative(),
+    }).optional(),
   }),
   z.object({ kind: z.literal("REPLAY_FROM"), seq: z.number().int().nonnegative() }),
   z.object({ kind: z.literal("ERROR"), code: z.string(), message: z.string() }),

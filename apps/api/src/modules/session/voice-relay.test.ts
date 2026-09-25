@@ -183,15 +183,19 @@ describe("the app channel never carries the words", () => {
     const messages = await speak(port, id, "can the list be empty");
     const actions = messages.filter((m) => m["kind"] === "ACTION");
 
-    // An ACTION carries the action kind and an utterance id, and nothing else.
+    // An ACTION carries the action kind, utterance id, and optionally serverTiming.
     // The earlier version of this compared the key list against a slice of a
     // fixed list by length, which passes for any shape of the right size — a
     // test that cannot fail is worse than no test, because it is trusted.
     expect(actions.length, "no ACTION was pushed for an authorized turn").toBeGreaterThan(0);
 
+    const ALLOWED_ACTION_KEYS = new Set(["action", "kind", "utteranceId", "serverTiming"]);
     for (const action of actions) {
       const keys = Object.keys(action).sort();
-      expect(keys).toEqual(["action", "kind", "utteranceId"]);
+      expect(keys.every((k) => ALLOWED_ACTION_KEYS.has(k))).toBe(true);
+      expect(keys).toContain("action");
+      expect(keys).toContain("kind");
+      expect(keys).toContain("utteranceId");
       expect(JSON.stringify(action)).not.toMatch(/duplicate|sorted|scanner|package/i);
     }
   });
