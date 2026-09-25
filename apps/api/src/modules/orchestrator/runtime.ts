@@ -94,7 +94,7 @@ export interface RuntimeResult {
   decision: GateDecision | null;
   utterance: Utterance | null;
   /** Server-measured deltas for latency ledger. Present only on SPEECH_FINAL turns. */
-  serverTiming?: { decisionMs: number; classifierMs: number };
+  serverTiming?: { decisionMs: number; classifierMs: number; classifierSource?: "SPECULATIVE" | "DIRECT" };
 }
 
 export interface InterviewRuntimeDeps {
@@ -108,6 +108,8 @@ export interface InterviewRuntimeDeps {
   remainingSeconds: () => number;
   classifier?: IntentClassifier;
   now?: () => number;
+  /** Monotonic server elapsed clock; defaults to performance.now in production. */
+  monotonicNow?: () => number;
   /** Release switch for the shorter turn-end window. */
   prosodyEnabled?: boolean;
   /**
@@ -244,13 +246,19 @@ export class InterviewRuntime {
    * therefore judged too early and never reconsidered, so the interviewer stayed
    * silent until the candidate spoke again.
    */
-  private heldTurn: { turn: Turn; classification: TurnClassification } | null = null;
+  private heldTurn: { turn: Turn; classification: TurnClassification; attempt: number } | null = null;
   private reevaluationTimer: ReturnType<typeof setTimeout> | null = null;
   /** Turn held only because candidateSpeakingNow was true; re-judged on SPEECH_STOPPED. */
   private speakingNowHeld: { turn: Turn; classification: TurnClassification } | null = null;
   private candidateSpeakingNow = false;
   /** Accumulated transcript across fragments of one logical turn. Reset when gate speaks. */
   private openTurn: { transcript: string } | null = null;
+  /** Client silence delta plus server elapsed time; never subtract absolute cross-device clocks. */
+  private silenceBasis: { clientSilenceMs: number; receivedMonoMs: number } | null = null;
+  /** Live-only work. Neither speculation nor its cache is restored from the event log. */
+  private readonly speculativeClassifications = new Map<string, { startedAt: number; result: Promise<TurnClassification | null> }>();
+  private speculatedForTurn = false;
+  private classifierSource: "SPECULATIVE" | "DIRECT" = "DIRECT";
 
   /**
    * The decision currently authorizing speech, if any.
@@ -280,11 +288,13 @@ export class InterviewRuntime {
   private readonly classifier: IntentClassifier;
   private readonly buildSnapshot: typeof buildSnapshot;
   private readonly now: () => number;
+  private readonly monotonicNow: () => number;
   private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   private readonly prosodyEnabled: boolean;
 
   constructor(private readonly deps: InterviewRuntimeDeps) {
     this.now = deps.now ?? (() => Date.now());
+    this.monotonicNow = deps.monotonicNow ?? (deps.now ?? (() => performance.now()));
     this.classifier = deps.classifier ?? ruleBasedClassifier;
     this.buildSnapshot = deps.buildSnapshot ?? buildSnapshot;
     this.schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms));
@@ -414,6 +424,9 @@ export class InterviewRuntime {
     this.interviewerCurrentlySpeaking = false;
     this.candidateSpeakingNow = false;
     this.openTurn = null;
+    this.silenceBasis = null;
+    this.speculativeClassifications.clear();
+    this.speculatedForTurn = false;
     this.clearHeldTurn();
     this.observationDirty = false;
     this.pendingRuns.length = 0;
@@ -478,6 +491,7 @@ export class InterviewRuntime {
         this.candidateSpeakingNow = true;
         this.lastSpeechStoppedAtMs = null;
         this.lastProsody = null;
+        this.silenceBasis = null;
         break;
       case "SPEECH_STOPPED":
         this.candidateSpeakingNow = false;
@@ -660,11 +674,14 @@ export class InterviewRuntime {
         this.candidateSpeakingNow = false;
         this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.now();
         this.lastProsody = this.prosodyOf(event);
+        if (!this.speakingNowHeld) this.speculateFromBoundary(event);
         // A SPEECH_FINAL silenced only because candidateSpeakingNow can now be
         // re-judged: the floor has been yielded, so timing is the only blocker.
         if (this.speakingNowHeld && !this.heldTurn) {
+          this.silenceBasis = { clientSilenceMs: 0, receivedMonoMs: this.monotonicNow() };
           this.heldTurn = {
             ...this.speakingNowHeld,
+            attempt: 1,
             turn: { ...this.speakingNowHeld.turn,
               ...(this.lastProsody ? { prosody: this.lastProsody } : {}) },
           };
@@ -684,6 +701,7 @@ export class InterviewRuntime {
         this.candidateSpeechStarted = true;
         this.candidateSpeakingNow = true;
         this.lastProsody = null;
+        this.silenceBasis = null;
         return none;
 
       case "SPEECH_FINAL":
@@ -693,7 +711,11 @@ export class InterviewRuntime {
         // Replay reaches the re-judgement through here; live, the timer has
         // already appended this event and called the same path. Either way the
         // decision is a function of the log.
-        const result = await this.reevaluate(Date.parse(event.occurredAt) || this.now());
+        const loggedSilence = numberOf(event.payload["silenceMs"]);
+        const result = await this.reevaluate(
+          Date.parse(event.occurredAt) || this.now(),
+          loggedSilence !== null && loggedSilence >= 0 ? loggedSilence : undefined,
+        );
         return result ?? none;
       }
 
@@ -719,6 +741,9 @@ export class InterviewRuntime {
       case "SESSION_ENDED":
         this.state = applyEvent({ state: this.state, eventType: "SESSION_ENDED" }).state;
         this.openTurn = null;
+        this.silenceBasis = null;
+        this.speculativeClassifications.clear();
+        this.speculatedForTurn = false;
         return none;
 
       default:
@@ -760,16 +785,23 @@ export class InterviewRuntime {
     }
     const transcript = this.openTurn.transcript;
 
-    const ingestStart = performance.now();
+    const ingestStart = this.monotonicNow();
+    const silenceAtFinalMs = this.silenceBefore(event);
+    this.silenceBasis = silenceAtFinalMs === undefined ? null
+      : { clientSilenceMs: silenceAtFinalMs, receivedMonoMs: ingestStart };
 
     // The only await between a turn arriving and the gate ruling on it. A model
     // classifier suspends here for a few hundred milliseconds, so anything read
     // into `ctx` below is read AFTER that gap, not before it — which is what we
     // want: the gate should judge the world as it is when it decides, not as it
     // was when the candidate stopped talking.
-    const classifierStart = performance.now();
-    const classification = await this.classifier.classify({ transcript, finalized });
-    const classifierMs = Math.round(performance.now() - classifierStart);
+    const classifierStart = this.monotonicNow();
+    const speculative = finalized ? this.speculativeClassifications.get(transcript) : undefined;
+    const candidate = speculative && performance.now() - speculative.startedAt <= 30_000
+      ? await speculative.result : null;
+    const classification = candidate ?? await this.classifier.classify({ transcript, finalized });
+    this.classifierSource = candidate ? "SPECULATIVE" : "DIRECT";
+    const classifierMs = Math.max(0, Math.round(this.monotonicNow() - classifierStart));
 
     // Stage evidence from the words, folded BEFORE the gate rules on this turn
     // (M1-2b). Order matters: a candidate who commits to an approach while the
@@ -786,7 +818,7 @@ export class InterviewRuntime {
     // timestamps. Undefined when no speech-stop preceded this turn — a text-only
     // client, or voice that has not reported one — and the estimator reads that
     // as unknown rather than zero.
-    const silenceMs = this.silenceBefore(event);
+    const silenceMs = this.silenceNow();
 
     const turn: Turn = {
       turnId: `turn-${event.seq}`,
@@ -802,7 +834,7 @@ export class InterviewRuntime {
     };
 
     const result = await this.judge(turn, classification, silenceMs, 0);
-    const decisionMs = Math.round(performance.now() - ingestStart);
+    const decisionMs = Math.max(classifierMs, Math.round(this.monotonicNow() - ingestStart));
 
     // Observation starts only after this turn's gate decision. The transcript
     // can inform a later probe, but it must never race the decision about the
@@ -814,7 +846,45 @@ export class InterviewRuntime {
     });
     this.scheduleObservation();
 
-    return { ...result, serverTiming: { decisionMs, classifierMs } };
+    return { ...result, serverTiming: { decisionMs, classifierMs, classifierSource: this.classifierSource } };
+  }
+
+  private silenceNow(): number | undefined {
+    const basis = this.silenceBasis;
+    return basis ? Math.max(0, basis.clientSilenceMs + this.monotonicNow() - basis.receivedMonoMs) : undefined;
+  }
+
+  private speculateFromBoundary(event: SessionEvent): void {
+    if (this.speculatedForTurn || this.classifier.id === ruleBasedClassifier.id) return;
+    const status = this.classifier as IntentClassifier & { operationalStatus?: () => { circuit: string } };
+    if (status.operationalStatus?.().circuit === "OPEN") return;
+
+    const interim = stringOf(event.payload["interimTranscript"])?.trim().slice(0, 400) ?? "";
+    const assembled = this.openTurn?.transcript ?? "";
+    const transcript = (interim && assembled && (interim.startsWith(assembled) || assembled.endsWith(interim))
+      ? (interim.length >= assembled.length ? interim : assembled)
+      : [assembled, interim].filter(Boolean).join(" ")).slice(0, TURN_TRANSCRIPT_CAP).trim();
+    if (!transcript) return;
+
+    const now = performance.now();
+    for (const [key, value] of this.speculativeClassifications) {
+      if (now - value.startedAt > 30_000) this.speculativeClassifications.delete(key);
+    }
+    while (this.speculativeClassifications.size >= 8) {
+      const oldest = this.speculativeClassifications.keys().next().value;
+      if (oldest === undefined) break;
+      this.speculativeClassifications.delete(oldest);
+    }
+    // Exact text is required for a hit. Even punctuation can change intent, so
+    // a merely similar interim is never substituted for the finalized input.
+    const speculativeClassifier = this.classifier as IntentClassifier & {
+      classifySpeculative?: (input: { transcript: string; finalized: boolean }) => TurnClassification | Promise<TurnClassification>;
+    };
+    const result = Promise.resolve().then(() => speculativeClassifier.classifySpeculative
+      ? speculativeClassifier.classifySpeculative({ transcript, finalized: true })
+      : this.classifier.classify({ transcript, finalized: true })).catch(() => null);
+    this.speculativeClassifications.set(transcript, { startedAt: now, result });
+    this.speculatedForTurn = true;
   }
 
   /**
@@ -893,6 +963,7 @@ export class InterviewRuntime {
       } : {}),
       ...(completion.silenceMs !== undefined ? { silenceMs: completion.silenceMs } : {}),
       classifierId: classification.classifierId,
+      classifierSource: this.classifierSource,
       ...(decision.probeId ? { probeId: decision.probeId } : {}),
       ...(decision.hintLevel ? { hintLevel: decision.hintLevel } : {}),
       ...(decision.factKey ? { factKey: decision.factKey } : {}),
@@ -912,7 +983,7 @@ export class InterviewRuntime {
         // turn: SPEECH_STOPPED will promote it to heldTurn for re-evaluation.
         this.speakingNowHeld = { turn, classification };
       } else if (attempt < 2) {
-        this.holdForSilence(turn, classification, completion, silenceMs);
+        this.holdForSilence(turn, classification, completion, silenceMs, attempt);
       }
       return { decision, utterance: null };
     }
@@ -959,6 +1030,9 @@ export class InterviewRuntime {
       // The interviewer is responding: the accumulated turn is answered.
       // The next SPEECH_FINAL starts a fresh turn, not a continuation.
       this.openTurn = null;
+      this.silenceBasis = null;
+      this.speculativeClassifications.clear();
+      this.speculatedForTurn = false;
     }
 
     return { decision, utterance };
@@ -980,6 +1054,7 @@ export class InterviewRuntime {
     classification: TurnClassification,
     completion: { endProbability: number; textEndProbability: number },
     silenceMs: number | undefined,
+    attempt: number,
   ): void {
     if (silenceMs === undefined) return;
 
@@ -1002,7 +1077,7 @@ export class InterviewRuntime {
     const waitMs = required - silenceMs + 25;
     if (waitMs <= 0) return;
 
-    this.heldTurn = { turn, classification };
+    this.heldTurn = { turn, classification, attempt: attempt + 1 };
     this.reevaluationTimer = this.schedule(() => {
       void this.onSilenceElapsed().catch(() => this.clearHeldTurn());
     }, waitMs);
@@ -1021,21 +1096,17 @@ export class InterviewRuntime {
     if (!held) return;
 
     const occurredAt = new Date(this.now()).toISOString();
-    const elapsedAtMs = Date.parse(occurredAt);
-    const silenceMs =
-      this.lastSpeechStoppedAtMs !== null && Number.isFinite(elapsedAtMs)
-        ? Math.max(0, elapsedAtMs - this.lastSpeechStoppedAtMs)
-        : undefined;
+    const silenceMs = this.silenceNow();
     await this.append(
       "SILENCE_ELAPSED",
       "SYSTEM",
-      { turnId: held.turn.turnId, ...(silenceMs !== undefined ? { silenceMs } : {}) },
-      `silence:${held.turn.turnId}`,
+      { turnId: held.turn.turnId, ...(silenceMs !== undefined ? { silenceMs, basis: "client-delta+server-elapsed" } : {}) },
+      `silence:${held.turn.turnId}:${held.attempt}`,
       occurredAt,
     );
 
-    const result = await this.reevaluate(Date.parse(occurredAt));
-    await this.persistCheckpoint(`silence:${held.turn.turnId}`);
+    const result = await this.reevaluate(Date.parse(occurredAt), silenceMs);
+    await this.persistCheckpoint(`silence:${held.turn.turnId}:${held.attempt}`);
     if (result?.decision && result.decision.action !== "STAY_SILENT") {
       // Nobody is awaiting this call — it came from a timer, not from ingest —
       // so an authorized action has to be handed back explicitly or it would be
@@ -1050,16 +1121,16 @@ export class InterviewRuntime {
    * Shared by the live timer and by replay, which reaches it through
    * `ingest(SILENCE_ELAPSED)`. Same inputs, same decision, either way.
    */
-  private async reevaluate(atMs: number): Promise<RuntimeResult | null> {
+  private async reevaluate(atMs: number, loggedSilenceMs?: number): Promise<RuntimeResult | null> {
     const held = this.heldTurn;
     if (!held) return null;
 
     this.clearHeldTurn();
 
-    const silenceMs =
-      this.lastSpeechStoppedAtMs === null ? undefined : Math.max(0, atMs - this.lastSpeechStoppedAtMs);
+    const silenceMs = loggedSilenceMs ??
+      (this.lastSpeechStoppedAtMs === null ? undefined : Math.max(0, atMs - this.lastSpeechStoppedAtMs));
 
-    return this.judge(held.turn, held.classification, silenceMs, 1);
+    return this.judge(held.turn, held.classification, silenceMs, held.attempt);
   }
 
   private clearHeldTurn(): void {

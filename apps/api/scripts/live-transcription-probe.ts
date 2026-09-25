@@ -1,250 +1,200 @@
 /**
- * live-transcription-probe — latency from last audio byte to TRANSCRIPT_FINAL (V0)
- *
- * The latency study marks "time to final transcript" as *unmeasured* and
- * estimates a range of 250 ms–1200 ms. This script measures it directly so
- * the estimate can be replaced with a number.
- *
- * Usage (from repo root):
- *   pnpm --filter @master-leeter/api spike:transcription
- *
- * Required in apps/api/.env.local:
- *   REALTIME_API_KEY
- *   REALTIME_MODEL (e.g. gemini-live-2.5-flash-preview)
- *
- * Optional:
- *   PROBE_SAMPLES=10   number of utterances to stream (default: 10)
- *   PROBE_AUDIO_MS=3000  duration of each synthetic audio segment (default: 3000)
- *
- * Output: per-sample table + p50/p95 summary.
- *
- * ── What is being measured ─────────────────────────────────────────────────
- *
- * `lastAudioByteMs` — wall-clock time when we send activityEnd.
- * `firstFinalMs`    — wall-clock time when the first `inputTranscription`
- *                     message arrives with content (Gemini's proxy for a
- *                     final transcript event).
- *
- * The gap is bounded by:
- *   • provider VAD re-confirmation of the end we already declared
- *   • STT final pass over the full turn audio
- *   • network round-trip
- *
- * It is NOT affected by inference or tool calls — those have their own budget.
- * The measurement isolates the part the latency study could not attribute.
+ * Measure provider final-transcript delay with speech rather than a sine wave.
+ * Uses the same constrained credential and manual activity detection as live sessions.
+ * Prints aggregate timing and word accuracy; never prints text, audio, or credentials.
  */
-
 import WebSocket from "ws";
 import { loadEnv } from "../src/env.js";
+import { GeminiTokenMinter } from "../src/modules/realtime/token.js";
+import { GeminiTts, TtsError } from "../src/modules/realtime/tts.js";
 
 loadEnv();
 
-const API_KEY = process.env.REALTIME_API_KEY;
-const MODEL = process.env.REALTIME_MODEL ?? "gemini-live-2.5-flash-preview";
-const SAMPLES = Number(process.env.PROBE_SAMPLES ?? "10");
-const AUDIO_DURATION_MS = Number(process.env.PROBE_AUDIO_MS ?? "3000");
+const realtimeKey = process.env.REALTIME_API_KEY ?? process.env.GEMINI_API_KEY;
+const ttsKey = process.env.GEMINI_API_KEY ?? realtimeKey;
+const model = process.env.REALTIME_MODEL ?? "gemini-2.5-flash-native-audio-latest";
+const voice = process.env.REALTIME_VOICE ?? "Charon";
+const hangovers = [350, 500] as const;
+const frameSamples = 320; // 20 ms at 16 kHz
 
-if (!API_KEY) {
-  console.error("REALTIME_API_KEY is required");
-  process.exit(1);
+const samples = [
+  { id: "short-statement", text: "I would use a queue to process each item." },
+  { id: "long-statement", text: "First I would scan the values, then keep a running count, and finally return the largest count." },
+  { id: "question", text: "Can the input contain duplicate values?" },
+  { id: "paused-statement", text: "I would sort the values first. Then I would compare adjacent values.", pauseAfter: "I would sort the values first." },
+  { id: "trailing-connective", text: "I could use a set, but I need to consider memory." },
+  { id: "complexity", text: "The time complexity is O of n log n." },
+] as const;
+
+type Sample = (typeof samples)[number];
+type Result = {
+  id: string;
+  hangover: number;
+  chunks: number;
+  firstFinalMs: number | null;
+  lastFinalMs: number | null;
+  beforeEnd: boolean;
+  exact: boolean;
+  wordAccuracy: number;
+  error?: string;
+};
+
+function words(text: string): string[] {
+  return text.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
 }
 
-const WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
-
-/** Sine-wave at 440 Hz — recognisable as "a sound" so STT has something to work with. */
-function toneFrames(durationMs: number, sampleRate = 16_000, hz = 440): Buffer {
-  const samples = Math.floor((durationMs / 1_000) * sampleRate);
-  const buf = Buffer.alloc(samples * 2);
-  for (let i = 0; i < samples; i++) {
-    const value = Math.round(0.3 * 32767 * Math.sin((2 * Math.PI * hz * i) / sampleRate));
-    buf.writeInt16LE(Math.max(-32768, Math.min(32767, value)), i * 2);
-  }
-  return buf;
-}
-
-function b64(buf: Buffer): string {
-  return buf.toString("base64");
-}
-
-interface ProbeResult {
-  sample: number;
-  transcriptLatencyMs: number | null;
-  transcriptText: string;
-  timedOut: boolean;
-}
-
-async function runOneSample(sampleIndex: number): Promise<ProbeResult> {
-  return new Promise((resolve) => {
-    const ws = new WebSocket(WS_URL);
-    let lastByteMs = 0;
-    let firstFinalMs: number | null = null;
-    let transcriptText = "";
-    let settled = false;
-
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      ws.close();
-      resolve({
-        sample: sampleIndex,
-        transcriptLatencyMs: null,
-        transcriptText: "",
-        timedOut: true,
-      });
-    }, 15_000);
-
-    const settle = (result: ProbeResult) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      ws.close();
-      resolve(result);
-    };
-
-    ws.on("error", (err) => {
-      settle({
-        sample: sampleIndex,
-        transcriptLatencyMs: null,
-        transcriptText: `ERROR: ${err.message}`,
-        timedOut: false,
-      });
-    });
-
-    ws.on("open", () => {
-      // Setup: disable automatic activity detection, request input transcription.
-      ws.send(
-        JSON.stringify({
-          setup: {
-            model: `models/${MODEL}`,
-            realtimeInputConfig: {
-              automaticActivityDetection: { disabled: true },
-            },
-            inputAudioTranscription: {},
-            systemInstruction: {
-              parts: [{ text: "You are a transcription probe. Do not produce any output." }],
-            },
-          },
-        }),
-      );
-    });
-
-    ws.on("message", (raw: Buffer) => {
-      let msg: Record<string, unknown>;
-      try {
-        msg = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
-      } catch {
-        return;
-      }
-
-      // Wait for SETUP_COMPLETE before streaming audio.
-      if (msg["setupComplete"] !== undefined) {
-        streamAudio();
-        return;
-      }
-
-      // Gemini Live delivers input transcription in serverContent.
-      const serverContent = msg["serverContent"] as Record<string, unknown> | undefined;
-      if (!serverContent) return;
-
-      const transcription = serverContent["inputTranscription"] as
-        | { text?: string }
-        | undefined;
-
-      if (transcription?.text && firstFinalMs === null) {
-        firstFinalMs = Date.now();
-        transcriptText = transcription.text;
-        settle({
-          sample: sampleIndex,
-          transcriptLatencyMs: firstFinalMs - lastByteMs,
-          transcriptText,
-          timedOut: false,
-        });
-      }
-    });
-
-    function streamAudio() {
-      // Signal that the candidate started speaking.
-      ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
-
-      const audio = toneFrames(AUDIO_DURATION_MS);
-      const CHUNK_MS = 100;
-      const CHUNK_BYTES = Math.floor((CHUNK_MS / 1_000) * 16_000 * 2);
-      let offset = 0;
-
-      const sendNextChunk = () => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        if (offset >= audio.length) {
-          // All audio sent — signal end of speech.
-          lastByteMs = Date.now();
-          ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-          return;
-        }
-        const chunk = audio.subarray(offset, Math.min(offset + CHUNK_BYTES, audio.length));
-        offset += CHUNK_BYTES;
-        ws.send(
-          JSON.stringify({
-            realtimeInput: {
-              audio: { data: b64(Buffer.from(chunk)), mimeType: "audio/pcm;rate=16000" },
-            },
-          }),
-        );
-        setTimeout(sendNextChunk, CHUNK_MS);
-      };
-
-      sendNextChunk();
+function accuracy(expected: string, actual: string): number {
+  const a = words(expected);
+  const b = words(actual);
+  if (a.length === 0) return 0;
+  // LCS gives partial credit when the provider splits or drops a phrase.
+  let prior = new Array<number>(b.length + 1).fill(0);
+  for (const word of a) {
+    const next = new Array<number>(b.length + 1).fill(0);
+    for (let i = 1; i <= b.length; i++) {
+      next[i] = word === b[i - 1] ? (prior[i - 1] ?? 0) + 1
+        : Math.max(prior[i] ?? 0, next[i - 1] ?? 0);
     }
+    prior = next;
+  }
+  return (prior[b.length] ?? 0) / a.length;
+}
+
+function percentile(values: number[], fraction: number): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)] ?? null;
+}
+
+function to16k(pcm: Buffer, fromRate: number): Buffer {
+  const inputSamples = pcm.length >> 1;
+  const outputSamples = Math.floor(inputSamples * 16_000 / fromRate);
+  const out = Buffer.alloc(outputSamples * 2);
+  for (let i = 0; i < outputSamples; i++) {
+    const position = i * fromRate / 16_000;
+    const left = Math.min(inputSamples - 1, Math.floor(position));
+    const right = Math.min(inputSamples - 1, left + 1);
+    const fraction = position - left;
+    const value = Math.round(pcm.readInt16LE(left * 2) * (1 - fraction) + pcm.readInt16LE(right * 2) * fraction);
+    out.writeInt16LE(value, i * 2);
+  }
+  return out;
+}
+
+async function renderSample(tts: GeminiTts, sample: Sample): Promise<Buffer> {
+  if (!("pauseAfter" in sample)) {
+    const rendered = await tts.render(sample.text);
+    return to16k(rendered.pcm, rendered.sampleRate);
+  }
+  const rest = sample.text.slice(sample.pauseAfter.length).trim();
+  const first = await tts.render(sample.pauseAfter);
+  const second = await tts.render(rest);
+  return Buffer.concat([
+    to16k(first.pcm, first.sampleRate),
+    Buffer.alloc(900 * 16_000 / 1_000 * 2),
+    to16k(second.pcm, second.sampleRate),
+  ]);
+}
+
+async function measure(minter: GeminiTokenMinter, sample: Sample, audio: Buffer, hangover: number): Promise<Result> {
+  const credential = await minter.mint();
+  return new Promise((resolve) => {
+    const socket = new WebSocket(credential.wsUrl);
+    const finals: string[] = [];
+    let activityEndAt = Number.POSITIVE_INFINITY;
+    let firstFinalAt: number | null = null;
+    let lastFinalAt: number | null = null;
+    let finished = false;
+    let streaming = false;
+    let nextFrame: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = (error?: string) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(deadline);
+      if (nextFrame) clearTimeout(nextFrame);
+      socket.close();
+      const joined = finals.join(" ");
+      const last = finals.at(-1) ?? "";
+      const bestAccuracy = Math.max(accuracy(sample.text, joined), accuracy(sample.text, last));
+      resolve({
+        id: sample.id,
+        hangover,
+        chunks: finals.length,
+        firstFinalMs: firstFinalAt === null ? null : Math.round(firstFinalAt - activityEndAt),
+        lastFinalMs: lastFinalAt === null ? null : Math.round(lastFinalAt - activityEndAt),
+        beforeEnd: firstFinalAt !== null && firstFinalAt < activityEndAt,
+        exact: bestAccuracy === 1,
+        wordAccuracy: bestAccuracy,
+        ...(error ? { error } : {}),
+      });
+    };
+    const deadline = setTimeout(() => finish("timeout"), 25_000);
+    socket.on("error", () => finish("socket-error"));
+    socket.on("close", () => finish("closed"));
+    socket.on("open", () => socket.send(JSON.stringify({ setup: { model: credential.model } })));
+    socket.on("message", (raw) => {
+      let message: Record<string, unknown>;
+      try { message = JSON.parse(raw.toString()) as Record<string, unknown>; }
+      catch { return; }
+      if ((message["setupComplete"] !== undefined || message["setup_complete"] !== undefined) && !streaming) {
+        streaming = true;
+        socket.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+        let offset = 0;
+        let quietFrames = Math.ceil(hangover / 20);
+        const sendFrame = () => {
+          if (socket.readyState !== WebSocket.OPEN) return;
+          if (offset < audio.length) {
+            const frame = audio.subarray(offset, offset + frameSamples * 2);
+            offset += frame.length;
+            socket.send(JSON.stringify({ realtimeInput: { audio: { data: frame.toString("base64"), mimeType: "audio/pcm;rate=16000" } } }));
+          } else if (quietFrames-- > 0) {
+            socket.send(JSON.stringify({ realtimeInput: { audio: { data: Buffer.alloc(frameSamples * 2).toString("base64"), mimeType: "audio/pcm;rate=16000" } } }));
+          } else {
+            activityEndAt = performance.now();
+            socket.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+            setTimeout(() => finish(), 5_000);
+            return;
+          }
+          nextFrame = setTimeout(sendFrame, 20);
+        };
+        sendFrame();
+      }
+      const content = (message["serverContent"] ?? message["server_content"]) as Record<string, unknown> | undefined;
+      const final = (content?.["inputTranscription"] ?? content?.["input_transcription"]) as Record<string, unknown> | undefined;
+      if (typeof final?.["text"] === "string" && final["text"].trim()) {
+        finals.push(final["text"].trim());
+        firstFinalAt ??= performance.now();
+        lastFinalAt = performance.now();
+      }
+    });
   });
 }
 
-function percentile(sorted: number[], q: number): number {
-  if (sorted.length === 0) return 0;
-  const rank = Math.ceil(q * sorted.length);
-  return sorted[Math.min(sorted.length - 1, rank - 1)] ?? 0;
-}
-
-async function main() {
-  console.log(`\nlive-transcription-probe V0`);
-  console.log(`model: ${MODEL}  samples: ${SAMPLES}  audio: ${AUDIO_DURATION_MS}ms\n`);
-
-  const results: ProbeResult[] = [];
-  for (let i = 0; i < SAMPLES; i++) {
-    process.stdout.write(`  sample ${String(i + 1).padStart(2)}/${SAMPLES} … `);
-    const result = await runOneSample(i + 1);
-    results.push(result);
-    if (result.timedOut) {
-      process.stdout.write("TIMED_OUT\n");
-    } else if (result.transcriptLatencyMs === null) {
-      process.stdout.write(`FAILED: ${result.transcriptText}\n`);
-    } else {
-      process.stdout.write(`${result.transcriptLatencyMs} ms  "${result.transcriptText.slice(0, 40)}"\n`);
+async function main(): Promise<void> {
+  if (!realtimeKey || !ttsKey) throw new Error("REALTIME_API_KEY and GEMINI_API_KEY are required in apps/api/.env.local");
+  const minter = new GeminiTokenMinter({ apiKey: realtimeKey, model, voice });
+  const tts = new GeminiTts({ apiKey: ttsKey, model: process.env.TTS_MODEL, voiceId: voice });
+  const results: Result[] = [];
+  for (const sample of samples) {
+    const audio = await renderSample(tts, sample);
+    for (const hangover of hangovers) {
+      const result = await measure(minter, sample, audio, hangover);
+      results.push(result);
+      console.log(`${result.id.padEnd(22)} H=${hangover} chunks=${result.chunks} first=${result.firstFinalMs ?? "-"}ms last=${result.lastFinalMs ?? "-"}ms exact=${result.exact} accuracy=${result.wordAccuracy.toFixed(2)}${result.error ? ` ${result.error}` : ""}`);
     }
-    // Brief pause between samples to avoid rate-limiting.
-    if (i < SAMPLES - 1) await new Promise((r) => setTimeout(r, 500));
   }
-
-  const good = results
-    .map((r) => r.transcriptLatencyMs)
-    .filter((ms): ms is number => ms !== null)
-    .sort((a, b) => a - b);
-
-  const timedOut = results.filter((r) => r.timedOut).length;
-  const failed = results.filter((r) => !r.timedOut && r.transcriptLatencyMs === null).length;
-
-  console.log(`\n── summary ──────────────────────────────────────────────`);
-  console.log(`  measured:   ${good.length}/${SAMPLES}`);
-  console.log(`  timed out:  ${timedOut}`);
-  console.log(`  failed:     ${failed}`);
-
-  if (good.length > 0) {
-    console.log(`  min:        ${good[0]} ms`);
-    console.log(`  p50:        ${percentile(good, 0.5)} ms`);
-    console.log(`  p95:        ${percentile(good, 0.95)} ms`);
-    console.log(`  max:        ${good[good.length - 1]} ms`);
+  for (const hangover of hangovers) {
+    const group = results.filter((result) => result.hangover === hangover);
+    const last = group.flatMap((result) => result.lastFinalMs === null ? [] : [result.lastFinalMs]);
+    console.log(`H=${hangover}: chunks/segment=${(group.reduce((sum, result) => sum + result.chunks, 0) / group.length).toFixed(2)} T_f p50/p95=${percentile(last, 0.5) ?? "-"}/${percentile(last, 0.95) ?? "-"}ms finals-before-end=${group.filter((result) => result.beforeEnd).length}/${group.length} exact=${group.filter((result) => result.exact).length}/${group.length}`);
   }
-  console.log();
 }
 
-main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
+main().catch((error: unknown) => {
+  // Provider errors may contain URLs or credentials; never print their messages.
+  const detail = error instanceof TtsError ? `${error.kind}${error.status ? ` HTTP ${error.status}` : ""}`
+    : error instanceof Error ? error.name : "unknown";
+  console.error(`voice probe failed (${detail})`);
+  process.exitCode = 1;
 });

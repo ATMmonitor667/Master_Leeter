@@ -159,7 +159,7 @@ export class GeminiClassifier implements IntentClassifier {
   private breakerOpenUntilMs = 0;
 
   /** Observability counters. Read by tests; intended for the M7-2 trace later. */
-  readonly stats = { calls: 0, cacheHits: 0, fallbacks: 0, vetoes: 0 };
+  readonly stats = { calls: 0, speculativeCalls: 0, cacheHits: 0, fallbacks: 0, vetoes: 0 };
 
   constructor(opts: GeminiClassifierOptions) {
     this.client = new GeminiClient({
@@ -179,6 +179,11 @@ export class GeminiClassifier implements IntentClassifier {
 
   operationalStatus(): { circuit: "OPEN" | "CLOSED" } {
     return { circuit: this.breakerOpen() ? "OPEN" : "CLOSED" };
+  }
+
+  classifySpeculative(input: ClassifierInput): Promise<TurnClassification> {
+    this.stats.speculativeCalls += 1;
+    return this.classify(input);
   }
 
   async classify(input: ClassifierInput): Promise<TurnClassification> {

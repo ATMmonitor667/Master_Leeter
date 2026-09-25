@@ -202,10 +202,11 @@ export class VoiceLatencyLedger {
   }
 
   /** Store server-measured deltas from the ACTION message. */
-  setServerTiming(decisionMs: number | undefined, classifierMs: number | undefined): void {
+  setServerTiming(decisionMs: number | undefined, classifierMs: number | undefined, classifierSource?: string): void {
     if (!this.open) return;
     if (decisionMs !== undefined) this.open.serverDecisionMs = decisionMs;
     if (classifierMs !== undefined) this.open.classifierMs = classifierMs;
+    if (classifierSource) this.open.classifierSource = classifierSource;
   }
 
   /**

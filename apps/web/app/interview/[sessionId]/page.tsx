@@ -80,8 +80,8 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
       case "ACTION":
         if (msg.utteranceId) {
           voiceRef.current?.speak(
-            { action: msg.action, utteranceId: msg.utteranceId },
-            msg.serverTiming as { decisionMs?: number; classifierMs?: number } | undefined,
+            { action: msg.action, utteranceId: msg.utteranceId, ...(msg.audio ? { audio: msg.audio } : {}) },
+            msg.serverTiming as { decisionMs?: number; classifierMs?: number; classifierSource?: string } | undefined,
           );
         }
         break;
@@ -186,7 +186,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         // The events M4-2 measures silenceMs between. They carry the VAD's
         // onset timestamps, not the moment they were sent.
         onSpeechBoundary: (boundary) =>
-          clientRef.current?.speechBoundary(boundary.type, boundary.atMs, boundary.prosody),
+          clientRef.current?.speechBoundary(boundary.type, boundary.atMs, boundary.prosody, boundary.interimTranscript),
         onTranscript: ({ text, final }) => {
           if (final) {
             setCaptionInterim("");

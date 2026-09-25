@@ -55,6 +55,7 @@ export interface DeletionReceipt {
  */
 const IDENTIFYING_FIELDS = new Set([
   "transcript",
+  "interimTranscript",
   "text",
   "stdout",
   "stderr",

@@ -242,6 +242,7 @@ export const ServerMessageSchema = z.discriminatedUnion("kind", [
     serverTiming: z.object({
       decisionMs: z.number().nonnegative(),
       classifierMs: z.number().nonnegative(),
+      classifierSource: z.enum(["SPECULATIVE", "DIRECT"]).optional(),
     }).optional(),
     /**
      * Pre-rendered audio head for the authorized utterance (P3).

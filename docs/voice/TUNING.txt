@@ -1,0 +1,26 @@
+VOICE LATENCY TUNING
+
+Run `pnpm review -- <session-id>` after each human interview. Read response
+latency p50/p95 together with material interruptions and missed answers. The
+review TSV records responseLatencyMs, speechSource, classifierSource,
+prosodyProbability, prosodyConfidence, prosodyPull, and largestStage.
+
+If an interruption occurs, inspect the preceding transcript and prosody cue.
+For a false confident endpoint, increase the confident minimum for that mode
+by 100 ms or reduce PROSODY_WEIGHTS.sharpness. If prosody is absent and the
+system still interrupts, treat it as a turn/gate defect and reproduce it in
+simulation before tuning.
+
+If answers are slow, inspect largestStage. Quiet onset to final transcript is
+provider transcription and VAD delay. Final transcript to authorization is
+classification or the silence hold; check classifierSource and prosodyPull.
+Authorization to first sample is cache coverage, network, and playback. A
+missed clear question is always a defect, not a tuning target.
+
+Change one setting at a time, then record a new session. Keep
+NEXT_PUBLIC_VAD_HANGOVER_MS=350: the six-utterance TTS probe found no accuracy
+gain from 500 ms and a slower quiet-onset-to-final path. Confirm in human runs.
+`NEXT_PUBLIC_TRANSCRIPT_COALESCE=off` restores chunk-by-chunk forwarding.
+`TURN_END_PROSODY=off` restores clock-only policy timing;
+`TTS_PRERENDER=off` restores realtime model speech; `NEXT_PUBLIC_ROOM_TONE=off`
+removes the acoustic bed.

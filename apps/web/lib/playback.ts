@@ -46,6 +46,8 @@ export interface AudioSink {
   readonly running?: boolean;
   /** Schedules `samples` to begin at `atTime`, returning a handle to cancel it. */
   play(samples: Float32Array, sampleRate: number, atTime: number): ScheduledSource;
+  /** Optional shared gain stage for provisional barge-in. */
+  setGain?(value: number, seconds: number): void;
 }
 
 export interface PlaybackSchedulerOptions {
@@ -83,6 +85,7 @@ export class PlaybackScheduler {
   /** When the next buffer should start. Null when nothing is queued. */
   private cursor: number | null = null;
   private readonly active = new Set<ScheduledSource>();
+  private ducked = false;
 
   constructor(opts: PlaybackSchedulerOptions) {
     this.sink = opts.sink;
@@ -156,6 +159,20 @@ export class PlaybackScheduler {
     }
   }
 
+  /** Make cached speech inaudible while deciding whether a vocalization is a barge-in. */
+  duck(): void {
+    if (!this.sink.setGain) { this.stop(); return; }
+    if (this.ducked) return;
+    this.ducked = true;
+    this.sink.setGain(0.025, 0.03);
+  }
+
+  restore(): void {
+    if (!this.ducked) return;
+    this.ducked = false;
+    this.sink.setGain?.(1, 0.03);
+  }
+
   /**
    * Cancel everything, immediately. This is barge-in.
    *
@@ -165,6 +182,10 @@ export class PlaybackScheduler {
    * started answering, which is the failure this product exists to avoid.
    */
   stop(): void {
+    if (this.ducked) {
+      this.ducked = false;
+      this.sink.setGain?.(1, 0);
+    }
     for (const source of this.active) {
       try {
         source.stop();

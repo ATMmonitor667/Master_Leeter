@@ -260,8 +260,13 @@ export class SessionClient {
     type: "SPEECH_STARTED" | "SPEECH_STOPPED",
     atMs: number,
     prosody?: { probability: number; confidence: number; reason?: string },
+    interimTranscript?: string,
   ): void {
-    this.enqueue(type, type === "SPEECH_STOPPED" && prosody ? { prosody } : {}, atMs);
+    const payload = type === "SPEECH_STOPPED" ? {
+      ...(prosody ? { prosody } : {}),
+      ...(interimTranscript?.trim() ? { interimTranscript: interimTranscript.trim().slice(0, 400) } : {}),
+    } : {};
+    this.enqueue(type, payload, atMs);
   }
 
   /** Finalized candidate transcript — the gate's only speech input (M4-2). */

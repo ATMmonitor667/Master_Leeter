@@ -438,7 +438,7 @@ export async function registerSessionModule(
     }
   }
 
-  async function deliverOwned(sessionId: string, result: { decision: unknown; utterance: unknown; serverTiming?: { decisionMs: number; classifierMs: number } }, expectedToken?: string): Promise<void> {
+  async function deliverOwned(sessionId: string, result: { decision: unknown; utterance: unknown; serverTiming?: { decisionMs: number; classifierMs: number; classifierSource?: "SPECULATIVE" | "DIRECT" } }, expectedToken?: string): Promise<void> {
     if (owners) {
       try {
         if (expectedToken && !await owners.verify(sessionId, expectedToken)) return;
@@ -457,7 +457,7 @@ export async function registerSessionModule(
    * awaiting it, so without a single place for this the interviewer would decide
    * to speak and then say nothing.
    */
-  function deliver(sessionId: string, result: { decision: unknown; utterance: unknown; serverTiming?: { decisionMs: number; classifierMs: number } }): void {
+  function deliver(sessionId: string, result: { decision: unknown; utterance: unknown; serverTiming?: { decisionMs: number; classifierMs: number; classifierSource?: "SPECULATIVE" | "DIRECT" } }): void {
     const runtime = runtimes.get(sessionId);
     const decision = result.decision as { action: string; reason: string } | null;
     const utterance = result.utterance as { utteranceId?: string; text?: string; action?: string } | null;

@@ -9,6 +9,7 @@ import {
 import { VoiceLatencyLedger, type LatencyLedger } from "./latency-ledger";
 import { Vad } from "./vad";
 import { ProsodicTurnEndPredictor } from "./turn-predictor";
+import { RoomTone } from "./room-tone";
 
 /**
  * Browser shell for the voice path (M3-2).
@@ -62,11 +63,24 @@ registerProcessor("capture", CaptureProcessor);
 
 /** Web Audio behind the scheduler's structural interface. */
 export class WebAudioSink implements AudioSink {
+  private readonly gainNode: GainNode;
   get running(): boolean { return this.context.state === "running"; }
   constructor(
     private readonly context: AudioContext,
     private readonly onEnded: (source: ScheduledSource) => void,
-  ) {}
+  ) {
+    this.gainNode = context.createGain();
+    this.gainNode.connect(context.destination);
+  }
+
+  setGain(value: number, seconds: number): void {
+    const now = this.context.currentTime;
+    const gain = this.gainNode.gain;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    if (seconds <= 0) gain.setValueAtTime(value, now);
+    else gain.linearRampToValueAtTime(value, now + seconds);
+  }
 
   get currentTime(): number {
     return this.context.currentTime;
@@ -83,7 +97,7 @@ export class WebAudioSink implements AudioSink {
 
     const node = this.context.createBufferSource();
     node.buffer = buffer;
-    node.connect(this.context.destination);
+    node.connect(this.gainNode);
 
     const handle: ScheduledSource = { stop: () => node.stop() };
     node.onended = () => this.onEnded(handle);
@@ -146,6 +160,7 @@ export class VoiceSession {
   private worklet: AudioWorkletNode | null = null;
   private voice: RealtimeVoice | null = null;
   private playback: PlaybackScheduler | null = null;
+  private roomTone: RoomTone | null = null;
   private status: VoiceStatus = "IDLE";
   private stopping = false;
   private replacingVoice = false;
@@ -162,8 +177,19 @@ export class VoiceSession {
   private activeSinkId: string | undefined;
   private deviceChangeListener: (() => void) | null = null;
   private speechInFlight = false;
+  private modelAudioStarted = false;
+  private speechSource: "CACHED" | "MODEL" | null = null;
+  private cachedAbort: AbortController | null = null;
+  private cachedStreamComplete = false;
   private candidateSpeechOpen = false;
   private awaitingFinalTranscript = false;
+  private latestInterimTranscript = "";
+  private readonly finalTranscriptChunks: string[] = [];
+  private finalTranscriptTimer: ReturnType<typeof setTimeout> | null = null;
+  private finalFlushNotBeforeMs = 0;
+  private preStopInterimAtMs: number | null = null;
+  private preStopFinalAtMs: number | null = null;
+  private preStopFinalChunks = 0;
   private readonly transcriptWaiters = new Set<() => void>();
   /** Serializes handle reports so a replacement token cannot outrun its handle. */
   private resumptionReport: Promise<void> = Promise.resolve();
@@ -202,10 +228,16 @@ export class VoiceSession {
       this.context = new AudioContext();
       this.captureRate = this.context.sampleRate;
 
+      if (process.env.NEXT_PUBLIC_ROOM_TONE !== "off") {
+        this.roomTone = new RoomTone(this.context);
+        this.roomTone.start();
+      }
+
       this.playback = new PlaybackScheduler({
         sink: new WebAudioSink(this.context, (source) => {
           this.playback?.release(source);
           this.completeSpeechIfDrained();
+          this.completeCachedIfDrained();
         }),
       });
 
@@ -236,10 +268,14 @@ export class VoiceSession {
     this.voice?.disconnect();
     this.replacingVoice = false;
 
+    const configuredHangover = Number(process.env.NEXT_PUBLIC_VAD_HANGOVER_MS);
+    const endHangoverMs = Number.isFinite(configuredHangover) && configuredHangover >= 250 && configuredHangover <= 800
+      ? configuredHangover : 350;
+
     const voice = new RealtimeVoice({
         credential,
         captureRate: this.captureRate,
-        vad: new Vad({}, process.env.NEXT_PUBLIC_TURN_PREDICTOR === "off"
+        vad: new Vad({ endHangoverMs }, process.env.NEXT_PUBLIC_TURN_PREDICTOR === "off"
           ? null : new ProsodicTurnEndPredictor()),
         connect: (handlers) => {
           const socket = new WebSocket(credential.wsUrl);
@@ -261,23 +297,56 @@ export class VoiceSession {
         onSpeechBoundary: (boundary) => {
           this.candidateSpeechOpen = boundary.type === "SPEECH_STARTED";
           this.awaitingFinalTranscript = true;
+          if (boundary.type === "SPEECH_STARTED") {
+            this.latestInterimTranscript = "";
+            this.preStopInterimAtMs = null;
+            this.preStopFinalAtMs = null;
+            this.preStopFinalChunks = 0;
+            if (this.finalTranscriptTimer) clearTimeout(this.finalTranscriptTimer);
+            this.finalTranscriptTimer = null;
+          }
           if (boundary.type === "SPEECH_STOPPED") {
             this.ledger.mark("quietOnsetMs", boundary.atMs);
             this.ledger.mark("vadEndDetectedMs", Date.now());
             this.ledger.mark("activityEndSentMs", Date.now());
+            if (this.preStopInterimAtMs !== null) this.ledger.mark("firstInterimTranscriptMs", this.preStopInterimAtMs);
+            if (this.preStopFinalAtMs !== null) {
+              for (let i = 0; i < this.preStopFinalChunks; i++) this.ledger.mark("transcriptFinalMs", this.preStopFinalAtMs);
+            }
+            this.finalFlushNotBeforeMs = Date.now() + 250;
+            this.scheduleFinalTranscriptFlush(250);
           }
-          this.opts.onSpeechBoundary?.(boundary);
+          const boundaryText = this.finalTranscriptChunks.length > 0
+            ? assembleTranscript(this.finalTranscriptChunks) : this.latestInterimTranscript;
+          this.opts.onSpeechBoundary?.(boundary.type === "SPEECH_STOPPED" && boundaryText
+            ? { ...boundary, interimTranscript: boundaryText.slice(0, 400) }
+            : boundary);
         },
         onInputTranscript: (transcript) => {
           if (transcript.final) {
-            this.ledger.mark("transcriptFinalMs", Date.now());
-            this.awaitingFinalTranscript = false;
-            for (const settle of this.transcriptWaiters) settle();
-            this.transcriptWaiters.clear();
+            const atMs = Date.now();
+            if (this.candidateSpeechOpen) {
+              this.preStopFinalAtMs = atMs;
+              this.preStopFinalChunks += 1;
+            } else {
+              this.ledger.mark("transcriptFinalMs", atMs);
+            }
+            if (process.env.NEXT_PUBLIC_TRANSCRIPT_COALESCE === "off") {
+              this.awaitingFinalTranscript = false;
+              for (const settle of this.transcriptWaiters) settle();
+              this.transcriptWaiters.clear();
+              this.opts.onTranscript?.(transcript);
+              return;
+            }
+            this.finalTranscriptChunks.push(transcript.text);
+            this.opts.onTranscript?.({ text: assembleTranscript(this.finalTranscriptChunks), final: false });
+            if (!this.candidateSpeechOpen) this.scheduleFinalTranscriptFlush(120);
           } else {
-            this.ledger.mark("firstInterimTranscriptMs", Date.now());
+            if (this.candidateSpeechOpen) this.preStopInterimAtMs ??= Date.now();
+            else this.ledger.mark("firstInterimTranscriptMs", Date.now());
+            this.latestInterimTranscript = transcript.text.trim().slice(0, 400);
+            this.opts.onTranscript?.(transcript);
           }
-          this.opts.onTranscript?.(transcript);
         },
         // Every tool call goes to the server. The client answers none of them:
         // the tools read pinned scenario content and check the gate's
@@ -296,19 +365,22 @@ export class VoiceSession {
           return (await res.json()) as Record<string, unknown>;
         },
         onModelAudio: (pcm) => {
-          const isFirstChunk = !this.speechInFlight;
+          if (this.speechSource !== "MODEL") return;
+          const isFirstChunk = !this.modelAudioStarted;
+          this.modelAudioStarted = true;
           this.speechInFlight = true;
           this.providerTurnComplete = false;
-          this.playback?.enqueue(pcm);
+          const startAt = this.playback?.enqueue(pcm);
           this.setStatus("SPEAKING");
           if (isFirstChunk) {
             // Scheduling lag (~30ms lookahead) is not separated in V0.
             const now = Date.now();
             this.ledger.mark("firstAudioByteMs", now);
-            this.ledger.firstSamplePlayed(now);
+            if (startAt !== null && startAt !== undefined) this.ledger.firstSamplePlayed(this.firstSampleWallTime(startAt));
           }
         },
         onSpeechComplete: () => {
+          if (this.speechSource !== "MODEL") return;
           this.providerTurnComplete = true;
           this.completeSpeechIfDrained();
         },
@@ -317,16 +389,24 @@ export class VoiceSession {
           // barge-in that only stopped future audio would keep talking over the
           // candidate for however much was already scheduled.
           this.ledger.abandon();
+          this.cachedAbort?.abort();
+          this.cachedAbort = null;
+          this.cachedStreamComplete = false;
           this.playback?.stop();
           this.providerTurnComplete = false;
           this.reportSpeechOutcome("INTERRUPTED");
           this.setStatus("LISTENING");
         },
+        onBargeInProvisional: (ducked) => {
+          if (ducked) this.playback?.duck();
+          else this.playback?.restore();
+        },
         onReady: () => {
           this.reconnectAttempts = 0;
-          this.setStatus("LISTENING");
+          if (this.speechSource !== "CACHED") this.setStatus("LISTENING");
           if (this.pendingSpeech) {
             this.speechInFlight = true;
+            this.speechSource = "MODEL";
             this.ledger.mark("speechRequestedMs", Date.now());
             voice.requestSpeech(this.pendingSpeech);
             this.pendingSpeech = null;
@@ -363,6 +443,7 @@ export class VoiceSession {
           this.scheduleGoAwayRotation(timeLeftMs);
         },
         onDisconnected: () => {
+          if (!this.candidateSpeechOpen) this.flushFinalTranscript();
           if (!this.stopping && !this.replacingVoice) {
             this.scheduleReconnect(new Error("Voice connection ended. Reconnecting…"));
           }
@@ -370,6 +451,7 @@ export class VoiceSession {
         onError: (err) => this.scheduleReconnect(err),
       });
     voice.setMuted(this.mutedState);
+    if (this.speechSource === "CACHED" && this.speechInFlight) voice.noteLocalPlayback(true);
     this.voice = voice;
     voice.connect();
   }
@@ -378,10 +460,12 @@ export class VoiceSession {
     if (this.stopping || this.reconnectTimer) return;
     if (this.goAwayTimer) clearTimeout(this.goAwayTimer);
     this.goAwayTimer = null;
-    this.playback?.stop();
-    this.providerTurnComplete = false;
-    if (this.speechInFlight) this.reportSpeechOutcome("INTERRUPTED");
-    this.setStatus("CONNECTING");
+    if (this.speechSource !== "CACHED") {
+      this.playback?.stop();
+      this.providerTurnComplete = false;
+      if (this.speechInFlight) this.reportSpeechOutcome("INTERRUPTED");
+    }
+    if (this.speechSource !== "CACHED") this.setStatus("CONNECTING");
     this.opts.onError?.(error);
     const delay = Math.min(30_000, 1_000 * 2 ** Math.min(this.reconnectAttempts++, 5));
     this.reconnectTimer = setTimeout(() => {
@@ -399,18 +483,18 @@ export class VoiceSession {
 
     const rotate = () => {
       const remaining = deadline - Date.now();
-      if (this.speechInFlight && remaining > 3_000) {
+      if (this.speechInFlight && this.speechSource === "MODEL" && remaining > 3_000) {
         this.goAwayTimer = setTimeout(rotate, Math.min(250, remaining - 3_000));
         return;
       }
 
       this.goAwayTimer = null;
-      if (this.speechInFlight) {
+      if (this.speechInFlight && this.speechSource === "MODEL") {
         this.playback?.stop();
         this.providerTurnComplete = false;
         this.reportSpeechOutcome("INTERRUPTED");
       }
-      this.setStatus("CONNECTING");
+      if (this.speechSource !== "CACHED") this.setStatus("CONNECTING");
       void this.connectProvider().catch((err: unknown) => {
         this.scheduleReconnect(err instanceof Error ? err : new Error(String(err)));
       });
@@ -431,6 +515,9 @@ export class VoiceSession {
   private reportSpeechOutcome(outcome: "COMPLETED" | "INTERRUPTED"): void {
     if (!this.speechInFlight) return;
     this.speechInFlight = false;
+    this.speechSource = null;
+    this.modelAudioStarted = false;
+    this.voice?.noteLocalPlayback(false);
     void apiFetch(
       `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
       {
@@ -463,19 +550,61 @@ export class VoiceSession {
    */
   speak(
     authorization: SpeechAuthorization,
-    serverTiming?: { decisionMs?: number; classifierMs?: number },
+    serverTiming?: { decisionMs?: number; classifierMs?: number; classifierSource?: string },
   ): void {
     const now = Date.now();
     const opened = this.ledger.authorized(
       authorization.utteranceId,
       authorization.action,
-      "REALTIME_MODEL",
+      authorization.audio ? "CACHED_AUDIO" : "REALTIME_MODEL",
       now,
     );
     if (opened && serverTiming) {
-      this.ledger.setServerTiming(serverTiming.decisionMs, serverTiming.classifierMs);
+      this.ledger.setServerTiming(serverTiming.decisionMs, serverTiming.classifierMs, serverTiming.classifierSource);
     }
 
+    // The first 400 ms ride on ACTION. Schedule them before any await or fetch;
+    // this is the latency win that rendering on the server makes possible.
+    if (authorization.audio && this.playback && this.context) {
+      let headScheduled = false;
+      try {
+        const bytes = base64ToBytes(authorization.audio.head);
+        const rate = authorization.audio.rate;
+        if (bytes.length === 0 || bytes.length % 2 !== 0 || !Number.isFinite(rate) || rate <= 0) {
+          throw new Error("invalid cached audio head");
+        }
+        const head = toPcm16(bytes, null).pcm;
+        const startAt = this.playback.enqueueAt(head, rate);
+        if (startAt === null) throw new Error("empty cached audio head");
+        headScheduled = true;
+        this.speechInFlight = true;
+        this.speechSource = "CACHED";
+        this.cachedStreamComplete = false;
+        this.voice?.noteLocalPlayback(true);
+        this.ledger.mark("firstAudioByteMs", now);
+        this.ledger.firstSamplePlayed(this.firstSampleWallTime(startAt));
+        this.setStatus("SPEAKING");
+        if (authorization.audio.tailFrom !== undefined) {
+          void this.streamCachedTail(authorization, authorization.audio.tailFrom, rate);
+        } else {
+          this.cachedStreamComplete = true;
+          this.completeCachedIfDrained();
+        }
+        return;
+      } catch {
+        if (headScheduled) {
+          // Once any audio started, a model fallback would repeat the sentence.
+          this.cachedStreamComplete = true;
+          this.completeCachedIfDrained();
+          return;
+        }
+        this.ledger.setSource("REALTIME_MODEL");
+      }
+    } else if (authorization.audio) {
+      this.ledger.setSource("REALTIME_MODEL");
+    }
+
+    this.speechSource = "MODEL";
     if (this.voice?.isReady) {
       this.speechInFlight = true;
       this.ledger.mark("speechRequestedMs", now);
@@ -483,6 +612,73 @@ export class VoiceSession {
       return;
     }
     this.pendingSpeech = authorization;
+  }
+
+  private async streamCachedTail(authorization: SpeechAuthorization, fromByte: number, rate: number): Promise<void> {
+    const controller = new AbortController();
+    this.cachedAbort = controller;
+    let carry: number | null = null;
+    try {
+      const query = new URLSearchParams({ utteranceId: authorization.utteranceId, fromByte: String(fromByte) });
+      const response = await apiFetch(
+        `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-audio?${query}`,
+        { signal: controller.signal },
+      );
+      if (!response.ok || !response.body) throw new Error(`cached audio HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        if (controller.signal.aborted || this.speechSource !== "CACHED") return;
+        const decoded = toPcm16(next.value, carry);
+        carry = decoded.remainder;
+        if (decoded.pcm.length > 0) this.playback?.enqueueAt(decoded.pcm, rate);
+      }
+    } catch {
+      // Once the head played, restarting the sentence through the model would
+      // repeat it. End the short utterance after the queued audio drains.
+    } finally {
+      if (this.cachedAbort === controller) this.cachedAbort = null;
+      if (!controller.signal.aborted && this.speechSource === "CACHED") {
+        this.cachedStreamComplete = true;
+        this.completeCachedIfDrained();
+      }
+    }
+  }
+
+  private scheduleFinalTranscriptFlush(afterMs: number): void {
+    if (process.env.NEXT_PUBLIC_TRANSCRIPT_COALESCE === "off") return;
+    if (this.finalTranscriptTimer) clearTimeout(this.finalTranscriptTimer);
+    const delay = Math.max(afterMs, this.finalFlushNotBeforeMs - Date.now());
+    this.finalTranscriptTimer = setTimeout(() => {
+      this.finalTranscriptTimer = null;
+      this.flushFinalTranscript();
+    }, delay);
+  }
+
+  private flushFinalTranscript(): void {
+    if (this.candidateSpeechOpen || this.finalTranscriptChunks.length === 0) return;
+    const text = assembleTranscript(this.finalTranscriptChunks);
+    this.finalTranscriptChunks.length = 0;
+    if (!text) return;
+    this.awaitingFinalTranscript = false;
+    this.opts.onTranscript?.({ text, final: true });
+    for (const settle of this.transcriptWaiters) settle();
+    this.transcriptWaiters.clear();
+  }
+
+  private completeCachedIfDrained(): void {
+    if (this.speechSource !== "CACHED" || !this.cachedStreamComplete || this.playback?.isPlaying) return;
+    this.cachedStreamComplete = false;
+    this.setStatus("LISTENING");
+    this.reportSpeechOutcome("COMPLETED");
+  }
+
+  private firstSampleWallTime(startAt: number): number {
+    const context = this.context;
+    if (!context) return Date.now();
+    const latency = Number.isFinite(context.outputLatency) ? context.outputLatency : 0;
+    return Date.now() + (startAt - context.currentTime + latency) * 1000;
   }
 
   setMuted(muted: boolean): void {
@@ -523,6 +719,14 @@ export class VoiceSession {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    if (this.finalTranscriptTimer) clearTimeout(this.finalTranscriptTimer);
+    this.finalTranscriptTimer = null;
+    this.finalTranscriptChunks.length = 0;
+    this.roomTone?.stop();
+    this.roomTone = null;
+    this.cachedAbort?.abort();
+    this.cachedAbort = null;
+    this.cachedStreamComplete = false;
     if (this.deviceChangeListener) {
       navigator.mediaDevices?.removeEventListener("devicechange", this.deviceChangeListener);
       this.deviceChangeListener = null;
@@ -812,4 +1016,36 @@ async function toText(data: unknown): Promise<string> {
   if (data instanceof Blob) return data.text();
   if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
   return String(data);
+}
+
+function assembleTranscript(chunks: readonly string[]): string {
+  let assembled = "";
+  for (const chunk of chunks) {
+    const next = chunk.trim();
+    if (!next) continue;
+    if (assembled && next.startsWith(assembled)) assembled = next;
+    else if (!assembled.endsWith(next)) assembled = [assembled, next].filter(Boolean).join(" ");
+  }
+  return assembled.slice(-800);
+}
+
+/** Decode the inline audio head without an async hop. */
+export function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+/** PCM16 little-endian decoder that carries an odd byte between stream chunks. */
+export function toPcm16(bytes: Uint8Array, carry: number | null): { pcm: Int16Array; remainder: number | null } {
+  const length = bytes.length + (carry === null ? 0 : 1);
+  const pcm = new Int16Array(Math.floor(length / 2));
+  for (let i = 0; i < pcm.length; i += 1) {
+    const low = i === 0 && carry !== null ? carry : bytes[2 * i - (carry === null ? 0 : 1)] ?? 0;
+    const high = bytes[2 * i + (carry === null ? 1 : 0)] ?? 0;
+    const unsigned = low | (high << 8);
+    pcm[i] = unsigned >= 0x8000 ? unsigned - 0x10000 : unsigned;
+  }
+  return { pcm, remainder: length % 2 ? bytes[bytes.length - 1] ?? carry : null };
 }

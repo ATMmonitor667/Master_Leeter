@@ -10,6 +10,10 @@ export interface ReviewEntry {
   utterance: string;
   reason: string;
   classifierId: string;
+  classifierSource: string;
+  prosodyProbability: number | null;
+  prosodyConfidence: number | null;
+  prosodyPull: number | null;
   semanticEndProbability: number | null;
   textEndProbability: number | null;
   silenceMs: number | null;
@@ -122,6 +126,10 @@ export function buildSessionReview(
         utterance,
         reason: text(payload["reason"]) ?? "",
         classifierId: text(payload["classifierId"]) ?? "rule",
+        classifierSource: text(payload["classifierSource"]) ?? "",
+        prosodyProbability: number(payload["prosodyProbability"]),
+        prosodyConfidence: number(payload["prosodyConfidence"]),
+        prosodyPull: number(payload["prosodyPull"]),
         semanticEndProbability: number(payload["semanticEndProbability"]),
         textEndProbability: number(payload["textEndProbability"]),
         silenceMs: number(payload["silenceMs"]),
@@ -183,6 +191,10 @@ export function reviewAsTsv(entries: readonly ReviewEntry[]): string {
     "utterance",
     "reason",
     "classifierId",
+    "classifierSource",
+    "prosodyProbability",
+    "prosodyConfidence",
+    "prosodyPull",
     "semanticEndProbability",
     "textEndProbability",
     "silenceMs",

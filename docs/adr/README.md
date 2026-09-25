@@ -12,6 +12,8 @@ requires a new ADR that supersedes it, not a quiet code change.
 | ADR-005 | Modular monolith for MVP | Reduces operational complexity while preserving service boundaries |
 | ADR-006 | External sandbox (Judge0) first | Code isolation is hard; buy time to focus on interaction quality |
 | ADR-007 | No raw audio retention by default | Privacy and trust; transcript is usually sufficient for scoring |
+| ADR-008 | [Pre-render authorized authored speech](ADR-008-pre-rendered-authored-speech.md) | Remove model generation from the authorized speech path while verifying wording |
+| ADR-009 | [Turn integrity and endpointing](ADR-009-turn-integrity-and-endpointing.md) | Keep decisions replayable while reducing silence and classification latency |
 
 ## Open decisions to record as you make them
 
