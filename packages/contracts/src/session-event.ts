@@ -243,6 +243,22 @@ export const ServerMessageSchema = z.discriminatedUnion("kind", [
       decisionMs: z.number().nonnegative(),
       classifierMs: z.number().nonnegative(),
     }).optional(),
+    /**
+     * Pre-rendered audio head for the authorized utterance (P3).
+     *
+     * When present, the client schedules this synchronously before any await,
+     * cutting decision-to-first-audio from ~1.5 s to ~50 ms. The tail (if any)
+     * is fetched via GET /voice-utterance-audio?utteranceId=&fromByte=tailFrom.
+     *
+     * `head` is base64-encoded PCM16 little-endian. `tailFrom` is absent when
+     * the head covers the entire utterance. The wording never appears here —
+     * only samples.
+     */
+    audio: z.object({
+      head: z.string(),
+      rate: z.number().int().positive(),
+      tailFrom: z.number().int().nonnegative().optional(),
+    }).optional(),
   }),
   z.object({ kind: z.literal("REPLAY_FROM"), seq: z.number().int().nonnegative() }),
   z.object({ kind: z.literal("ERROR"), code: z.string(), message: z.string() }),

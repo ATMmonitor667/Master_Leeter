@@ -45,3 +45,26 @@ export {
   type VoiceToolDeps,
   type VoiceToolName,
 } from "./tools.js";
+
+export {
+  DEFAULT_TTS_MODEL,
+  FakeTts,
+  GeminiTts,
+  TTS_SAMPLE_RATE,
+  TtsError,
+  sampleRateFromMime,
+  ttsFromEnv,
+  type GeminiTtsOptions,
+  type RenderedSpeech,
+  type TtsRenderer,
+} from "./tts.js";
+
+export {
+  UtteranceAudioCache,
+  authoredUtterances,
+  hashText,
+  type CachedAudio,
+  type PrewarmReport,
+  type UtteranceAudioCacheOptions,
+  type UtteranceTranscriber,
+} from "./utterance-audio.js";

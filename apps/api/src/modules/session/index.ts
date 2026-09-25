@@ -6,9 +6,11 @@ import { InterviewRuntime, type IntentClassifier } from "../orchestrator/index.j
 import {
   MintLimiter,
   RealtimeTokenError,
+  UtteranceAudioCache,
   VoiceResumptionStore,
   executeVoiceTool,
   type RealtimeTokenMinter,
+  type TtsRenderer,
 } from "../realtime/index.js";
 import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario } from "../scenario/loader.js";
@@ -137,6 +139,19 @@ export interface SessionModuleOptions {
   maxRealtimeMintsPerSession?: number;
   realtimeCircuit?: ProviderCircuit;
   onRealtimeCircuitOpen?: (sessionId: string, failureKind: string) => void;
+  /**
+   * TTS renderer for pre-rendering authored utterances (P3).
+   *
+   * When present, the session module maintains a per-process utterance audio
+   * cache keyed on `(renderer.id, tone, sha256(text))` and attaches a pre-
+   * rendered audio head to every ACTION message whose text is cached. This
+   * removes the model turn, tool relay and second model turn from the hot path
+   * — cutting decision-to-first-audio from ~1.5 s to ~50 ms.
+   *
+   * Absent when TTS is unconfigured. Every line then falls back to the realtime
+   * model, as before. The interview is slower, never broken.
+   */
+  ttsRenderer?: TtsRenderer;
 }
 
 export async function registerSessionModule(
@@ -146,6 +161,25 @@ export async function registerSessionModule(
   const store = opts.store ?? new InMemorySessionStore();
   const eventLog = opts.eventLog ?? new InMemoryEventLog();
   const questionBank = opts.questionBank ?? new FileQuestionBank(opts.library);
+
+  // P3: per-process utterance audio cache (shared across all sessions).
+  const ttsCache = opts.ttsRenderer
+    ? new UtteranceAudioCache({ renderer: opts.ttsRenderer, concurrency: 3 })
+    : null;
+
+  if (ttsCache) {
+    app.log.info({ rendererId: ttsCache.rendererId }, "speech: TTS pre-rendering enabled");
+  } else {
+    app.log.warn("speech: TTS pre-rendering off (no renderer) — voice falls back to realtime model");
+  }
+
+  // P3: per-session authorized utterance map — holds text + tone for the GET
+  // audio route. Cleared on completion or session end.
+  const authorizedUtterances = new Map<string, { utteranceId: string; text: string; tone: string }>();
+
+  // P3: per-session tone cache so deliver() (synchronous) can look up the tone
+  // without an async store.get(). Populated at session start, cleared at end.
+  const sessionTones = new Map<string, string>();
 
   /**
    * runId -> the session context needed to attribute the result on the way back.
@@ -216,6 +250,8 @@ export async function registerSessionModule(
     runtimes.get(id)?.dispose();
     runtimes.delete(id);
     liveSessions.delete(id);
+    sessionTones.delete(id);
+    authorizedUtterances.delete(id);
   }) : undefined;
   const channel = new SessionChannel({ sessions: store, eventLog: owners ? {
     read: (id, seq) => eventLog.read(id, seq),
@@ -342,6 +378,8 @@ export async function registerSessionModule(
 
     if (runtimeToken && !await owners!.verify(sessionId, runtimeToken)) return null;
     runtimes.set(session.id, runtime);
+    // P3: cache the session tone so deliver() (synchronous) can look it up.
+    sessionTones.set(session.id, session.interviewerTone ?? "NORMAL");
     return runtime;
   }
 
@@ -414,14 +452,10 @@ export async function registerSessionModule(
   function deliver(sessionId: string, result: { decision: unknown; utterance: unknown; serverTiming?: { decisionMs: number; classifierMs: number } }): void {
     const runtime = runtimes.get(sessionId);
     const decision = result.decision as { action: string; reason: string } | null;
-    const utterance = result.utterance;
+    const utterance = result.utterance as { utteranceId?: string; text?: string; action?: string } | null;
     const serverTiming = result.serverTiming;
 
     if (decision && decision.action !== "STAY_SILENT") {
-        // M3-5 wires this to realtime response creation. Until then the
-        // decision and its authored wording live in the log, which is what the
-        // eval harness reads — so silence quality is measurable before a single
-        // byte of audio exists.
         app.log.info(
           { sessionId, action: decision.action, reason: decision.reason },
           "interviewer authorized to speak",
@@ -433,18 +467,44 @@ export async function registerSessionModule(
          *
          * The wording is authored scenario content — probe variants, hint text,
          * a canonical fact — and putting it on this channel would land it in the
-         * browser where a candidate can read ahead. The voice agent fetches it
-         * from the tool surface instead, which checks the same authorization
-         * this message reflects.
+         * browser where a candidate can read ahead.
+         *
+         * P3: when the text is in the TTS cache, attach a pre-rendered audio
+         * head so the client can schedule it synchronously on arrival — shaving
+         * ~1.5 s off the hot path without ever sending the wording as text.
+         * The wording remains server-only; the bytes cross because audio always
+         * did, and only for the one authorized utterance this turn.
          */
-        const utteranceId = (utterance as { utteranceId?: string } | null)?.utteranceId;
+        const utteranceId = utterance?.utteranceId;
+        const utteranceText = utterance?.text ?? "";
+
+        // P3: look up the cache for the session's tone.
+        let audioAttachment: { head: string; rate: number; tailFrom?: number } | undefined;
+        if (ttsCache && utteranceId && utteranceText.trim() !== "") {
+          const tone = (sessionTones.get(sessionId) ?? "NORMAL") as "EXTRA_NICE" | "NORMAL" | "MEAN";
+          const cached = ttsCache.get(utteranceText, tone);
+          if (cached) {
+            // Head = first 400 ms (even byte count). Tail served via GET.
+            const HEAD_BYTES = Math.floor(cached.sampleRate * 0.4) * 2; // 400 ms, 2 bytes/sample
+            const headEnd = Math.min(cached.pcm.length, HEAD_BYTES);
+            // Align to even byte boundary (PCM16 = 2 bytes per sample)
+            const headEndAligned = headEnd & ~1;
+            const head = cached.pcm.subarray(0, headEndAligned).toString("base64");
+            const tailFrom = headEndAligned < cached.pcm.length ? headEndAligned : undefined;
+            audioAttachment = { head, rate: cached.sampleRate, ...(tailFrom !== undefined ? { tailFrom } : {}) };
+
+            // Track the authorized utterance so the GET route can serve the tail.
+            authorizedUtterances.set(sessionId, { utteranceId, text: utteranceText, tone });
+          }
+        }
+
         pushToSession(sessionId, {
           kind: "ACTION",
           action: decision.action,
           ...(utteranceId ? { utteranceId } : {}),
           ...(serverTiming ? { serverTiming } : {}),
+          ...(audioAttachment ? { audio: audioAttachment } : {}),
         } as ServerMessage);
-        void utterance;
 
         /**
          * Close the window only when nobody can tell us it closed.
@@ -461,7 +521,10 @@ export async function registerSessionModule(
          * report it, and leaving the flag set would make gate rule 1 read every
          * later turn as a barge-in and mute the interviewer for good.
          */
-        if (!sessionPushers.has(sessionId)) void runtime?.markSpeechFinished();
+        if (!sessionPushers.has(sessionId)) {
+          authorizedUtterances.delete(sessionId);
+          void runtime?.markSpeechFinished();
+        }
       }
   }
 
@@ -561,6 +624,21 @@ export async function registerSessionModule(
           traceId: session.traceId,
           idempotencyKey: `session-started:${session.id}`,
         });
+      }
+
+      // P3.5: prewarm the opening script and first repeat variant eagerly, so
+      // even the first utterance can be served from cache. The rest of the
+      // vocabulary is prewarm on realtime-token mint. Both are not awaited.
+      if (ttsCache) {
+        const scenarioForPrewarm = opts.library.get(session.scenarioId);
+        if (scenarioForPrewarm) {
+          const tone = (session.interviewerTone ?? "NORMAL") as "EXTRA_NICE" | "NORMAL" | "MEAN";
+          const brief = scenarioForPrewarm.version.oralBrief;
+          const earlyLines = [brief.openingScript, ...(brief.repeatVariants ?? [])].slice(0, 2);
+          for (const line of earlyLines) {
+            if (line?.trim()) void ttsCache.ensure(line.trim(), tone).catch(() => {});
+          }
+        }
       }
 
       // Note what is NOT in this response: no oral brief, no facts, no tests.
@@ -713,6 +791,8 @@ export async function registerSessionModule(
       mintLimiter.forget(session.id);
       resumption.clear(session.id);
       leases.delete(session.id);
+      sessionTones.delete(session.id);
+      authorizedUtterances.delete(session.id);
 
       const scenario = opts.library.get(session.scenarioVersionId);
       if (opts.evaluationQueue) {
@@ -912,6 +992,32 @@ export async function registerSessionModule(
         "minted realtime credential",
       );
 
+      // P3.5: kick off full vocabulary prewarm on first mint (not awaited).
+      // Runs while the candidate reads the workspace, so the brief and all
+      // probes are cached before anyone starts speaking.
+      if (ttsCache && mintLimiter.used(id) === 1) {
+        const scenario = opts.library.get(session.scenarioId);
+        if (scenario) {
+          const tone = (session.interviewerTone ?? "NORMAL") as "EXTRA_NICE" | "NORMAL" | "MEAN";
+          void ttsCache.prewarm(scenario.version, tone).then((report) => {
+            app.log.info(
+              {
+                sessionId: id,
+                rendererId: report.rendererId,
+                tone: report.tone,
+                requested: report.requested,
+                rendered: report.rendered,
+                cached: report.cached,
+                failed: report.failed,
+                elapsedMs: report.elapsedMs,
+                ...(report.sampleError ? { sampleError: report.sampleError } : {}),
+              },
+              "TTS prewarm complete",
+            );
+          }).catch(() => {});
+        }
+      }
+
       return reply.code(201).send(credential);
     } catch (err) {
       const kind = err instanceof RealtimeTokenError ? err.kind : "PROVIDER_ERROR";
@@ -1018,8 +1124,67 @@ export async function registerSessionModule(
     const runtime = runtimes.get(id);
     if (!runtime) return reply.code(409).send({ error: "NO_LIVE_SESSION" });
 
+    // P3: clear the authorized utterance so the GET audio route returns 403
+    // for any subsequent request after this turn is done.
+    const completed = authorizedUtterances.get(id);
+    if (completed) {
+      authorizedUtterances.delete(id);
+    }
+
+    const body = (req.body ?? {}) as { outcome?: string };
+    const outcome = body.outcome === "INTERRUPTED" ? "INTERRUPTED" : "COMPLETED";
+    app.log.info({ sessionId: id, utteranceId: completed?.utteranceId, outcome }, "speech outcome reported");
+
     await runtime.markSpeechFinished();
     return reply.send({ ok: true });
+  });
+
+  /**
+   * Tail of a pre-rendered utterance (P3).
+   *
+   * Serves the bytes from `fromByte` to the end of the cached audio. The head
+   * (first 400 ms) was already attached to the ACTION message; this delivers
+   * the remainder so the client can play the full utterance without depending
+   * on the realtime model.
+   *
+   * Security: the utteranceId must match exactly what was authorized this turn.
+   * Any mismatch returns 403. The authorized entry is cleared by
+   * /voice-utterance-complete, so a completed turn cannot be replayed.
+   */
+  app.get("/interview-sessions/:id/voice-utterance-audio", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { utteranceId, fromByte } = req.query as { utteranceId?: string; fromByte?: string };
+
+    const session = await store.get(id);
+    if (!session || session.endedAt) return reply.code(403).send({ error: "NOT_AUTHORIZED" });
+
+    const authorized = authorizedUtterances.get(id);
+    if (!authorized || authorized.utteranceId !== utteranceId) {
+      return reply.code(403).send({ error: "NOT_AUTHORIZED" });
+    }
+
+    const runtime = runtimes.get(id);
+    if (!runtime || runtime.voiceContext()?.utteranceId !== utteranceId) {
+      return reply.code(403).send({ error: "NOT_AUTHORIZED" });
+    }
+
+    if (!ttsCache) return reply.code(404).send({ error: "NOT_RENDERED" });
+
+    const tone = authorized.tone as "EXTRA_NICE" | "NORMAL" | "MEAN";
+    const cached = ttsCache.get(authorized.text, tone);
+    if (!cached) return reply.code(404).send({ error: "NOT_RENDERED" });
+
+    // Parse and clamp fromByte: round down to even, clamp to buffer bounds.
+    const rawFrom = parseInt(fromByte ?? "0", 10);
+    const from = Math.max(0, Number.isFinite(rawFrom) ? rawFrom & ~1 : 0);
+    const tail = from < cached.pcm.length ? cached.pcm.subarray(from) : Buffer.alloc(0);
+
+    return reply
+      .code(200)
+      .header("content-type", `audio/L16;codec=pcm;rate=${cached.sampleRate}`)
+      .header("x-utterance-sample-rate", String(cached.sampleRate))
+      .header("cache-control", "no-store")
+      .send(tail);
   });
 
   const VoiceLatencyBody = z.object({

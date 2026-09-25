@@ -75,6 +75,14 @@ export type SpeechBoundary = { type: "SPEECH_STARTED" | "SPEECH_STOPPED"; atMs: 
 export interface SpeechAuthorization {
   action: string;
   utteranceId: string;
+  /**
+   * Pre-rendered audio head from the server (P3).
+   *
+   * When present, the client schedules this synchronously, cutting the
+   * decision-to-first-audio path from ~1.5 s to ~50 ms. The model is not
+   * asked to speak and the tool relay is skipped entirely.
+   */
+  audio?: { head: string; rate: number; tailFrom?: number };
 }
 
 /** A tool call from the model, on its way to the server relay. */

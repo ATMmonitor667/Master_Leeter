@@ -25,7 +25,7 @@ import {
 } from "./modules/preparation/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule, type ConsentStore, type DeletionStore } from "./modules/privacy/index.js";
-import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
+import { minterFromEnv, ttsFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
@@ -102,6 +102,14 @@ export interface ServerOptions {
    * rest of the interview is unaffected.
    */
   realtimeTokenMinter?: RealtimeTokenMinter;
+  /**
+   * TTS renderer for pre-rendering authored utterances (P3).
+   *
+   * When absent, every authored line is spoken by the realtime model as before.
+   * Built by `ttsFromEnv` in `start()` when TTS_PRERENDER is not "off" and a
+   * Gemini API key is available.
+   */
+  ttsRenderer?: import("./modules/realtime/index.js").TtsRenderer;
 }
 
 export function buildServer(opts: ServerOptions) {
@@ -255,6 +263,7 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
     ...(opts.maxRealtimeMintsPerSession ? { maxRealtimeMintsPerSession: opts.maxRealtimeMintsPerSession } : {}),
     ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
+    ...(opts.ttsRenderer ? { ttsRenderer: opts.ttsRenderer } : {}),
     onRealtimeCircuitOpen: (sessionId, failureKind) =>
       publishAlert({ kind: "REALTIME_CIRCUIT_OPEN", sessionId, failureKind }),
   });
@@ -353,6 +362,8 @@ export async function start(): Promise<void> {
   // Null when voice is unconfigured. Built once and shared: the token route is
   // the only caller, and the credential it mints is per-request regardless.
   const realtimeTokenMinter = minterFromEnv();
+  // P3: null when TTS_PRERENDER=off or no API key. Falls back to the realtime model.
+  const ttsRenderer = ttsFromEnv(process.env, geminiApiKeyFromEnv());
   const realtimeCircuit = new ProviderCircuit(3, 60_000);
   const alertSink = config.alertWebhookUrl ? new WebhookAlertSink({
     url: config.alertWebhookUrl,
@@ -393,6 +404,7 @@ export async function start(): Promise<void> {
     ...(runner ? { runner } : {}),
     classifier,
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
+    ...(ttsRenderer ? { ttsRenderer } : {}),
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
     ...(scenarioRestater ? { scenarioRestater } : {}),
     ...(evaluator ? { evaluator } : {}),

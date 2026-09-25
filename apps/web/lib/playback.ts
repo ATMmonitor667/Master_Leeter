@@ -58,12 +58,22 @@ export interface PlaybackSchedulerOptions {
    * audible as latency.
    */
   leadSeconds?: number;
+  /**
+   * Fired once, on natural drain only.
+   *
+   * Triggered when the last buffer finishes playing on its own — via `release()`.
+   * Never fired by `stop()`, because barge-in ending playback is not the same
+   * event as the interviewer finishing a sentence. The caller uses this to report
+   * a COMPLETED speech outcome.
+   */
+  onDrained?: () => void;
 }
 
 export class PlaybackScheduler {
   private readonly sink: AudioSink;
   private readonly sampleRate: number;
   private readonly leadSeconds: number;
+  private readonly onDrained?: () => void;
 
   /** When the next buffer should start. Null when nothing is queued. */
   private cursor: number | null = null;
@@ -73,6 +83,7 @@ export class PlaybackScheduler {
     this.sink = opts.sink;
     this.sampleRate = opts.sampleRate ?? LIVE_OUTPUT_SAMPLE_RATE;
     this.leadSeconds = opts.leadSeconds ?? 0.06;
+    this.onDrained = opts.onDrained;
   }
 
   /** True while audio is scheduled or playing. Drives the Speaking indicator. */
@@ -86,8 +97,26 @@ export class PlaybackScheduler {
     return Math.max(0, this.cursor - this.sink.currentTime);
   }
 
-  enqueue(pcm: Int16Array): void {
-    if (pcm.length === 0) return;
+  /**
+   * Schedule the next chunk of model audio using the default sample rate.
+   *
+   * Returns the scheduled start time (seconds, AudioContext clock) so the
+   * caller can record when audio actually begins. A return of `null` means the
+   * chunk was empty and nothing was scheduled.
+   */
+  enqueue(pcm: Int16Array): number | null {
+    return this.enqueueAt(pcm, this.sampleRate);
+  }
+
+  /**
+   * Schedule a PCM16 chunk at an explicit sample rate.
+   *
+   * Used for cached TTS audio, which may have a different rate from the Live
+   * API's 24 kHz stream. Returns the scheduled start time in seconds, or null
+   * when the chunk is empty.
+   */
+  enqueueAt(pcm: Int16Array, sampleRate: number): number | null {
+    if (pcm.length === 0) return null;
 
     const samples = pcm16ToFloat(pcm);
     const now = this.sink.currentTime;
@@ -96,9 +125,10 @@ export class PlaybackScheduler {
     // queue has drained and this is a fresh burst, which needs the lead again.
     const startAt = this.cursor !== null && this.cursor > now ? this.cursor : now + this.leadSeconds;
 
-    const source = this.sink.play(samples, this.sampleRate, startAt);
+    const source = this.sink.play(samples, sampleRate, startAt);
     this.active.add(source);
-    this.cursor = startAt + samples.length / this.sampleRate;
+    this.cursor = startAt + samples.length / sampleRate;
+    return startAt;
   }
 
   /**
@@ -110,7 +140,13 @@ export class PlaybackScheduler {
    */
   release(source: ScheduledSource): void {
     if (!this.active.delete(source)) return;
-    if (this.active.size === 0) this.cursor = null;
+    if (this.active.size === 0) {
+      this.cursor = null;
+      // Natural drain: the last buffer finished on its own. Report completion.
+      // stop() clears active directly without going through release, so this
+      // fires only for natural endings — never for barge-in.
+      this.onDrained?.();
+    }
   }
 
   /**
