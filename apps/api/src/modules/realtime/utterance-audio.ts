@@ -1,4 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { InterviewScenarioVersion, InterviewerTone } from "@master-leeter/contracts";
 import type { RenderedSpeech, TtsRenderer } from "./tts.js";
 
@@ -114,6 +117,9 @@ export type UtteranceTranscriber = (pcm: Buffer, sampleRate: number) => Promise<
 
 export interface UtteranceAudioCacheOptions {
   renderer: TtsRenderer;
+  /** Optional local disk store. Unset keeps the existing in-memory behavior. */
+  cacheDir?: string;
+  onDiskError?: (reason: string) => void;
   /**
    * How many renders run at once.
    *
@@ -175,6 +181,8 @@ export class UtteranceAudioCache {
   private readonly transcriber: UtteranceTranscriber | undefined;
   private readonly onVerifyRejected: UtteranceAudioCacheOptions["onVerifyRejected"];
   private readonly now: () => number;
+  private readonly cacheDir: string | undefined;
+  private readonly onDiskError: ((reason: string) => void) | undefined;
 
   constructor(opts: UtteranceAudioCacheOptions) {
     this.renderer = opts.renderer;
@@ -182,6 +190,8 @@ export class UtteranceAudioCache {
     this.transcriber = opts.transcriber;
     this.onVerifyRejected = opts.onVerifyRejected;
     this.now = opts.now ?? (() => Date.now());
+    this.cacheDir = opts.cacheDir || undefined;
+    this.onDiskError = opts.onDiskError;
   }
 
   get rendererId(): string {
@@ -202,7 +212,12 @@ export class UtteranceAudioCache {
    * candidate is sitting in it.
    */
   get(text: string, tone?: InterviewerTone): CachedAudio | undefined {
-    return this.entries.get(this.keyFor(text, tone));
+    const key = this.keyFor(text, tone);
+    const memory = this.entries.get(key);
+    if (memory) return memory;
+    const disk = this.readDisk(key, text, tone);
+    if (disk) this.entries.set(key, disk);
+    return disk;
   }
 
   /**
@@ -218,7 +233,7 @@ export class UtteranceAudioCache {
    */
   async ensure(text: string, tone?: InterviewerTone): Promise<CachedAudio> {
     const key = this.keyFor(text, tone);
-    const existing = this.entries.get(key);
+    const existing = this.get(text, tone);
     if (existing) return existing;
 
     const pending = this.inFlight.get(key);
@@ -246,6 +261,7 @@ export class UtteranceAudioCache {
 
         const entry: CachedAudio = { ...speech, pcm: trimmed, textHash: hashText(text) };
         this.entries.set(key, entry);
+        await this.persist(key, entry, tone);
         return entry;
       })
       .finally(() => {
@@ -282,7 +298,7 @@ export class UtteranceAudioCache {
         const text = lines[index];
         if (text === undefined) return;
 
-        if (this.entries.has(this.keyFor(text, tone))) {
+        if (this.get(text, tone)) {
           cached += 1;
           continue;
         }
@@ -321,12 +337,74 @@ export class UtteranceAudioCache {
   coverage(scenario: InterviewScenarioVersion, tone?: InterviewerTone): number {
     const lines = authoredUtterances(scenario);
     if (lines.length === 0) return 1;
-    const present = lines.filter((line) => this.entries.has(this.keyFor(line, tone))).length;
+    const present = lines.filter((line) => this.get(line, tone)).length;
     return present / lines.length;
   }
 
   private keyFor(text: string, tone?: InterviewerTone): string {
     return `${this.renderer.id}::${tone ?? "NORMAL"}::${hashText(text)}`;
+  }
+
+  private diskPaths(key: string): { pcm: string; metadata: string } | null {
+    if (!this.cacheDir) return null;
+    const filename = hashText(key);
+    return {
+      pcm: join(this.cacheDir, `${filename}.pcm`),
+      metadata: join(this.cacheDir, `${filename}.json`),
+    };
+  }
+
+  private readDisk(key: string, text: string, tone?: InterviewerTone): CachedAudio | undefined {
+    const paths = this.diskPaths(key);
+    if (!paths) return undefined;
+    let metadata: Record<string, unknown>;
+    try {
+      metadata = JSON.parse(readFileSync(paths.metadata, "utf8")) as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
+    if (metadata["key"] !== key || metadata["verified"] !== true ||
+        metadata["textHash"] !== hashText(text) || metadata["tone"] !== (tone ?? "NORMAL") ||
+        metadata["voiceId"] !== this.renderer.voiceId ||
+        typeof metadata["model"] !== "string" ||
+        typeof metadata["sampleRate"] !== "number" || !Number.isInteger(metadata["sampleRate"]) ||
+        metadata["sampleRate"] < 8_000 || metadata["sampleRate"] > 192_000) return undefined;
+    try {
+      const pcm = readFileSync(paths.pcm);
+      if (pcm.length === 0 || pcm.length % 2 !== 0 ||
+          metadata["pcmSha256"] !== createHash("sha256").update(pcm).digest("hex")) return undefined;
+      return { pcm, sampleRate: metadata["sampleRate"], model: metadata["model"],
+        voiceId: this.renderer.voiceId, textHash: metadata["textHash"] as string };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async persist(key: string, entry: CachedAudio, tone?: InterviewerTone): Promise<void> {
+    // Only verified renders are durable. Development with TTS_VERIFY=off may
+    // use memory, but cannot plant an unverified render for a later process.
+    const paths = this.diskPaths(key);
+    if (!paths || !this.transcriber) return;
+    const metadata = {
+      key, textHash: entry.textHash, tone: tone ?? "NORMAL", verified: true,
+      sampleRate: entry.sampleRate, model: entry.model, voiceId: entry.voiceId,
+      pcmSha256: createHash("sha256").update(entry.pcm).digest("hex"),
+      createdAt: new Date(this.now()).toISOString(),
+    };
+    const suffix = `${process.pid}-${randomUUID()}`;
+    const tempPcm = `${paths.pcm}.${suffix}.tmp`;
+    const tempMetadata = `${paths.metadata}.${suffix}.tmp`;
+    try {
+      await mkdir(this.cacheDir!, { recursive: true });
+      await writeFile(tempPcm, entry.pcm, { flag: "wx" });
+      await writeFile(tempMetadata, JSON.stringify(metadata), { flag: "wx" });
+      await rename(tempPcm, paths.pcm);
+      await rename(tempMetadata, paths.metadata);
+    } catch {
+      this.onDiskError?.("persistent TTS cache write failed; using memory only");
+    } finally {
+      await Promise.allSettled([unlink(tempPcm), unlink(tempMetadata)]);
+    }
   }
 }
 

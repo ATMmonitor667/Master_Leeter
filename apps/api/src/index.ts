@@ -111,6 +111,7 @@ export interface ServerOptions {
    */
   ttsRenderer?: import("./modules/realtime/index.js").TtsRenderer;
   ttsTranscriber?: UtteranceTranscriber;
+  ttsCacheDir?: string;
 }
 
 export function buildServer(opts: ServerOptions) {
@@ -266,6 +267,7 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
     ...(opts.ttsRenderer ? { ttsRenderer: opts.ttsRenderer } : {}),
     ...(opts.ttsTranscriber ? { ttsTranscriber: opts.ttsTranscriber } : {}),
+    ...(opts.ttsCacheDir ? { ttsCacheDir: opts.ttsCacheDir } : {}),
     onRealtimeCircuitOpen: (sessionId, failureKind) =>
       publishAlert({ kind: "REALTIME_CIRCUIT_OPEN", sessionId, failureKind }),
   });
@@ -415,6 +417,7 @@ export async function start(): Promise<void> {
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
     ...(ttsRenderer ? { ttsRenderer } : {}),
     ...(ttsTranscriber ? { ttsTranscriber } : {}),
+    ...(process.env["TTS_CACHE_DIR"] ? { ttsCacheDir: process.env["TTS_CACHE_DIR"] } : {}),
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
     ...(scenarioRestater ? { scenarioRestater } : {}),
     ...(evaluator ? { evaluator } : {}),

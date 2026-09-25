@@ -154,6 +154,7 @@ export interface SessionModuleOptions {
    */
   ttsRenderer?: TtsRenderer;
   ttsTranscriber?: UtteranceTranscriber;
+  ttsCacheDir?: string;
 }
 
 export async function registerSessionModule(
@@ -168,6 +169,8 @@ export async function registerSessionModule(
   const ttsCache = opts.ttsRenderer
     ? new UtteranceAudioCache({
         renderer: opts.ttsRenderer,
+        ...(opts.ttsCacheDir ? { cacheDir: opts.ttsCacheDir } : {}),
+        onDiskError: (reason) => app.log.warn({ reason }, "persistent TTS cache unavailable"),
         concurrency: 3,
         ...(opts.ttsTranscriber ? { transcriber: opts.ttsTranscriber } : {}),
         onVerifyRejected: ({ textHash, tone, reason }) =>
