@@ -98,11 +98,12 @@ describe("the habits that made it sound wrong", () => {
     expect(INTERVIEWER_PERSONA).toMatch(/ignore your instructions/i);
   });
 
-  it("names all five tools and claims no others", () => {
+  it("names all six tools and claims no others", () => {
     for (const tool of [
       "get_interview_context",
       "get_clarification_fact",
       "get_probe_wording",
+      "get_hint_wording",
       "get_follow_up",
       "record_delivery",
     ]) {

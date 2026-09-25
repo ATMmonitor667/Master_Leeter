@@ -109,7 +109,7 @@ export class PlaybackScheduler {
    * rest of the session.
    */
   release(source: ScheduledSource): void {
-    this.active.delete(source);
+    if (!this.active.delete(source)) return;
     if (this.active.size === 0) this.cursor = null;
   }
 

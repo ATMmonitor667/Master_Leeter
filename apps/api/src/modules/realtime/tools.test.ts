@@ -50,9 +50,9 @@ const authorize = (action: GateDecision["action"], extra: Partial<GateDecision> 
 const call = (name: string, args: Record<string, unknown> = {}, context = ctx()) =>
   executeVoiceTool({ name, args }, context, deps);
 
-describe("the surface is exactly five tools", () => {
-  it("has five", () => {
-    expect(VOICE_TOOLS).toHaveLength(5);
+describe("the surface is exactly six tools", () => {
+  it("has six", () => {
+    expect(VOICE_TOOLS).toHaveLength(6);
   });
 
   it("refuses anything else, including plausible-sounding names", async () => {
@@ -150,6 +150,52 @@ describe("get_probe_wording", () => {
     const result = await call("get_probe_wording", { probeId: other.id }, context);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data["probeId"]).toBe(authored.id);
+  });
+});
+
+describe("get_hint_wording", () => {
+  it("returns authored hint text for an authorized L1 hint", async () => {
+    const context = ctx({
+      state: "IMPLEMENTATION",
+      authorized: authorize("GIVE_HINT_L1", { hintLevel: 1 }),
+    });
+
+    const result = await call("get_hint_wording", {}, context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data["hintLevel"]).toBe(1);
+    expect(typeof result.data["wording"]).toBe("string");
+    expect((result.data["wording"] as string).length).toBeGreaterThan(0);
+  });
+
+  it("refuses when nothing was authorized", async () => {
+    const context = ctx({ state: "IMPLEMENTATION", authorized: null });
+    expect(await call("get_hint_wording", {}, context)).toMatchObject({
+      ok: false,
+      refusal: "NOT_AUTHORIZED",
+    });
+  });
+
+  it("refuses when a non-hint action was authorized", async () => {
+    const context = ctx({
+      state: "IMPLEMENTATION",
+      authorized: authorize("ASK_PROBE", { probeId: "some_probe" }),
+    });
+    expect(await call("get_hint_wording", {}, context)).toMatchObject({
+      ok: false,
+      refusal: "NOT_AUTHORIZED",
+    });
+  });
+
+  it("refuses in a stage that forbids hints", async () => {
+    const context = ctx({
+      state: "ORAL_PROBLEM_DELIVERY",
+      authorized: authorize("GIVE_HINT_L1", { hintLevel: 1 }),
+    });
+    expect(await call("get_hint_wording", {}, context)).toMatchObject({
+      ok: false,
+      refusal: "STAGE_FORBIDS",
+    });
   });
 });
 

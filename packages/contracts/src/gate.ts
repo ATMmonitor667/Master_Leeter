@@ -74,6 +74,8 @@ export const InterviewContextSchema = z.object({
   interviewerCurrentlySpeaking: z.boolean(),
   /** True when the candidate has begun speaking over the interviewer → barge-in. */
   candidateSpeechStarted: z.boolean(),
+  /** True while the candidate's voice is live — between SPEECH_STARTED and SPEECH_STOPPED. */
+  candidateSpeakingNow: z.boolean().optional(),
 
   secondsSinceInterviewerLastSpoke: z.number().nonnegative(),
   secondsSinceCodeActivity: z.number().nonnegative(),

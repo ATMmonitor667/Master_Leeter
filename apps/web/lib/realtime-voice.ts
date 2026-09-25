@@ -128,6 +128,8 @@ export class RealtimeVoice {
   private muted = false;
   /** True while model audio is arriving — the window in which barge-in applies. */
   private interviewerSpeaking = false;
+  /** False after barge-in: drops any model audio still in transit. */
+  private acceptingModelAudio = false;
 
   constructor(private readonly opts: RealtimeVoiceOptions) {
     this.vad = opts.vad ?? new Vad();
@@ -159,6 +161,7 @@ export class RealtimeVoice {
       onClose: () => {
         this.ready = false;
         this.interviewerSpeaking = false;
+        this.acceptingModelAudio = false;
         this.opts.onDisconnected?.();
       },
       onError: (err) => this.opts.onError?.(err),
@@ -242,6 +245,7 @@ export class RealtimeVoice {
   requestSpeech(authorization: SpeechAuthorization): void {
     if (!this.ready || !this.transport?.connected) return;
 
+    this.acceptingModelAudio = true;
     this.send({
       clientContent: {
         turns: [
@@ -272,6 +276,7 @@ export class RealtimeVoice {
       // the audio.
       if (this.interviewerSpeaking) {
         this.interviewerSpeaking = false;
+        this.acceptingModelAudio = false;
         this.opts.onBargeIn?.();
       }
 
@@ -388,7 +393,7 @@ export class RealtimeVoice {
     }
 
     const audio = extractModelAudio(msg);
-    if (audio.length > 0) {
+    if (audio.length > 0 && this.acceptingModelAudio) {
       this.interviewerSpeaking = true;
       for (const chunk of audio) this.opts.onModelAudio?.(base64ToPcm16(chunk));
     }
@@ -396,6 +401,7 @@ export class RealtimeVoice {
     const content = serverContent(msg);
     if (content?.["interrupted"] === true) {
       this.interviewerSpeaking = false;
+      this.acceptingModelAudio = false;
       this.opts.onBargeIn?.();
     }
     const interimTranscript = content?.["interimInputTranscription"] ?? content?.["interim_input_transcription"];
@@ -407,6 +413,7 @@ export class RealtimeVoice {
 
     if (content?.["turnComplete"] === true || content?.["turn_complete"] === true) {
       this.interviewerSpeaking = false;
+      this.acceptingModelAudio = false;
       this.opts.onSpeechComplete?.();
     }
   }
@@ -438,8 +445,8 @@ export function instructionFor(authorization: SpeechAuthorization): string {
     ANSWER_CLARIFICATION:
       "Answer the candidate's question using get_clarification_fact. Say only what it returns.",
     ASK_PROBE: "Ask the authorized probe. Call get_probe_wording and say what it returns.",
-    GIVE_HINT_L1: "Give the authorized hint. Say only the wording you are given.",
-    GIVE_HINT_L2: "Give the authorized hint. Say only the wording you are given.",
+    GIVE_HINT_L1: "Give the authorized hint. Call get_hint_wording and say what it returns.",
+    GIVE_HINT_L2: "Give the authorized hint. Call get_hint_wording and say what it returns.",
     PRESENT_FOLLOW_UP: "Present the follow-up. Call get_follow_up and say what it returns.",
     ACKNOWLEDGE_BRIEFLY: "Acknowledge in three words or fewer. Add nothing.",
     DELIVER_BRIEF: "Deliver the opening brief from get_interview_context, as written.",

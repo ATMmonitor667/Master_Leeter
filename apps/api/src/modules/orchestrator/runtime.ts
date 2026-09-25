@@ -236,6 +236,11 @@ export class InterviewRuntime {
    */
   private heldTurn: { turn: Turn; classification: TurnClassification } | null = null;
   private reevaluationTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Turn held only because candidateSpeakingNow was true; re-judged on SPEECH_STOPPED. */
+  private speakingNowHeld: { turn: Turn; classification: TurnClassification } | null = null;
+  private candidateSpeakingNow = false;
+  /** Accumulated transcript across fragments of one logical turn. Reset when gate speaks. */
+  private openTurn: { transcript: string } | null = null;
 
   /**
    * The decision currently authorizing speech, if any.
@@ -395,6 +400,8 @@ export class InterviewRuntime {
     // Recovery never repeats audio or leaves a stale tool authorization open.
     this.authorized = null;
     this.interviewerCurrentlySpeaking = false;
+    this.candidateSpeakingNow = false;
+    this.openTurn = null;
     this.clearHeldTurn();
     this.observationDirty = false;
     this.pendingRuns.length = 0;
@@ -455,9 +462,11 @@ export class InterviewRuntime {
       }
       case "SPEECH_STARTED":
         this.candidateSpeechStarted = true;
+        this.candidateSpeakingNow = true;
         this.lastSpeechStoppedAtMs = null;
         break;
       case "SPEECH_STOPPED":
+        this.candidateSpeakingNow = false;
         this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.lastSpeechStoppedAtMs;
         break;
       case "SPEECH_FINAL":
@@ -465,6 +474,7 @@ export class InterviewRuntime {
         break;
       case "BARGE_IN":
         this.candidateSpeechStarted = true;
+        this.candidateSpeakingNow = true;
         break;
       case "STATE_TRANSITIONED": {
         const to = stringOf(payload["to"]);
@@ -616,25 +626,40 @@ export class InterviewRuntime {
         // acting on it now would answer a thought they have already continued.
         this.clearHeldTurn();
         this.candidateSpeechStarted = true;
+        this.candidateSpeakingNow = true;
         // New speech invalidates the previous quiet period. Silence is measured
         // from the most recent stop, not the first one in the session.
         this.lastSpeechStoppedAtMs = null;
         return none;
 
-      case "SPEECH_STOPPED":
+      case "SPEECH_STOPPED": {
         // Still not permission to speak — that is the whole thesis, and nothing
         // here changes it (ADR-001). What it now does is note WHEN, because how
         // long the candidate has been quiet is the only evidence that separates
         // a finished thought from a breath (M4-2). The observation is recorded;
         // the decision still belongs to the gate, and only a finalized turn
         // reaches it.
+        this.candidateSpeakingNow = false;
         this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.now();
+        // A SPEECH_FINAL silenced only because candidateSpeakingNow can now be
+        // re-judged: the floor has been yielded, so timing is the only blocker.
+        if (this.speakingNowHeld && !this.heldTurn) {
+          this.heldTurn = this.speakingNowHeld;
+          this.speakingNowHeld = null;
+          this.reevaluationTimer = this.schedule(() => {
+            void this.onSilenceElapsed().catch(() => this.clearHeldTurn());
+          }, 25);
+        } else {
+          this.speakingNowHeld = null;
+        }
         return none;
+      }
 
       case "BARGE_IN":
         this.clearHeldTurn();
         this.interviewerCurrentlySpeaking = false;
         this.candidateSpeechStarted = true;
+        this.candidateSpeakingNow = true;
         return none;
 
       case "SPEECH_FINAL":
@@ -669,6 +694,7 @@ export class InterviewRuntime {
 
       case "SESSION_ENDED":
         this.state = applyEvent({ state: this.state, eventType: "SESSION_ENDED" }).state;
+        this.openTurn = null;
         return none;
 
       default:
@@ -696,8 +722,19 @@ export class InterviewRuntime {
     // A new turn supersedes any turn still waiting on silence.
     this.clearHeldTurn();
 
-    const transcript = stringOf(event.payload["transcript"]) ?? "";
+    const fragment = stringOf(event.payload["transcript"]) ?? "";
     const finalized = event.payload["finalized"] !== false;
+
+    // Assemble multi-fragment turns. The provider can issue a SPEECH_FINAL for
+    // each short pause; joining them until the gate authorizes speech means the
+    // gate always judges the whole thought, not just the last breath-chunk.
+    if (!this.openTurn) {
+      this.openTurn = { transcript: fragment };
+    } else {
+      const joined = [this.openTurn.transcript, fragment].filter(Boolean).join(" ");
+      this.openTurn = { transcript: joined.slice(0, TURN_TRANSCRIPT_CAP) };
+    }
+    const transcript = this.openTurn.transcript;
 
     const ingestStart = performance.now();
 
@@ -838,7 +875,13 @@ export class InterviewRuntime {
     if (decision.action === "STAY_SILENT") {
       // The common case, and it costs one append and nothing else.
       this.candidateSpeechStarted = false;
-      if (attempt === 0) this.holdForSilence(turn, classification, completion, silenceMs);
+      if (this.candidateSpeakingNow && attempt === 0) {
+        // Silenced only because the candidate is still speaking. Remember this
+        // turn: SPEECH_STOPPED will promote it to heldTurn for re-evaluation.
+        this.speakingNowHeld = { turn, classification };
+      } else if (attempt < 2) {
+        this.holdForSilence(turn, classification, completion, silenceMs);
+      }
       return { decision, utterance: null };
     }
 
@@ -879,7 +922,12 @@ export class InterviewRuntime {
     // Held until the audio actually finishes. Gate rule 1 reads this to yield
     // the floor when the candidate talks over the interviewer, and a flag that
     // is never set makes that rule unreachable.
-    if (utterance) this.interviewerCurrentlySpeaking = true;
+    if (utterance) {
+      this.interviewerCurrentlySpeaking = true;
+      // The interviewer is responding: the accumulated turn is answered.
+      // The next SPEECH_FINAL starts a fresh turn, not a continuation.
+      this.openTurn = null;
+    }
 
     return { decision, utterance };
   }
@@ -941,10 +989,15 @@ export class InterviewRuntime {
     if (!held) return;
 
     const occurredAt = new Date(this.now()).toISOString();
+    const elapsedAtMs = Date.parse(occurredAt);
+    const silenceMs =
+      this.lastSpeechStoppedAtMs !== null && Number.isFinite(elapsedAtMs)
+        ? Math.max(0, elapsedAtMs - this.lastSpeechStoppedAtMs)
+        : undefined;
     await this.append(
       "SILENCE_ELAPSED",
       "SYSTEM",
-      { turnId: held.turn.turnId },
+      { turnId: held.turn.turnId, ...(silenceMs !== undefined ? { silenceMs } : {}) },
       `silence:${held.turn.turnId}`,
       occurredAt,
     );
@@ -979,6 +1032,7 @@ export class InterviewRuntime {
 
   private clearHeldTurn(): void {
     this.heldTurn = null;
+    this.speakingNowHeld = null;
     if (this.reevaluationTimer !== null) {
       clearTimeout(this.reevaluationTimer);
       this.reevaluationTimer = null;
@@ -1284,6 +1338,7 @@ export class InterviewRuntime {
       turn,
       interviewerCurrentlySpeaking: this.interviewerCurrentlySpeaking,
       candidateSpeechStarted: this.candidateSpeechStarted,
+      candidateSpeakingNow: this.candidateSpeakingNow,
       secondsSinceInterviewerLastSpoke: Math.max(0, (nowMs - this.lastSpokeAtMs) / 1000),
       secondsSinceCodeActivity: Math.max(0, (nowMs - this.lastCodeActivityMs) / 1000),
       remainingSeconds: Math.max(0, Math.round(this.deps.remainingSeconds())),
@@ -1523,6 +1578,15 @@ export class InterviewRuntime {
  * limit is a guard against a rule bug, not a tuning parameter.
  */
 const STAGE_ADVANCE_LIMIT = 8;
+
+/**
+ * Maximum assembled transcript length (characters).
+ *
+ * Fragments beyond this cap are truncated, not dropped — the gate still sees
+ * the newest material. The bound keeps context sizes bounded when a candidate
+ * thinks aloud at length without the gate ever authorizing a response.
+ */
+const TURN_TRANSCRIPT_CAP = 800;
 
 function stringOf(v: unknown): string | null {
   return typeof v === "string" ? v : null;
