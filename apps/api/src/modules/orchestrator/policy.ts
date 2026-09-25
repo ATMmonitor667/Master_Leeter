@@ -30,6 +30,13 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     // still well above the length of an ordinary breath.
     minTurnEndSilenceMs: 1_200,
     settledTurnEndSilenceMs: 2_400,
+    // V2. Reached only when the audio is confident the learner finished — and a
+    // learner is the candidate most damaged by an interviewer that seems not to
+    // have heard them, so this mode leans hardest on the fast pair.
+    minTurnEndSilenceMsConfident: 250,
+    settledTurnEndSilenceMsConfident: 600,
+    minTurnEndSilenceMsPatient: 1_800,
+    settledTurnEndSilenceMsPatient: 3_200,
     // Quickest to step in of the three, and still long enough that it never
     // lands mid-keystroke.
     interruptQuietSeconds: 3,
@@ -60,6 +67,21 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     // words look. In practice a non-question turn needs ~2.4s of quiet here.
     minTurnEndSilenceMs: 1_500,
     settledTurnEndSilenceMs: 2_800,
+    /**
+     * V2, and the numbers the latency programme is measured against.
+     *
+     * At the 0.8 threshold the confident pair clears at ~577 ms of quiet against
+     * 2400 ms for the clock alone — which, with the pre-rendered audio from V3,
+     * puts the whole gap from the candidate's last syllable to the first audible
+     * sample inside Brady's measured 345–456 ms mean for human conversation.
+     *
+     * The floor is not zero and should not be: 250 ms is shorter than a breath,
+     * and the mid-thought veto and the text classifier still sit above this.
+     */
+    minTurnEndSilenceMsConfident: 300,
+    settledTurnEndSilenceMsConfident: 700,
+    minTurnEndSilenceMsPatient: 2_200,
+    settledTurnEndSilenceMsPatient: 3_800,
     interruptQuietSeconds: 4,
     stallSeconds: 90,
     maxCodeStalenessSeconds: 20,
@@ -89,6 +111,15 @@ export const POLICIES: Record<InterviewMode, InterviewPolicy> = {
     // have finished, then waits a little longer.
     minTurnEndSilenceMs: 2_200,
     settledTurnEndSilenceMs: 4_000,
+    // V2, and the widest gap between the pairs of the three modes. Strict's
+    // character is that it lets you sit in the silence, so even a turn the audio
+    // is certain about waits half a second — but a certain turn no longer waits
+    // three and a half, which was reading as the thing not having heard you
+    // rather than as pressure.
+    minTurnEndSilenceMsConfident: 500,
+    settledTurnEndSilenceMsConfident: 1_200,
+    minTurnEndSilenceMsPatient: 3_000,
+    settledTurnEndSilenceMsPatient: 5_200,
     // Strict lets you sit in it. Longer before it interrupts, and far longer
     // before it decides you are stuck rather than working.
     interruptQuietSeconds: 6,

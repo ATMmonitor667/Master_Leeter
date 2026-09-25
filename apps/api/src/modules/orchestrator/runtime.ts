@@ -32,7 +32,7 @@ import { type IntentClassifier, type TurnClassification, ruleBasedClassifier } f
 import { decideAction } from "./gate.js";
 import { INITIAL_STATE, applyEvent } from "./state-machine.js";
 import { type StageSignals, isReasoningIntent, nextStage } from "./stage-advance.js";
-import { estimateTurnCompletion, silenceRequiredFor } from "./turn-completion.js";
+import { estimateTurnCompletion, silenceRequiredFor, type ProsodicEvidence } from "./turn-completion.js";
 
 /**
  * Interview Runtime — the live per-session orchestrator.
@@ -108,6 +108,8 @@ export interface InterviewRuntimeDeps {
   remainingSeconds: () => number;
   classifier?: IntentClassifier;
   now?: () => number;
+  /** Release switch for the shorter turn-end window. */
+  prosodyEnabled?: boolean;
   /**
    * Delivers a decision reached off the ingest path.
    *
@@ -140,6 +142,12 @@ export interface InterviewRuntimeDeps {
   commitTransition?: (from: InterviewState, to: InterviewState, reason: string) => void | Promise<void>;
 }
 
+const ProsodySchema = z.object({
+  probability: z.number().finite().min(0).max(1),
+  confidence: z.number().finite().min(0).max(1),
+  reason: z.string().max(200).optional(),
+});
+
 const RuntimeCheckpointSchema = z.object({
   version: z.literal(1),
   state: InterviewStateSchema,
@@ -162,6 +170,7 @@ const RuntimeCheckpointSchema = z.object({
   lastSpokeAtMs: z.number().nonnegative(),
   candidateSpeechStarted: z.boolean(),
   lastSpeechStoppedAtMs: z.number().nonnegative().nullable(),
+  lastProsody: ProsodySchema.nullable().optional(),
   answeredFactKeys: z.array(z.string()),
   briefDeliveryCount: z.number().int().nonnegative(),
   observationCount: z.number().int().nonnegative(),
@@ -208,6 +217,7 @@ export class InterviewRuntime {
    * would make every decision a function of how fast the replay ran.
    */
   private lastSpeechStoppedAtMs: number | null = null;
+  private lastProsody: ProsodicEvidence | null = null;
 
   /** Coalescing observation loop. At most one pass in flight, ever. */
   private observationDirty = false;
@@ -271,12 +281,14 @@ export class InterviewRuntime {
   private readonly buildSnapshot: typeof buildSnapshot;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  private readonly prosodyEnabled: boolean;
 
   constructor(private readonly deps: InterviewRuntimeDeps) {
     this.now = deps.now ?? (() => Date.now());
     this.classifier = deps.classifier ?? ruleBasedClassifier;
     this.buildSnapshot = deps.buildSnapshot ?? buildSnapshot;
     this.schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms));
+    this.prosodyEnabled = deps.prosodyEnabled ?? process.env.TURN_END_PROSODY !== "off";
     this.candidateState = emptyCandidateState(new Date(this.now()).toISOString());
     this.lastCodeActivityMs = this.now();
     this.lastSpokeAtMs = this.now();
@@ -427,6 +439,7 @@ export class InterviewRuntime {
     this.lastSpokeAtMs = checkpoint.lastSpokeAtMs;
     this.candidateSpeechStarted = checkpoint.candidateSpeechStarted;
     this.lastSpeechStoppedAtMs = checkpoint.lastSpeechStoppedAtMs;
+    this.lastProsody = this.prosodyEnabled ? checkpoint.lastProsody ?? null : null;
     this.answeredFactKeys.splice(0, this.answeredFactKeys.length, ...checkpoint.answeredFactKeys);
     this.briefDeliveryCount = checkpoint.briefDeliveryCount;
     this.observationCount = checkpoint.observationCount;
@@ -464,10 +477,12 @@ export class InterviewRuntime {
         this.candidateSpeechStarted = true;
         this.candidateSpeakingNow = true;
         this.lastSpeechStoppedAtMs = null;
+        this.lastProsody = null;
         break;
       case "SPEECH_STOPPED":
         this.candidateSpeakingNow = false;
         this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.lastSpeechStoppedAtMs;
+        this.lastProsody = this.prosodyOf(event);
         break;
       case "SPEECH_FINAL":
         this.candidateSpeechStarted = false;
@@ -475,6 +490,7 @@ export class InterviewRuntime {
       case "BARGE_IN":
         this.candidateSpeechStarted = true;
         this.candidateSpeakingNow = true;
+        this.lastProsody = null;
         break;
       case "STATE_TRANSITIONED": {
         const to = stringOf(payload["to"]);
@@ -568,6 +584,7 @@ export class InterviewRuntime {
       lastSpokeAtMs: this.lastSpokeAtMs,
       candidateSpeechStarted: this.candidateSpeechStarted,
       lastSpeechStoppedAtMs: this.lastSpeechStoppedAtMs,
+      lastProsody: this.lastProsody,
       answeredFactKeys: [...this.answeredFactKeys],
       briefDeliveryCount: this.briefDeliveryCount,
       observationCount: this.observationCount,
@@ -630,6 +647,7 @@ export class InterviewRuntime {
         // New speech invalidates the previous quiet period. Silence is measured
         // from the most recent stop, not the first one in the session.
         this.lastSpeechStoppedAtMs = null;
+        this.lastProsody = null;
         return none;
 
       case "SPEECH_STOPPED": {
@@ -641,10 +659,15 @@ export class InterviewRuntime {
         // reaches it.
         this.candidateSpeakingNow = false;
         this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.now();
+        this.lastProsody = this.prosodyOf(event);
         // A SPEECH_FINAL silenced only because candidateSpeakingNow can now be
         // re-judged: the floor has been yielded, so timing is the only blocker.
         if (this.speakingNowHeld && !this.heldTurn) {
-          this.heldTurn = this.speakingNowHeld;
+          this.heldTurn = {
+            ...this.speakingNowHeld,
+            turn: { ...this.speakingNowHeld.turn,
+              ...(this.lastProsody ? { prosody: this.lastProsody } : {}) },
+          };
           this.speakingNowHeld = null;
           this.reevaluationTimer = this.schedule(() => {
             void this.onSilenceElapsed().catch(() => this.clearHeldTurn());
@@ -660,6 +683,7 @@ export class InterviewRuntime {
         this.interviewerCurrentlySpeaking = false;
         this.candidateSpeechStarted = true;
         this.candidateSpeakingNow = true;
+        this.lastProsody = null;
         return none;
 
       case "SPEECH_FINAL":
@@ -774,6 +798,7 @@ export class InterviewRuntime {
       intent: classification.intent,
       intentProbabilities: classification.intentProbabilities,
       endedAt: event.occurredAt,
+      ...(this.lastProsody ? { prosody: this.lastProsody } : {}),
     };
 
     const result = await this.judge(turn, classification, silenceMs, 0);
@@ -813,6 +838,7 @@ export class InterviewRuntime {
       intent: base.intent,
       textEndProbability: classification.semanticEndProbability,
       ...(silenceMs !== undefined ? { silenceMs } : {}),
+      ...(base.prosody ? { prosody: base.prosody } : {}),
       policy: this.deps.policy,
     });
 
@@ -821,6 +847,7 @@ export class InterviewRuntime {
       semanticEndProbability: completion.endProbability,
       textEndProbability: completion.textEndProbability,
       ...(silenceMs !== undefined ? { silenceMsBeforeEnd: silenceMs } : {}),
+      ...(base.prosody ? { prosody: base.prosody } : {}),
     };
 
     const ctx = this.buildContext(turn);
@@ -859,6 +886,11 @@ export class InterviewRuntime {
       semanticEndProbability: completion.endProbability,
       textEndProbability: completion.textEndProbability,
       turnEndReason: completion.reason,
+      ...(completion.prosody ? {
+        prosodyProbability: completion.prosody.probability,
+        prosodyConfidence: completion.prosody.confidence,
+        prosodyPull: completion.prosodyPull,
+      } : {}),
       ...(completion.silenceMs !== undefined ? { silenceMs: completion.silenceMs } : {}),
       classifierId: classification.classifierId,
       ...(decision.probeId ? { probeId: decision.probeId } : {}),
@@ -962,7 +994,7 @@ export class InterviewRuntime {
     if (completion.endProbability >= threshold) return;
     if (completion.textEndProbability < threshold) return;
 
-    const required = silenceRequiredFor(this.deps.policy.endOfTurnThreshold, this.deps.policy);
+    const required = silenceRequiredFor(this.deps.policy.endOfTurnThreshold, this.deps.policy, turn.prosody);
     if (!Number.isFinite(required)) return;
 
     // A small margin past the crossing point, so a rounding error does not cost
@@ -1169,6 +1201,21 @@ export class InterviewRuntime {
     const finalAtMs = Date.parse(event.occurredAt);
     if (!Number.isFinite(finalAtMs)) return undefined;
     return Math.max(0, finalAtMs - this.lastSpeechStoppedAtMs);
+  }
+
+  /** Browser measurements are evidence only after strict range validation. */
+  private prosodyOf(event: SessionEvent): ProsodicEvidence | null {
+    if (!this.prosodyEnabled) return null;
+    const raw = event.payload["prosody"];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const candidate = raw as Record<string, unknown>;
+    const parsed = ProsodySchema.safeParse({
+      probability: candidate["probability"],
+      confidence: candidate["confidence"],
+      ...(typeof candidate["reason"] === "string"
+        ? { reason: candidate["reason"].slice(0, 200) } : {}),
+    });
+    return parsed.success ? parsed.data : null;
   }
 
   /**

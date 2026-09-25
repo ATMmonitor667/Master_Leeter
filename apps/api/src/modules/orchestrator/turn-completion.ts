@@ -23,6 +23,28 @@ import { MID_THOUGHT_CEILING, endsMidThought } from "./classifier.js";
  * that short is not evidence of anything, so no amount of textual confidence is
  * allowed to convert it into permission to speak.
  *
+ * ── What V2 changed about that argument ────────────────────────────────────
+ *
+ * The paragraph above is right that no CLASSIFIER READING THE TRANSCRIPT can
+ * tell those apart. It quietly assumes the transcript is all there is, and that
+ * assumption is what cost 2400 ms. The two utterances are not the same in the
+ * audio: the finished one falls in pitch, lengthens its last syllable and
+ * trails off; the unfinished one holds pitch level and stops at full volume.
+ * That is what a person hears, and it is why a person answers in 200 ms without
+ * having waited to find out.
+ *
+ * So the clock is no longer the sole evidence — it is the evidence of last
+ * resort. `turnEndWindow` interpolates this file's existing numbers toward a
+ * faster pair when the audio is confident the floor was yielded, and toward a
+ * MORE patient pair when it is confident it was not. With no prosody it returns
+ * the original numbers unchanged, which is why every test written before V2
+ * still passes and why a text-only path is untouched.
+ *
+ * The ramp's shape, the mid-thought veto, the floor-yielded exemption and the
+ * monotonicity property below are all exactly as they were. Prosody moves the
+ * window; it does not redraw the curve across it, and it never touches the
+ * gate.
+ *
  * ── The one property that makes this safe to add ───────────────────────────
  *
  * **The result is never greater than the text probability it started from.**
@@ -84,11 +106,38 @@ const FLOOR_YIELDED_INTENTS: ReadonlySet<TurnIntent> = new Set<TurnIntent>([
   "HINT_REQUEST",
 ]);
 
+/**
+ * What the audio said about this turn ending (V2).
+ *
+ * Measured in the browser by `turn-predictor.ts`, carried on `SPEECH_STOPPED`.
+ * Absent for a text-only path, a client that predates V2, or any turn the
+ * estimator could not read — and absence is the case every function below is
+ * written to make free.
+ */
+export interface ProsodicEvidence {
+  /** 0–1. Above 0.5 is evidence of a yielded floor, below is evidence against. */
+  probability: number;
+  /** 0–1. How much of the above to believe. Zero restores the pre-V2 numbers exactly. */
+  confidence: number;
+  /** For the decision log. "Why did it speak there?" */
+  reason?: string | undefined;
+}
+
 export interface TurnCompletionInput {
   transcript: string;
   intent: TurnIntent;
   /** What the classifier made of the words alone (M4-1). */
   textEndProbability: number;
+  /**
+   * What the candidate's VOICE said, as opposed to their words (V2).
+   *
+   * The evidence `silenceCeiling` was standing in for. A falling terminal
+   * contour, a lengthened last syllable and a trailing-off energy envelope are
+   * what let a human answer in 200 ms without having waited to find out whether
+   * the sentence was over — and they are present in the audio at the moment of
+   * the pause, which is exactly when the transcript is ambiguous.
+   */
+  prosody?: ProsodicEvidence | undefined;
   /**
    * Quiet time between VAD speech-stop and the finalized transcript.
    *
@@ -106,6 +155,10 @@ export interface TurnCompletion {
   /** Preserved so evidence can separate "model was sure" from "clock disagreed". */
   textEndProbability: number;
   silenceMs?: number | undefined;
+  /** What the audio said, preserved so a wrong decision can be attributed (V2). */
+  prosody?: ProsodicEvidence | undefined;
+  /** How far prosody moved the window, in [-1, 1]. 0 means the clock decided alone. */
+  prosodyPull?: number | undefined;
   /**
    * Why the number is what it is, in one line.
    *
@@ -126,9 +179,12 @@ export interface TurnCompletion {
  * decisions. That is precisely the kind of unpredictability the candidate reads
  * as the thing not listening properly.
  */
-export function silenceCeiling(silenceMs: number, policy: InterviewPolicy): number {
-  const min = policy.minTurnEndSilenceMs;
-  const settled = policy.settledTurnEndSilenceMs;
+export function silenceCeiling(
+  silenceMs: number,
+  policy: InterviewPolicy,
+  prosody?: ProsodicEvidence | undefined,
+): number {
+  const { min, settled } = turnEndWindow(policy, prosody);
 
   if (silenceMs <= min) return HELD_FLOOR_CEILING;
   if (silenceMs >= settled) return 1;
@@ -138,6 +194,87 @@ export function silenceCeiling(silenceMs: number, policy: InterviewPolicy): numb
   // them cover every input when the window is empty or inverted.
   const t = (silenceMs - min) / (settled - min);
   return HELD_FLOOR_CEILING + t * (1 - HELD_FLOOR_CEILING);
+}
+
+/**
+ * How long this policy waits, given what the audio said (V2).
+ *
+ * The one function V2 turns on, and the ramp's shape is untouched: a pull of
+ * zero returns `(minTurnEndSilenceMs, settledTurnEndSilenceMs)` — the exact
+ * numbers this file used before — so every existing test, every recorded log,
+ * and every text-only path behaves identically. Prosody moves the WINDOW, not
+ * the curve drawn across it.
+ *
+ * ── Why it is symmetric ────────────────────────────────────────────────────
+ *
+ * It would be simpler to let prosody only shorten. That would also be a one-way
+ * ratchet toward the single failure this product exists to avoid: an
+ * interviewer that talks over someone mid-thought. The continuation cues are
+ * the more reliable half of the signal — level pitch held through a pause is
+ * about as unambiguous as prosody gets — so refusing to act on them would mean
+ * taking all of V2's risk and none of its protection.
+ *
+ * So confidence in "they finished" buys speed, and confidence in "they have
+ * not" buys the candidate room. The asymmetry that remains is in the numbers,
+ * not the mechanism: `policy.ts` puts the patient pair much closer to the
+ * default than the confident pair, because being slow is a complaint and
+ * interrupting is a defect.
+ */
+export function turnEndWindow(
+  policy: InterviewPolicy,
+  prosody?: ProsodicEvidence | undefined,
+): { min: number; settled: number; pull: number } {
+  const min = policy.minTurnEndSilenceMs;
+  const settled = policy.settledTurnEndSilenceMs;
+  const pull = prosodyPull(prosody);
+
+  if (pull === 0) return { min, settled, pull };
+
+  if (pull > 0) {
+    const fastMin = policy.minTurnEndSilenceMsConfident;
+    const fastSettled = policy.settledTurnEndSilenceMsConfident;
+    // A policy that has not opted in gets the old behaviour, not an
+    // extrapolation. Adding V2 to a deployment is a content change, not a
+    // silent change in how patient the interviewer is.
+    if (fastMin === undefined || fastSettled === undefined) return { min, settled, pull: 0 };
+    return {
+      min: lerp(min, fastMin, pull),
+      settled: lerp(settled, fastSettled, pull),
+      pull,
+    };
+  }
+
+  const slowMin = policy.minTurnEndSilenceMsPatient;
+  const slowSettled = policy.settledTurnEndSilenceMsPatient;
+  if (slowMin === undefined || slowSettled === undefined) return { min, settled, pull: 0 };
+  return {
+    min: lerp(min, slowMin, -pull),
+    settled: lerp(settled, slowSettled, -pull),
+    pull,
+  };
+}
+
+/**
+ * Prosody as one signed number in [-1, 1]. Positive means "they yielded".
+ *
+ * Confidence multiplies rather than gates, so a marginal reading nudges the
+ * window and a confident one moves it. There is no threshold at which prosody
+ * suddenly takes over, because a cliff in this function is a cliff in how long
+ * the interviewer waits, and two nearly identical pauses producing opposite
+ * behaviour is precisely what reads as the thing not listening properly.
+ */
+export function prosodyPull(prosody?: ProsodicEvidence | undefined): number {
+  if (!prosody) return 0;
+
+  const confidence = clamp01(prosody.confidence);
+  if (confidence <= 0) return 0;
+
+  const probability = clamp01(prosody.probability);
+  return confidence * (2 * probability - 1);
+}
+
+function lerp(from: number, to: number, t: number): number {
+  return from + (to - from) * clamp01(t);
 }
 
 /**
@@ -153,21 +290,35 @@ export function silenceCeiling(silenceMs: number, policy: InterviewPolicy): numb
  * satisfy it — a misconfigured policy should hold the floor forever rather than
  * silently round down into speech.
  */
-export function silenceRequiredFor(threshold: number, policy: InterviewPolicy): number {
-  if (threshold <= HELD_FLOOR_CEILING) return policy.minTurnEndSilenceMs;
+export function silenceRequiredFor(
+  threshold: number,
+  policy: InterviewPolicy,
+  prosody?: ProsodicEvidence | undefined,
+): number {
+  const { min, settled } = turnEndWindow(policy, prosody);
+
+  if (threshold <= HELD_FLOOR_CEILING) return min;
   if (threshold > 1) return Number.POSITIVE_INFINITY;
 
-  const span = policy.settledTurnEndSilenceMs - policy.minTurnEndSilenceMs;
-  if (span <= 0) return policy.settledTurnEndSilenceMs;
+  const span = settled - min;
+  if (span <= 0) return settled;
 
   const t = (threshold - HELD_FLOOR_CEILING) / (1 - HELD_FLOOR_CEILING);
-  return policy.minTurnEndSilenceMs + t * span;
+  return min + t * span;
 }
 
 export function estimateTurnCompletion(input: TurnCompletionInput): TurnCompletion {
   const text = clamp01(input.textEndProbability);
   const silenceMs = normalizeSilence(input.silenceMs);
-  const carry = { textEndProbability: text, ...(silenceMs !== undefined ? { silenceMs } : {}) };
+  const carry = {
+    textEndProbability: text,
+    ...(silenceMs !== undefined ? { silenceMs } : {}),
+    // Carried through every branch, including the two that return before timing
+    // is consulted. "The audio said they were mid-thought and we spoke anyway"
+    // is a different bug from "the audio said nothing", and the fused number
+    // cannot tell them apart afterwards.
+    ...(input.prosody ? { prosody: input.prosody, prosodyPull: prosodyPull(input.prosody) } : {}),
+  };
 
   let p = text;
 
@@ -203,7 +354,10 @@ export function estimateTurnCompletion(input: TurnCompletionInput): TurnCompleti
     };
   }
 
-  const ceiling = silenceCeiling(silenceMs, input.policy);
+  const window = turnEndWindow(input.policy, input.prosody);
+  const ceiling = silenceCeiling(silenceMs, input.policy, input.prosody);
+  const heard = prosodyNote(input.prosody, window.pull);
+
   if (p > ceiling) {
     p = ceiling;
     return {
@@ -211,15 +365,32 @@ export function estimateTurnCompletion(input: TurnCompletionInput): TurnCompleti
       endProbability: p,
       reason:
         `held: ${Math.round(silenceMs)}ms of silence permits at most ${ceiling.toFixed(2)} ` +
-        `(text said ${text.toFixed(2)}; settles at ${input.policy.settledTurnEndSilenceMs}ms)`,
+        `(text said ${text.toFixed(2)}; settles at ${Math.round(window.settled)}ms)${heard}`,
     };
   }
 
   return {
     ...carry,
     endProbability: p,
-    reason: `transcript ${text.toFixed(2)} within what ${Math.round(silenceMs)}ms of silence permits`,
+    reason:
+      `transcript ${text.toFixed(2)} within what ${Math.round(silenceMs)}ms of silence permits` +
+      heard,
   };
+}
+
+/**
+ * What the audio contributed, appended to the reason.
+ *
+ * Its own clause rather than folded into the numbers, because after V2 the
+ * commonest debugging question changes from "why did it wait" to "why did it
+ * not wait", and the answer has to name the evidence rather than just the
+ * threshold it moved.
+ */
+function prosodyNote(prosody: ProsodicEvidence | undefined, pull: number): string {
+  if (!prosody || pull === 0) return "";
+  const direction = pull > 0 ? "shortened" : "lengthened";
+  const detail = prosody.reason ? `: ${prosody.reason}` : "";
+  return ` — prosody ${direction} the window by ${Math.round(Math.abs(pull) * 100)}%${detail}`;
 }
 
 /**

@@ -47,6 +47,8 @@
  * model reasoning, and cheap rules before expensive ones.
  */
 
+import type { TurnEndEstimate, TurnEndPredictor } from "./turn-predictor";
+
 /** Frame energy as dBFS. Silence is very negative; full scale is 0. */
 export function frameDb(frame: Float32Array): number {
   if (frame.length === 0) return -Infinity;
@@ -147,6 +149,17 @@ export type VadEventType = "SPEECH_START" | "SPEECH_END";
 export interface VadEvent {
   type: VadEventType;
   /**
+   * What the audio said about this being a real turn end (V2).
+   *
+   * Present on `SPEECH_END` when a predictor is attached and could read the
+   * tail. The VAD still answers only "is there voice energy right now" — the
+   * division of labour in the module comment is unchanged — but it is the one
+   * component holding the frames at the moment the boundary is judged, so it is
+   * where the tail gets read. It does not act on this and cannot: the estimate
+   * travels to the server and changes how long the GATE is willing to wait.
+   */
+  prosody?: TurnEndEstimate | undefined;
+  /**
    * When the event is judged to have happened, not when it was detected.
    *
    * A speech end is reported at the moment the quiet *began*, not one hangover
@@ -161,6 +174,16 @@ export interface VadEvent {
 export class Vad {
   private readonly config: VadConfig;
   private noiseFloorDb: number;
+  /**
+   * Optional, and absent is a supported state (V2).
+   *
+   * Injected rather than constructed here so this module keeps no opinion about
+   * how prosody is estimated — the in-house one today, smart-turn-v3 behind
+   * onnxruntime-web later, neither in a test that only cares about boundaries.
+   */
+  private readonly predictor: TurnEndPredictor | null;
+  /** Capture rate of the frames, needed by the predictor's pitch analysis. */
+  private sampleRate = 48_000;
 
   private speaking = false;
   /** When the current run of above-threshold frames began. */
@@ -170,9 +193,10 @@ export class Vad {
   /** Timestamp of the first frame, so the calibration window can be measured. */
   private firstFrameAtMs: number | null = null;
 
-  constructor(config: Partial<VadConfig> = {}) {
+  constructor(config: Partial<VadConfig> = {}, predictor: TurnEndPredictor | null = null) {
     this.config = { ...DEFAULT_VAD_CONFIG, ...config };
     this.noiseFloorDb = this.config.initialNoiseFloorDb;
+    this.predictor = predictor;
   }
 
   get isSpeaking(): boolean {
@@ -196,7 +220,13 @@ export class Vad {
    * returning an array only to hold zero or one item would invite callers to
    * write loops that hide that fact.
    */
-  push(frame: Float32Array, atMs: number): VadEvent | null {
+  push(frame: Float32Array, atMs: number, sampleRate = this.sampleRate): VadEvent | null {
+    this.sampleRate = sampleRate;
+    // Fed unconditionally, including during calibration and while silent. The
+    // predictor needs the run-up to a boundary, and a buffer that only filled
+    // once the VAD had already decided would have nothing in it at the moment
+    // it is asked.
+    this.predictor?.push(frame, sampleRate, atMs);
     return this.pushDb(frameDb(frame), atMs);
   }
 
@@ -258,10 +288,23 @@ export class Vad {
       const endedAt = this.quietRunStartedAtMs;
       this.quietRunStartedAtMs = null;
       this.voiceRunStartedAtMs = null;
-      return { type: "SPEECH_END", atMs: endedAt };
+      return { type: "SPEECH_END", atMs: endedAt, ...this.prosodyAt(endedAt) };
     }
 
     return null;
+  }
+
+  /**
+   * Read the tail that ended at the boundary, not the tail that ends now.
+   *
+   * `endedAt` is the backdated quiet onset, so this asks the predictor about the
+   * speech immediately BEFORE the pause. Passing the current time instead would
+   * hand it a window that is mostly hangover silence — no pitch to fall, no
+   * energy to decay — and every turn would come back unreadable.
+   */
+  private prosodyAt(endedAt: number): { prosody?: TurnEndEstimate } {
+    if (!this.predictor) return {};
+    return { prosody: this.predictor.estimate(endedAt) };
   }
 
   /**
@@ -276,6 +319,12 @@ export class Vad {
     this.speaking = false;
     this.voiceRunStartedAtMs = null;
     this.quietRunStartedAtMs = null;
-    return wasSpeaking ? { type: "SPEECH_END", atMs } : null;
+
+    // A forced close carries prosody too. Mute mid-sentence is exactly the case
+    // where the audio said "still going" and the clock is about to say nothing
+    // at all, and the gate should hear that rather than guess.
+    const event = wasSpeaking ? { type: "SPEECH_END" as const, atMs, ...this.prosodyAt(atMs) } : null;
+    this.predictor?.reset();
+    return event;
   }
 }

@@ -68,3 +68,5 @@ export {
   type UtteranceAudioCacheOptions,
   type UtteranceTranscriber,
 } from "./utterance-audio.js";
+
+export { geminiUtteranceTranscriber } from "./transcriber.js";

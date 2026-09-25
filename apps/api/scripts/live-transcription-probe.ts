@@ -51,12 +51,6 @@ if (!API_KEY) {
 
 const WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
 
-/** 16-bit PCM silence at 16 kHz. Used as a speech-shaped but content-free signal. */
-function silenceFrames(durationMs: number, sampleRate = 16_000): Buffer {
-  const samples = Math.floor((durationMs / 1_000) * sampleRate);
-  return Buffer.alloc(samples * 2, 0); // 16-bit = 2 bytes per sample
-}
-
 /** Sine-wave at 440 Hz — recognisable as "a sound" so STT has something to work with. */
 function toneFrames(durationMs: number, sampleRate = 16_000, hz = 440): Buffer {
   const samples = Math.floor((durationMs / 1_000) * sampleRate);

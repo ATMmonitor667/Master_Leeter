@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { InterviewState } from "@master-leeter/contracts";
 import { INITIAL_STATE, policyFor } from "../orchestrator/index.js";
 import type { QueryClient } from "./pg-event-log.js";
-import { DEFAULT_INTERVIEW_SECONDS, SessionNotFoundError, type CreateSessionRequest, type InterviewSession, type SessionStore } from "./session-store.js";
+import { SessionNotFoundError, type CreateSessionRequest, type InterviewSession, type SessionStore } from "./session-store.js";
 import type { LoadedScenario } from "../scenario/loader.js";
 
 type Row = {

@@ -172,8 +172,8 @@ export class UtteranceAudioCache {
   private readonly inFlight = new Map<string, Promise<CachedAudio>>();
   private readonly renderer: TtsRenderer;
   private readonly concurrency: number;
-  private readonly transcriber?: UtteranceTranscriber;
-  private readonly onVerifyRejected?: UtteranceAudioCacheOptions["onVerifyRejected"];
+  private readonly transcriber: UtteranceTranscriber | undefined;
+  private readonly onVerifyRejected: UtteranceAudioCacheOptions["onVerifyRejected"];
   private readonly now: () => number;
 
   constructor(opts: UtteranceAudioCacheOptions) {
@@ -225,7 +225,7 @@ export class UtteranceAudioCache {
     if (pending) return pending;
 
     const task = this.renderer
-      .render(text, { tone })
+      .render(text, tone === undefined ? {} : { tone })
       .then(async (speech) => {
         // P3.3: Trim leading and trailing silence
         const trimmed = trimSilence(speech.pcm, speech.sampleRate);

@@ -63,7 +63,11 @@ export interface VoiceCredential {
   automaticActivityDetectionDisabled: true;
 }
 
-export type SpeechBoundary = { type: "SPEECH_STARTED" | "SPEECH_STOPPED"; atMs: number };
+export type SpeechBoundary = {
+  type: "SPEECH_STARTED" | "SPEECH_STOPPED";
+  atMs: number;
+  prosody?: { probability: number; confidence: number; reason: string };
+};
 
 /**
  * An authorization from the server, and the ONLY thing that can produce speech.
@@ -186,7 +190,7 @@ export class RealtimeVoice {
       // the end of the turn. Close it before the socket so a final transcript
       // still has a chance to arrive during an orderly shutdown.
       this.sendActivity("activityEnd");
-      this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs });
+      this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs, ...boundaryProsody(closing) });
     }
 
     this.ready = false;
@@ -209,7 +213,7 @@ export class RealtimeVoice {
       const closing = this.vad.reset(this.now());
       if (closing) {
         this.sendActivity("activityEnd");
-        this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs });
+        this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs, ...boundaryProsody(closing) });
       }
     }
   }
@@ -223,7 +227,7 @@ export class RealtimeVoice {
   pushAudio(frame: Float32Array, atMs = this.now()): void {
     if (this.muted) return;
 
-    const event = this.vad.push(frame, atMs);
+    const event = this.vad.push(frame, atMs, this.opts.captureRate);
     if (event) this.handleVadEvent(event);
 
     if (!this.ready || !this.transport?.connected) return;
@@ -294,7 +298,7 @@ export class RealtimeVoice {
     }
 
     this.sendActivity("activityEnd");
-    this.emitBoundary({ type: "SPEECH_STOPPED", atMs: event.atMs });
+    this.emitBoundary({ type: "SPEECH_STOPPED", atMs: event.atMs, ...boundaryProsody(event) });
   }
 
   /**
@@ -425,6 +429,12 @@ export class RealtimeVoice {
       this.opts.onSpeechComplete?.();
     }
   }
+}
+
+function boundaryProsody(event: VadEvent): Pick<SpeechBoundary, "prosody"> {
+  if (!event.prosody) return {};
+  const { probability, confidence, reason } = event.prosody;
+  return { prosody: { probability, confidence, reason: reason.slice(0, 200) } };
 }
 
 function transcriptText(value: unknown): string {

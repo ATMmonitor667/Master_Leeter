@@ -256,8 +256,12 @@ export class SessionClient {
    * and the network hop into the measurement, shortening every observed pause
    * and making the gate more willing to speak.
    */
-  speechBoundary(type: "SPEECH_STARTED" | "SPEECH_STOPPED", atMs: number): void {
-    this.enqueue(type, {}, atMs);
+  speechBoundary(
+    type: "SPEECH_STARTED" | "SPEECH_STOPPED",
+    atMs: number,
+    prosody?: { probability: number; confidence: number; reason?: string },
+  ): void {
+    this.enqueue(type, type === "SPEECH_STOPPED" && prosody ? { prosody } : {}, atMs);
   }
 
   /** Finalized candidate transcript — the gate's only speech input (M4-2). */

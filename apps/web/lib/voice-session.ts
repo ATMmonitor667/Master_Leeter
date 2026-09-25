@@ -7,6 +7,8 @@ import {
   type VoiceCredential,
 } from "./realtime-voice";
 import { VoiceLatencyLedger, type LatencyLedger } from "./latency-ledger";
+import { Vad } from "./vad";
+import { ProsodicTurnEndPredictor } from "./turn-predictor";
 
 /**
  * Browser shell for the voice path (M3-2).
@@ -60,6 +62,7 @@ registerProcessor("capture", CaptureProcessor);
 
 /** Web Audio behind the scheduler's structural interface. */
 export class WebAudioSink implements AudioSink {
+  get running(): boolean { return this.context.state === "running"; }
   constructor(
     private readonly context: AudioContext,
     private readonly onEnded: (source: ScheduledSource) => void,
@@ -236,6 +239,8 @@ export class VoiceSession {
     const voice = new RealtimeVoice({
         credential,
         captureRate: this.captureRate,
+        vad: new Vad({}, process.env.NEXT_PUBLIC_TURN_PREDICTOR === "off"
+          ? null : new ProsodicTurnEndPredictor()),
         connect: (handlers) => {
           const socket = new WebSocket(credential.wsUrl);
           socket.onopen = () => handlers.onOpen();
@@ -256,11 +261,10 @@ export class VoiceSession {
         onSpeechBoundary: (boundary) => {
           this.candidateSpeechOpen = boundary.type === "SPEECH_STARTED";
           this.awaitingFinalTranscript = true;
-          if (boundary.type === "SPEECH_STARTED") {
+          if (boundary.type === "SPEECH_STOPPED") {
             this.ledger.mark("quietOnsetMs", boundary.atMs);
-          } else {
-            this.ledger.mark("vadEndDetectedMs", boundary.atMs);
-            this.ledger.mark("activityEndSentMs", boundary.atMs);
+            this.ledger.mark("vadEndDetectedMs", Date.now());
+            this.ledger.mark("activityEndSentMs", Date.now());
           }
           this.opts.onSpeechBoundary?.(boundary);
         },

@@ -11,6 +11,7 @@ import {
   executeVoiceTool,
   type RealtimeTokenMinter,
   type TtsRenderer,
+  type UtteranceTranscriber,
 } from "../realtime/index.js";
 import { RunQueue, type CodeRunner, hashInput } from "../runner/index.js";
 import { type LoadedScenario } from "../scenario/loader.js";
@@ -152,6 +153,7 @@ export interface SessionModuleOptions {
    * model, as before. The interview is slower, never broken.
    */
   ttsRenderer?: TtsRenderer;
+  ttsTranscriber?: UtteranceTranscriber;
 }
 
 export async function registerSessionModule(
@@ -164,7 +166,13 @@ export async function registerSessionModule(
 
   // P3: per-process utterance audio cache (shared across all sessions).
   const ttsCache = opts.ttsRenderer
-    ? new UtteranceAudioCache({ renderer: opts.ttsRenderer, concurrency: 3 })
+    ? new UtteranceAudioCache({
+        renderer: opts.ttsRenderer,
+        concurrency: 3,
+        ...(opts.ttsTranscriber ? { transcriber: opts.ttsTranscriber } : {}),
+        onVerifyRejected: ({ textHash, tone, reason }) =>
+          app.log.warn({ textHash, tone, reason }, "TTS render rejected by word verification"),
+      })
     : null;
 
   if (ttsCache) {
@@ -630,7 +638,7 @@ export async function registerSessionModule(
       // even the first utterance can be served from cache. The rest of the
       // vocabulary is prewarm on realtime-token mint. Both are not awaited.
       if (ttsCache) {
-        const scenarioForPrewarm = opts.library.get(session.scenarioId);
+        const scenarioForPrewarm = opts.library.get(session.scenarioVersionId);
         if (scenarioForPrewarm) {
           const tone = (session.interviewerTone ?? "NORMAL") as "EXTRA_NICE" | "NORMAL" | "MEAN";
           const brief = scenarioForPrewarm.version.oralBrief;
@@ -996,7 +1004,7 @@ export async function registerSessionModule(
       // Runs while the candidate reads the workspace, so the brief and all
       // probes are cached before anyone starts speaking.
       if (ttsCache && mintLimiter.used(id) === 1) {
-        const scenario = opts.library.get(session.scenarioId);
+        const scenario = opts.library.get(session.scenarioVersionId);
         if (scenario) {
           const tone = (session.interviewerTone ?? "NORMAL") as "EXTRA_NICE" | "NORMAL" | "MEAN";
           void ttsCache.prewarm(scenario.version, tone).then((report) => {
@@ -1102,6 +1110,19 @@ export async function registerSessionModule(
     const session = await store.get(id);
     if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
     if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+
+    // Reconnect or owner takeover may land on a process with a cold cache.
+    // Refresh asynchronously; authorization and the brief never wait for TTS.
+    if (ttsCache) {
+      void store.pinnedScenario(id).then((pinned) => {
+        if (!pinned) return;
+        return ttsCache.prewarm(pinned.version, session.interviewerTone ?? "NORMAL");
+      }).then((report) => {
+        if (report) app.log.info({ sessionId: id, rendererId: report.rendererId,
+          requested: report.requested, rendered: report.rendered,
+          cached: report.cached, failed: report.failed }, "voice prewarm finished");
+      }).catch(() => app.log.warn({ sessionId: id }, "voice prewarm unavailable"));
+    }
 
     const started = (await eventLog.read(id)).find((e) => e.type === "SESSION_STARTED");
     if (!started) return reply.code(409).send({ error: "NO_SESSION_STARTED" });

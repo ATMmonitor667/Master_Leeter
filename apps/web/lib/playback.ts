@@ -42,6 +42,8 @@ export interface ScheduledSource {
 export interface AudioSink {
   /** Seconds, monotonically increasing. `AudioContext.currentTime`. */
   readonly currentTime: number;
+  /** True only after the output context has resumed. */
+  readonly running?: boolean;
   /** Schedules `samples` to begin at `atTime`, returning a handle to cancel it. */
   play(samples: Float32Array, sampleRate: number, atTime: number): ScheduledSource;
 }
@@ -58,6 +60,8 @@ export interface PlaybackSchedulerOptions {
    * audible as latency.
    */
   leadSeconds?: number;
+  /** Shorter lead for an already-running output context. */
+  runningLeadSeconds?: number;
   /**
    * Fired once, on natural drain only.
    *
@@ -73,7 +77,8 @@ export class PlaybackScheduler {
   private readonly sink: AudioSink;
   private readonly sampleRate: number;
   private readonly leadSeconds: number;
-  private readonly onDrained?: () => void;
+  private readonly runningLeadSeconds: number;
+  private readonly onDrained: (() => void) | undefined;
 
   /** When the next buffer should start. Null when nothing is queued. */
   private cursor: number | null = null;
@@ -83,6 +88,7 @@ export class PlaybackScheduler {
     this.sink = opts.sink;
     this.sampleRate = opts.sampleRate ?? LIVE_OUTPUT_SAMPLE_RATE;
     this.leadSeconds = opts.leadSeconds ?? 0.06;
+    this.runningLeadSeconds = opts.runningLeadSeconds ?? 0.03;
     this.onDrained = opts.onDrained;
   }
 
@@ -123,7 +129,8 @@ export class PlaybackScheduler {
 
     // Resume from the cursor when it is still ahead of the clock; otherwise the
     // queue has drained and this is a fresh burst, which needs the lead again.
-    const startAt = this.cursor !== null && this.cursor > now ? this.cursor : now + this.leadSeconds;
+    const lead = this.sink.running ? this.runningLeadSeconds : this.leadSeconds;
+    const startAt = this.cursor !== null && this.cursor > now ? this.cursor : now + lead;
 
     const source = this.sink.play(samples, sampleRate, startAt);
     this.active.add(source);

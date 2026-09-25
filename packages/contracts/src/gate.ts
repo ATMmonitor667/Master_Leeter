@@ -57,6 +57,12 @@ export const TurnSchema = z.object({
    * that has not reported one. Absence means "unknown", never "zero".
    */
   silenceMsBeforeEnd: z.number().nonnegative().optional(),
+  /** Derived voice evidence for the turn boundary; absent on older clients. */
+  prosody: z.object({
+    probability: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1),
+    reason: z.string().max(200).optional(),
+  }).optional(),
   intent: TurnIntentSchema,
   intentProbabilities: z.record(z.number().min(0).max(1)),
   endedAt: z.string().datetime(),

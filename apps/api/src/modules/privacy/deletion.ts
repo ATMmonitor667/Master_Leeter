@@ -63,6 +63,11 @@ const IDENTIFYING_FIELDS = new Set([
   "input",
   "audioUrl",
   "utterance",
+  "prosody",
+  "prosodyProbability",
+  "prosodyConfidence",
+  "prosodyPull",
+  "turnEndReason",
 ]);
 
 export const REDACTED = "[redacted]" as const;

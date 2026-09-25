@@ -25,7 +25,7 @@ import {
 } from "./modules/preparation/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule, type ConsentStore, type DeletionStore } from "./modules/privacy/index.js";
-import { minterFromEnv, ttsFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
+import { geminiUtteranceTranscriber, minterFromEnv, ttsFromEnv, type RealtimeTokenMinter, type UtteranceTranscriber } from "./modules/realtime/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
@@ -110,6 +110,7 @@ export interface ServerOptions {
    * Gemini API key is available.
    */
   ttsRenderer?: import("./modules/realtime/index.js").TtsRenderer;
+  ttsTranscriber?: UtteranceTranscriber;
 }
 
 export function buildServer(opts: ServerOptions) {
@@ -264,6 +265,7 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.maxRealtimeMintsPerSession ? { maxRealtimeMintsPerSession: opts.maxRealtimeMintsPerSession } : {}),
     ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
     ...(opts.ttsRenderer ? { ttsRenderer: opts.ttsRenderer } : {}),
+    ...(opts.ttsTranscriber ? { ttsTranscriber: opts.ttsTranscriber } : {}),
     onRealtimeCircuitOpen: (sessionId, failureKind) =>
       publishAlert({ kind: "REALTIME_CIRCUIT_OPEN", sessionId, failureKind }),
   });
@@ -364,6 +366,13 @@ export async function start(): Promise<void> {
   const realtimeTokenMinter = minterFromEnv();
   // P3: null when TTS_PRERENDER=off or no API key. Falls back to the realtime model.
   const ttsRenderer = ttsFromEnv(process.env, geminiApiKeyFromEnv());
+  const verifyTts = process.env["TTS_VERIFY"] !== "off";
+  if (config.production && !verifyTts) throw new Error("TTS_VERIFICATION_REQUIRED");
+  const ttsTranscriber = ttsRenderer && verifyTts
+    ? geminiUtteranceTranscriber(geminiApiKeyFromEnv()!, {
+        model: process.env["TTS_VERIFY_MODEL"] || "gemini-3.5-transcribe",
+      })
+    : undefined;
   const realtimeCircuit = new ProviderCircuit(3, 60_000);
   const alertSink = config.alertWebhookUrl ? new WebhookAlertSink({
     url: config.alertWebhookUrl,
@@ -405,6 +414,7 @@ export async function start(): Promise<void> {
     classifier,
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
     ...(ttsRenderer ? { ttsRenderer } : {}),
+    ...(ttsTranscriber ? { ttsTranscriber } : {}),
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
     ...(scenarioRestater ? { scenarioRestater } : {}),
     ...(evaluator ? { evaluator } : {}),

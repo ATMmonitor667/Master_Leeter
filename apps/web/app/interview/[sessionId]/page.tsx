@@ -186,7 +186,7 @@ export default function InterviewPage({ params }: { params: Promise<{ sessionId:
         // The events M4-2 measures silenceMs between. They carry the VAD's
         // onset timestamps, not the moment they were sent.
         onSpeechBoundary: (boundary) =>
-          clientRef.current?.speechBoundary(boundary.type, boundary.atMs),
+          clientRef.current?.speechBoundary(boundary.type, boundary.atMs, boundary.prosody),
         onTranscript: ({ text, final }) => {
           if (final) {
             setCaptionInterim("");
