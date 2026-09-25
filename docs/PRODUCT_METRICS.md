@@ -21,6 +21,11 @@ window. `reportEngagement` compares ready reports with reports opened at least
 once; its timestamp stays on the deletable report record. These definitions are
 deliberately derived from server-owned records.
 
+`pendingRuntimeInputs` counts active, non-deleted interviews with committed
+browser events that have not reached an atomic runtime checkpoint. It is a
+backlog indicator, not a count of lost user events or a permission to rerun
+model calls. An unexpectedly persistent value requires an operator review.
+
 Landing visits and Supabase signups are not inferred. Read those aggregate values
 from the web host and Supabase Auth dashboards and record them beside this output.
 Do not enable client fingerprinting or export Auth users to fill that gap.

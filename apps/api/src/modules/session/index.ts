@@ -136,6 +136,7 @@ export interface SessionModuleOptions {
   maxRealtimeMintsPerSession?: number;
   realtimeCircuit?: ProviderCircuit;
   onRealtimeCircuitOpen?: (sessionId: string, failureKind: string) => void;
+  onCompletionDiscoveryFailure?: (consecutiveFailures: number) => void;
 }
 
 export async function registerSessionModule(
@@ -723,12 +724,14 @@ export async function registerSessionModule(
   }
 
   let completionSweepRunning = false;
+  let completionDiscoveryFailures = 0;
   completionTimer = setInterval(() => {
     if (completionSweepRunning) return;
     completionSweepRunning = true;
     void (async () => {
       const now = new Date();
       const due = await store.dueForCompletion(now.toISOString());
+      completionDiscoveryFailures = 0;
       const ids = new Set(due.map((session) => session.id));
       for (const [id, lease] of leases) {
         if (isAbandoned(lease, now.getTime())) ids.add(id);
@@ -748,7 +751,16 @@ export async function registerSessionModule(
           }
         }
       }
-    })().finally(() => { completionSweepRunning = false; });
+    })().catch((error) => {
+      // A transient database outage during discovery must not reject a detached
+      // interval promise and take down the process. The next sweep retries.
+      completionDiscoveryFailures += 1;
+      if (completionDiscoveryFailures === 1 || completionDiscoveryFailures % 12 === 0) {
+        app.log.error({ consecutiveFailures: completionDiscoveryFailures,
+          errorType: error instanceof Error ? error.name : typeof error }, "automatic completion discovery failed");
+        opts.onCompletionDiscoveryFailure?.(completionDiscoveryFailures);
+      }
+    }).finally(() => { completionSweepRunning = false; });
   }, 5_000);
   completionTimer.unref();
 

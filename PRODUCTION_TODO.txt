@@ -1,4 +1,17 @@
 MASTER LEETER — PRODUCTION IMPLEMENTATION TODO
+CURRENT STATUS (2026-09-24): I01–I08 code checkpoints have been merged into
+main. Work continues on codex-production-09-recovery-qualification. The older
+unchecked I02–I06 rows below are historical and do not describe the current
+code state. Use docs/PRODUCTION_REMAINING.md for the release scope and open
+gates. Free capped beta with model-estimated grades is the agreed first release;
+sandbox execution and billing are deferred. Supabase remains the backend.
+
+CURRENT ENGINEERING LIMIT: durable input records expose unfinished work, but
+there is no automatic cross-instance owner-routed replay for partially handled
+model calls. Keep one API replica in the invite beta until this is implemented
+and validated, or explicitly scope multi-replica recovery as the next code
+iteration. Release preflight refuses unsettled active runtime inputs.
+
 Prepared: 2026-09-11
 Branch: production
 Audited commit: b4c25c4

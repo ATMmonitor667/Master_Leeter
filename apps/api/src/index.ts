@@ -82,6 +82,7 @@ export interface ServerOptions {
   scenarioRestater?: ScenarioRestater;
   closeStorage?: () => Promise<void>;
   readinessChecks?: ReadonlyArray<{ name: string; check: () => Promise<void> }>;
+  writesPermitted?: () => boolean;
   release?: string;
   rateLimiter?: RateLimitStore;
   rateLimits?: RateLimitPolicy;
@@ -121,6 +122,10 @@ export function buildServer(opts: ServerOptions) {
     if (opts.production) reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   });
   app.addHook("preHandler", async (req, reply) => {
+    if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS" &&
+        opts.writesPermitted && !opts.writesPermitted()) {
+      return reply.code(503).header("Retry-After", "10").send({ error: "API_REPLICA_LEASE_LOST" });
+    }
     if (draining && req.method === "POST" && [
       "/v1/interview-sessions", "/v1/preparations", "/v1/preparations/:id/complete",
     ].includes(req.routeOptions.url ?? "")) {
@@ -255,6 +260,8 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
     onRealtimeCircuitOpen: (sessionId, failureKind) =>
       publishAlert({ kind: "REALTIME_CIRCUIT_OPEN", sessionId, failureKind }),
+    onCompletionDiscoveryFailure: (consecutiveFailures) =>
+      publishAlert({ kind: "SESSION_COMPLETION_UNAVAILABLE", consecutiveFailures }),
   });
   void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
   void app.register(registerPreparationModule, {
@@ -361,7 +368,7 @@ export async function start(): Promise<void> {
   // Supabase is PostgreSQL. Its direct/pooler connection string activates the
   // durable repositories; local development may still run explicitly in memory.
   const databaseUrl = config.databaseUrl;
-  const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl, undefined, config.admission) : undefined;
+  const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl, undefined, config.admission, config.production) : undefined;
   const identityAdmin = identityAdminFromEnv(process.env);
 
   const app = buildServer({

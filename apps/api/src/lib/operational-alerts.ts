@@ -6,7 +6,7 @@ export type OperationalAlert =
       code: string;
     }
   | {
-      kind: "REPORT_RECOVERY_UNAVAILABLE" | "PRIVACY_MAINTENANCE_UNAVAILABLE";
+      kind: "REPORT_RECOVERY_UNAVAILABLE" | "PRIVACY_MAINTENANCE_UNAVAILABLE" | "SESSION_COMPLETION_UNAVAILABLE";
       consecutiveFailures: number;
     }
   | {
