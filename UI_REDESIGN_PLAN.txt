@@ -1,0 +1,1051 @@
+MASTER LEETER — END-TO-END UI REDESIGN PLAN
+Branch: UI
+Written: 2026-10-04
+Base: main @ 731eed2 (apps/web, Next.js 15 App Router + React 19, plain CSS)
+Status: design and implementation specification. No product code changed by
+        this document. Every number below is a decision, not a placeholder.
+
+--------------------------------------------------------------------------------
+0. HOW TO READ THIS, AND WHAT IT MAY NOT CHANGE
+--------------------------------------------------------------------------------
+
+This is a redesign of the whole surface: brand, tokens, components, every
+screen, every state, the motion language, the accessibility contract, the
+performance budget, and the order in which to ship it.
+
+Read sections 1-4 before touching a file. Sections 5-7 are the build. Sections
+8-10 are the quality bars that decide whether the build is done. Section 11 is
+the shipping order; it is written so that every phase is independently
+mergeable and independently revertible.
+
+PRODUCT INVARIANTS — the redesign is wrong if it breaks any of these. They come
+from CLAUDE.md and from the interview design, not from taste:
+
+  I1. The full problem statement is never rendered as text. Oral delivery only.
+      Captions are an accessibility feature for the CANDIDATE's own speech, not
+      a reading path for the interviewer's words.
+  I2. No chat transcript of the interviewer, no avatar, no face. The entire
+      interviewer presence is a state and a few words.
+  I3. Silence is the normal state. The UI must never fill it with chatter,
+      tips, nudges, streaks, confetti, or progress gamification.
+  I4. The live interviewer never grades. Nothing score-shaped may appear on the
+      interview screen — not a running meter, not a "confidence" bar.
+  I5. No AI autocomplete in the editor. The editor is deliberately unhelpful.
+  I6. Nothing about the gate's internal state is exposed ("considering a
+      probe"), or candidates will play the system instead of the interview.
+  I7. The timer is server-authoritative and visually calm: no colour shifts, no
+      pulsing, no urgency theatre.
+  I8. Privacy posture stays visible and honest: no raw-audio retention claims,
+      no dark patterns around deletion, no pre-ticked consent.
+
+Everything else is open, including the colour system, the layout, the type, the
+component architecture, the stylesheet strategy and the navigation model.
+
+--------------------------------------------------------------------------------
+1. AUDIT OF THE CURRENT UI (what we are actually starting from)
+--------------------------------------------------------------------------------
+
+Inventory, as of this branch point:
+
+  Routes      /, /login, /interview/[sessionId], /report/[sessionId],
+              /history, /settings, /faq, /privacy, /support, robots, sitemap,
+              opengraph-image
+  Components  14 product components + 2 decorative canvas components
+  Styling     ONE file: apps/web/app/globals.css, 490 lines, ~42 KB
+  Tooling     No Tailwind, no CSS modules, no component library, no Storybook,
+              no visual regression, no a11y automation
+  Deps        next 15, react 19, @monaco-editor/react, @supabase/supabase-js
+
+The work that exists is better than it looks: the component comments carry real
+product reasoning, the accessibility instincts are present (skip link, roles,
+aria-live, reduced-motion block, focus trap hook), and the information
+architecture of the interview screen is sound. What is missing is a SYSTEM.
+Below is what breaks as a result.
+
+1.1 ARCHITECTURE: one stylesheet, written in layers of time, not layers of CSS
+
+  * globals.css contains at least three design passes stacked on top of each
+    other ("2026 cockpit pass", "Landing", "Interview workspace", "Report").
+    The later block silently overrides the earlier one.
+  * Twenty selectors are declared more than once in the same file, so the
+    later pass silently reassigns the earlier one: .workspace-header (x3,
+    counting its media-query copies), and x2 each for .timer, .setup-card,
+    .scenario-card, .report-meta, .panel-label, .panel-label::before,
+    .landing-shell, .landing-nav, .landing-hero, .landing-copy h1,
+    .landing-copy h1 span, .interviewer-status, .eyebrow, .drill-grid,
+    .dimension-card, .danger-button, .brand-mark, .stage-progress,
+    .workspace-header-right.
+  * At least one of those collisions is dead design: `.landing-copy h1 span` is
+    given a gradient-clipped text treatment in the cockpit block and then
+    reassigned `color: var(--muted)` by the later Landing block. The gradient
+    has never shipped. Nobody noticed, which is the point.
+  * There is no @layer, no import graph, no file-per-concern. Every new screen
+    appends to the bottom and hopes.
+
+1.2 TYPOGRAPHY: the typeface is declared and never loaded, and the scale is tiny
+
+  * `--sans: Inter, ui-sans-serif, ...` — but there is no next/font, no
+    @font-face, and the CSP allows `font-src 'self' data:`. Inter is not in the
+    bundle. Every design decision was made in Inter and every user sees Segoe
+    UI (Windows) or SF (macOS). Letter-spacing values tuned for Inter
+    (-0.065em on the hero) are actively wrong for the fallbacks.
+  * Base `body { font-size: 14px }`, and the stylesheet declares ~70 font sizes
+    below 13px: 7px x1, 8px x3, 9px x9, 10px x10, 11px x21, 12px x26. The timer
+    caption, the interviewer label and the stage rail are 8-9px uppercase mono.
+    That is below any reasonable floor, and it is the text people read while
+    under interview stress.
+  * Inputs inherit 14px, which triggers iOS Safari zoom-on-focus (needs 16px).
+  * No tabular figures anywhere, so the countdown reflows every second.
+
+1.3 COLOUR: a fixed dark theme with hand-mixed hexes
+
+  * `color-scheme: dark` with no light theme at all. A 9am interview in a bright
+    room is the common case, and dark-only is a real accessibility exclusion
+    (astigmatism, photophobia both directions).
+  * ~20 raw hex variables with no ramps, so every new state invents a value:
+    #5f6a7b, #596576, #4e596b, #303b4c appear as one-off literals.
+  * Contrast risks: `.stage-step` at #5f6a7b on #07080c is ~4.0:1 — under the
+    4.5:1 floor for text that small. `.console-code b` is ~3.0:1 (decorative,
+    aria-hidden, acceptable, but it sets the house style).
+  * Status colour is the only signal for several states (connection dot,
+    caption state, history status). Colour alone is not an accessible signal.
+  * `.workspace-loading` dims the whole grid with opacity .55 + saturate(.6),
+    which also dims the text under it below contrast minimums.
+
+1.4 LAYOUT: viewport units and two breakpoints
+
+  * `height: 100vh` on the workspace (9 uses of 100vh in the file). On mobile
+    browsers with dynamic chrome this clips the editor and the header.
+  * Breakpoints at 900px and 620px only, both global. The side panes do not
+    respond to their own width — a notepad at 330px and at 700px get the same
+    type and padding. No container queries.
+  * The interview grid is fixed at 1.75fr / .85fr. It cannot be resized by the
+    candidate, who may want the editor full-width while thinking.
+
+1.5 ACCESSIBILITY: good instincts, incomplete contract
+
+  * `a:focus-visible` has no focus style — the global rule covers inputs,
+    textarea, select and button only. Links in a dark UI get the UA default.
+  * The sticky, blurred `.workspace-header` can cover a focused control when
+    the page scrolls (WCAG 2.2 SC 2.4.11 Focus Not Obscured).
+  * Target sizes: several icon-only ghost buttons compute to ~22-28px. SC 2.5.8
+    wants 24x24 CSS px minimum with spacing exceptions. Untested today.
+  * Two `aria-live="polite"` regions can fire together (InterviewerStatus and
+    SpeechCaption). Overlapping live regions produce either double speech or
+    dropped announcements, depending on the screen reader.
+  * `aria-label` is applied to non-interactive `div`s (`.hero-console`,
+    `.workspace-grid` sections). On a generic element the label is not exposed.
+  * The root layout wraps everything in `<div id="main-content">`, and each page
+    then renders its own `<main>`; the skip link therefore targets a generic
+    div, not the main landmark.
+  * No forced-colors (Windows High Contrast) handling; backgrounds are painted
+    with gradients that disappear there, leaving borderless panels.
+  * No visible-focus audit, no 400% zoom audit, no keyboard map documented.
+
+1.6 MOTION: decorative loops that never stop
+
+  * `brand-sheen` (7s), `orbit-pulse` (3.2s), `equalize` (1.15s), `score-radar`
+    (3.4s) all run `infinite`. The global prefers-reduced-motion block is
+    correct and present — but for everyone else these animate forever, on the
+    landing page and on the report, costing battery and attention.
+  * No motion tokens: durations are 80ms/150ms/160ms/170ms/180ms/220ms picked
+    per-rule, easings are all `ease`.
+
+1.7 PERFORMANCE: the big one is Monaco, and it is eager
+
+  * Monaco is imported statically into the interview route and themed
+    `vs-dark`, hard-coded. It is ~1 MB+ of JS and workers, loaded before the
+    candidate has even started voice.
+  * No route-level code splitting beyond Next's defaults; the decorative
+    constellation canvases ship with the marketing route.
+  * No budgets, no Lighthouse CI, no bundle check for the web app (the repo has
+    `check:bundle` for forbidden content, not for size).
+
+1.8 STATES: the happy path is designed, the rest is text
+
+  * Loading exists for the scenario list (skeletons) and the report (spinner).
+    Elsewhere: raw strings ("Loading…", "Reconnecting").
+  * No designed empty state for history beyond a bordered box, no designed
+    offline state, no microphone-permission-denied state, no session-expired
+    state, no 404/500 pages at all.
+
+1.9 SUMMARY JUDGEMENT
+
+The current UI is a competent single-author dark dev-tool skin with real
+product thinking inside it and no system underneath it. It will not survive
+another five screens, it cannot be themed, it cannot be tested, and the parts
+most specific to this product — presence, attention, time, silence — are the
+parts it expresses least.
+
+--------------------------------------------------------------------------------
+2. DESIGN THESIS AND PRINCIPLES
+--------------------------------------------------------------------------------
+
+THESIS. This is not a dashboard, an IDE, or a chat app. It is a ROOM. Someone
+is sitting across from the candidate, mostly quiet, occasionally asking
+something hard. The interface's job is to make that presence believable, keep
+the candidate's hands and eyes where they belong — the editor and their own
+thinking — and then get out of the way for forty-five minutes.
+
+The marketing surface has the opposite job: convince a nervous person that
+this is worth sitting through, with evidence, not adjectives.
+
+PRINCIPLES
+
+  P1. ONE PRIMARY SURFACE PER SCREEN.
+      Landing: the promise. Setup: the choice. Interview: the editor.
+      Report: the evidence. Everything else is secondary chrome and must look
+      secondary. The interview screen currently gives the editor 64% of width
+      and the header 8 competing controls; after the redesign the editor is the
+      only thing with full contrast.
+
+  P2. SILENCE IS A VISUAL STATE, NOT AN ABSENCE.
+      The interviewer being quiet should look deliberate: a steady presence
+      marker that reads "listening", not an empty panel. Dead UI reads as a
+      dropped call, exactly as dead audio does (that is why room tone exists in
+      the voice path — the same argument applies to pixels).
+
+  P3. CALM UNDER STRESS.
+      No red countdowns, no shrinking bars, no motion in peripheral vision
+      while the candidate codes. Pressure comes from the interview. The UI's
+      only job under stress is to be legible.
+
+  P4. EVIDENCE OVER DECORATION.
+      Every number shown is traceable to the event log. The report leads with
+      what was observed, not with a score ring. Model-estimated grades stay
+      labelled as estimates, visually subordinate to evidence.
+
+  P5. EVERY STATE IS DESIGNED.
+      For each surface: loading, empty, partial, error, offline, permission
+      denied, expired, ended. A state without a design is a bug with a
+      stylesheet.
+
+  P6. ACCESSIBLE BY CONSTRUCTION, NOT BY AUDIT.
+      Tokens that cannot fail contrast, primitives that cannot ship without a
+      focus ring, a single announcement channel, keyboard-first flows. The
+      audit then confirms rather than discovers.
+
+  P7. THE SYSTEM IS SMALL AND CLOSED.
+      ~16 primitives, ~14 product components, 3 layout shells. If a screen
+      needs something new, it goes into the system or it does not ship.
+
+  P8. HONEST SURFACES.
+      Beta is labelled beta. Estimates are labelled estimates. Deletion says
+      what it deletes. Nothing is pre-consented.
+
+--------------------------------------------------------------------------------
+3. DESIGN LANGUAGE
+--------------------------------------------------------------------------------
+
+3.1 COLOUR
+
+Model: OKLCH ramps, authored once, exported as tokens. OKLCH because equal
+lightness steps look equal across hues, which is what makes a 12-step ramp
+usable for both themes without hand-fixing every swatch. Baseline-safe in 2026.
+
+Ramps (12 steps each, L from 0.98 to 0.18):
+  neutral   C 0.012, H 255   surfaces, borders, text
+  accent    C 0.14,  H 35    the single brand accent (warm coral)
+  info      C 0.12,  H 255   links, selection, "speaking"
+  success   C 0.11,  H 160   connected, ready, "listening"
+  warning   C 0.12,  H 85    reconnecting, degraded
+  danger    C 0.15,  H 25    destructive, failure
+
+Semantic layer — components NEVER reference a ramp step directly:
+
+  surface.base            page background
+  surface.sunken          wells, terminal, editor gutter
+  surface.raised          cards, panels
+  surface.overlay         dialogs, popovers
+  border.subtle / strong / focus
+  text.primary / secondary / tertiary / inverted / link
+  state.listening / speaking / waiting / offline / recording
+  intent.accent / info / success / warning / danger  (+ .surface, .border,
+                                                      .text variants)
+
+Theming: one token set, two value sets, resolved with `light-dark()`, with
+`color-scheme: light dark` on :root and an explicit [data-theme] override for
+the user's choice (system / light / dark, persisted). Light theme is NOT an
+inversion: surfaces are warm off-white (L 0.98 C 0.004 H 90), borders carry
+slightly more chroma, shadows are replaced by borders.
+
+Contrast rules, enforced by a token test (section 12):
+  * text.primary on any surface: >= 7:1   (AAA body text; this app is read
+    under stress, by tired people, often on bad laptop panels)
+  * text.secondary: >= 4.5:1
+  * text.tertiary: >= 4.5:1 at >= 14px; never used below 14px
+  * borders and non-text state indicators: >= 3:1 against their background
+  * focus ring: >= 3:1 against BOTH the component and the adjacent background
+  * No state is communicated by colour alone — every state colour is paired
+    with a glyph shape or a word.
+
+3.2 TYPOGRAPHY
+
+  Sans:  Inter Variable, self-hosted through next/font/local, subset latin,
+         `display: swap`, preloaded on every route. (CSP already allows
+         font-src 'self'; no third-party request, no layout shift.)
+  Mono:  JetBrains Mono Variable, self-hosted, used for code, the timer,
+         identifiers, and data — never for UI labels.
+
+Scale (clamp-based, 1.25 ratio above body, fixed below):
+  display   clamp(40px, 5.2vw, 64px)   line 1.02  tracking -0.03em
+  title     clamp(28px, 3.2vw, 40px)   line 1.1   tracking -0.02em
+  heading   24px / 1.25
+  subhead   19px / 1.35
+  body      16px / 1.6     <- new base, up from 14px
+  small     14px / 1.5
+  caption   13px / 1.4     <- HARD FLOOR. Nothing in the product is smaller.
+  code      14px / 1.65 mono, tabular figures on
+  timer     28px mono, `font-variant-numeric: tabular-nums`
+
+Rules:
+  * Uppercase labels keep 0.08em tracking and are never below 13px.
+  * Measure: 60-75ch for prose, enforced with `max-inline-size: 68ch`.
+  * `text-wrap: balance` on headings, `pretty` on paragraphs.
+  * One weight axis in use: 400 / 500 / 600 / 700. No 680/720/760 oddities
+    (today's file uses all three, which the fallback font cannot render).
+
+3.3 SPACE, SHAPE, ELEVATION
+
+  Space scale (4px base): 2 4 8 12 16 20 24 32 40 56 72 96
+  Radii: xs 6, sm 8, md 12, lg 16, xl 24, pill 999
+  Borders: 1px hairline everywhere; 2px only for focus.
+  Elevation: exactly three levels.
+     e0 flat (border only)
+     e1 cards/popover   0 1px 2px / 0 8px 24px  at 12-18% alpha
+     e2 dialogs         0 24px 64px at 40% alpha + 1px border.strong
+     In light theme e1/e2 lose 60% of their alpha and gain border contrast.
+  Containers: prose 720px, app 1200px, wide 1440px, full bleed for the cockpit.
+
+3.4 MOTION
+
+  Tokens:
+    duration.instant 80ms   duration.fast 140ms   duration.base 220ms
+    duration.slow 360ms     duration.deliberate 600ms
+    ease.standard cubic-bezier(.2,0,0,1)
+    ease.enter    cubic-bezier(0,0,0,1)
+    ease.exit     cubic-bezier(.3,0,1,1)
+
+  Rules:
+    * Interface motion only moves things that changed, and only on enter/exit,
+      hover/press, and value changes.
+    * NOTHING animates infinitely on the interview screen except the voice
+      presence indicator, and only while the interviewer is actually speaking.
+    * The landing hero may carry one ambient motion; it pauses when the tab is
+      hidden and stops entirely at `prefers-reduced-motion: reduce`.
+    * View Transitions (progressive enhancement) for route changes between
+      history <-> report and setup -> interview; wrapped in @supports and
+      skipped under reduced motion.
+    * Reduced motion is a first-class theme, not a kill switch: transitions
+      become 1ms, but state changes still cross-fade opacity so nothing
+      teleports.
+
+3.5 BRAND AND ICONOGRAPHY
+
+  * The monogram stays, redrawn as a 24px SVG with a 1px keyline, no gradient
+    sheen, no infinite shine animation.
+  * Icon set: a small hand-built SVG sprite (24x24, 1.5px stroke, round caps):
+    mic, mic-off, speaker, speaker-off, play, stop, check, alert, info, clock,
+    code, notes, captions, settings, history, trash, download, external,
+    chevron, close, drag-handle. ~21 icons, one sprite file, ~6 KB.
+  * No emoji or dingbats as UI glyphs. Today's "⌁", "→", "✓" in content strings
+    are replaced by icons with proper `aria-hidden` and text alternatives.
+  * Illustration: none. The product's visual identity is typography, space, and
+    one accent. Illustration would make an interview room look like a toy.
+
+--------------------------------------------------------------------------------
+4. TOKEN ARCHITECTURE, STYLESHEET STRATEGY, THEMING
+--------------------------------------------------------------------------------
+
+4.1 SOURCE OF TRUTH
+
+  design/tokens/*.json in DTCG format (the W3C Design Tokens community-group
+  format; `$type`/`$value`, colour expressed in OKLCH components):
+
+    core.json        ramps, space, radii, type, duration, easing
+    semantic.json    surface/text/border/state/intent, light + dark values
+    component.json   per-component overrides that must not leak (e.g.
+                     editor.gutter, caption.interim)
+
+  Build step: `pnpm tokens` runs Style Dictionary and emits
+    apps/web/app/styles/tokens.css       (CSS custom properties, both themes)
+    apps/web/lib/tokens.ts               (typed subset for canvas/Monaco)
+    apps/web/lib/monaco-theme.ts         (generated Monaco theme from tokens)
+  Generated files are committed, so the app never depends on the build step at
+  runtime and reviewers can see colour diffs.
+
+4.2 STYLESHEET STRATEGY
+
+  Decision: CSS Modules per component + a small global layer. No Tailwind, no
+  runtime CSS-in-JS.
+  Why: React 19 server components make runtime CSS-in-JS a liability; Tailwind
+  would rewrite every file in this repo for a codebase that has exactly one
+  author and a strong comment culture; CSS Modules keep the existing authoring
+  style, give scoping for free, and split per route automatically in Next 15.
+
+  Cascade layers, declared once in app/styles/index.css:
+
+    @layer reset, tokens, base, layout, components, utilities, overrides;
+
+  Files:
+    app/styles/index.css      layer order + imports (the ONLY global import)
+    app/styles/reset.css      modern reset (box-sizing, margin, media defaults)
+    app/styles/tokens.css     generated
+    app/styles/base.css       element defaults, typography, focus, selection
+    app/styles/utilities.css  ~12 utilities only (visually-hidden, stack,
+                              cluster, grid-auto, truncate, scroll-area)
+  Every component ships `Component.module.css` next to it.
+  globals.css is deleted at the end of phase 4, not before.
+
+4.3 THEMING
+
+  * `:root { color-scheme: light dark }` and every semantic token defined with
+    `light-dark(<light>, <dark>)`.
+  * `<html data-theme="system|light|dark">` set by a tiny inline script in the
+    root layout (before paint, no flash), persisted in localStorage, defaulting
+    to system.
+  * Monaco theme is generated from the same tokens for both themes and switched
+    with the app theme (today it is hard-coded `vs-dark`).
+  * `@media (forced-colors: active)`: borders become `CanvasText`, state dots
+    gain glyphs, shadows are dropped, focus uses `Highlight`.
+
+--------------------------------------------------------------------------------
+5. COMPONENT SYSTEM
+--------------------------------------------------------------------------------
+
+5.1 PRIMITIVES (apps/web/components/ui/)
+
+  Button         variants: primary | secondary | ghost | danger
+                 sizes: sm (32px) | md (40px) | lg (48px)
+                 states: idle, hover, active, focus-visible, disabled, loading
+                 loading replaces the label with a spinner AND keeps width
+  IconButton     square, min 40x40 hit area even at 24px icon (SC 2.5.8)
+  Link           underline on hover, visible focus ring, external marker
+  Field          label + control + hint + error, wires aria-describedby and
+                 aria-invalid automatically; errors announced once
+  Input / Textarea / Select / Checkbox / Radio / RadioCard / Switch
+  Dialog         native <dialog>, focus trap, Escape, scroll lock, labelled by
+                 its heading; replaces the two hand-rolled modals
+  Popover        anchor-positioned with @supports fallback to absolute
+  Tooltip        hover + focus, never the only source of information
+  Toast          one region, polite, max 3, auto-dismiss 6s, pause on hover
+  Panel          titled region with optional actions; the cockpit's unit
+  Card           elevation e1 surface with optional header/footer
+  Badge / Pill   status colour + glyph + text
+  Meter          labelled bar with accessible value text
+  Skeleton       shimmer honours reduced motion (becomes a static block)
+  Tabs           roving tabindex, arrow keys
+  Stat           value + label + optional trend, tabular figures
+
+5.2 PRODUCT COMPONENTS
+
+  BrandMark              monogram + wordmark, three sizes
+  ThemeToggle            system/light/dark segmented control
+  AccountMenu            avatarless menu: email, history, settings, sign out
+  PresenceIndicator      replaces InterviewerStatus. A 28px orb with three
+                         states (listening/waiting/speaking), a word, and NO
+                         internal reasoning. Animates only while speaking.
+  TimerDial              replaces Timer. Mono tabular digits + a hairline arc
+                         that depletes. No colour change, no pulse (I7).
+  StageRail              replaces StageProgress. 7 stages, current one named,
+                         others reduced to dots on narrow widths; exposes
+                         `aria-current="step"`.
+  CaptionStream          replaces SpeechCaption. Candidate speech only (I1),
+                         interim line visually distinct, auto-scroll with a
+                         "jump to latest" affordance when scrolled away.
+  CodeSurface            Monaco wrapper: lazy, themed from tokens, assistance
+                         off (I5), save state in the panel header, font size
+                         control (14/16/18) persisted.
+  NotesSurface           plain textarea with the same panel chrome.
+  RunPanel               input, run, output; only when the runner is enabled.
+  VoicePreflightDialog   device checks as a 3-step checklist with a live level
+                         meter and a non-blocking "skip for now".
+  ScenarioPicker         radio cards with level, topics, duration.
+  ToneSelector           3 radio cards (Extra nice / Normal / Mean) with a
+                         plain-language consequence line each.
+  ResumeFactReview       consent-first review of extracted facts.
+  ScoreDial              report only. Static by default; the radar animation
+                         becomes a single enter transition.
+  DimensionCard          rubric dimension + meter + evidence rows.
+  EvidenceRow            timestamp + quote, monospace timestamp, copy button.
+  HistoryRow             session summary + status + actions.
+  EmptyState             icon, one sentence, one action.
+  ErrorState             what happened, what we kept, what to do next.
+
+5.3 LAYOUT SHELLS
+
+  MarketingShell   max 1200px, nav + footer, prose containers inside
+  AppShell         authenticated pages: compact nav, account menu, content
+  CockpitShell     full-bleed, no page scroll, grid with resizable split
+
+5.4 CONVENTIONS
+
+  * Props over classNames. A component exposes variants, never `className`
+    for structural overrides (a `className` escape hatch is allowed only for
+    margin/positioning, via a documented `spacing` prop instead).
+  * Every interactive component accepts and forwards `ref`, `id`,
+    `aria-*`, and `data-testid`.
+  * Server components by default; `"use client"` only where there is state,
+    an event handler, or a browser API. Today the whole landing page is a
+    client component because of one form; after the split, only the setup
+    island is.
+  * No component may define a colour literal. CI greps for `#` and `rgba(` in
+    `*.module.css` and fails the build (tokens.css is the only exception).
+
+--------------------------------------------------------------------------------
+6. SCREEN BY SCREEN
+--------------------------------------------------------------------------------
+
+Each screen below lists: JOB (what one thing it must do), LAYOUT (desktop /
+tablet / phone), WHAT CHANGES, STATES, and A11Y NOTES.
+
+6.1 GLOBAL SHELL
+
+  JOB: disappear.
+  LAYOUT: 56px nav. Left: brand. Right: theme toggle, history, account. The
+  nav is `position: sticky` only on marketing pages; app pages pin it.
+  WHAT CHANGES:
+    * Root layout renders a real `<main id="main-content">`; pages render
+      `<section>`s inside it. The skip link finally targets a landmark.
+    * Footer: three link groups, a one-line honest beta notice, no social
+      icons, no newsletter.
+    * `lang`, `dir`, viewport-fit=cover, and a theme-color meta per theme.
+  STATES: signed out (Sign in), signed in (account menu), offline (a single
+  thin status strip under the nav, never a modal).
+  A11Y: one `<nav aria-label="Main">`, one `<footer>`, landmarks unique.
+
+6.2 LANDING (/)
+
+  JOB: make a nervous candidate believe this is a real interview, in 15
+  seconds, with evidence.
+
+  LAYOUT (desktop): a 12-column grid, 1200px.
+    1. Hero, 7 cols copy + 5 cols "the room" visual.
+       H1 (display), one paragraph (body, 60ch), two actions: primary
+       "Start an interview", secondary "See a sample report".
+       Three proof lines with icons: original problems, 45 minutes,
+       evidence-backed report. No vanity metrics, no logos we do not have.
+    2. "What happens in the room" — a 3-step horizontal flow (Hear the
+       problem / Think out loud / Get the evidence). Each step is text plus
+       one small, honest visual: a waveform at rest, a cursor in an editor, a
+       report row with a quote. Replaces the current fake console mock.
+    3. "What makes it hard in the right way" — 4 cards of product truth:
+       the interviewer stays silent while you work; it only says what a human
+       author wrote; no autocomplete; your transcript is yours and deletable.
+       This is the differentiator section and it is text-led.
+    4. Sample evidence block — a real (anonymised) report fragment. The single
+       most persuasive element on the page; nothing else proves the output.
+    5. FAQ teaser (4 questions, link to /faq) + footer.
+  LAYOUT (tablet): hero stacks, flow becomes 3 rows, cards 2x2.
+  LAYOUT (phone): single column, actions full width, visual dropped below the
+  fold, proof lines become a list.
+
+  WHAT CHANGES:
+    * The setup form LEAVES the landing page. Today the landing page is the
+      marketing page, the resume-consent form, the mode picker, and the
+      scenario list in one 370-line client component. Split: marketing is a
+      server component; setup moves to /start (6.4).
+    * The decorative constellation canvas is removed from the marketing route
+      entirely (it costs JS for texture); the hero texture becomes a static
+      CSS mask + one cheap, pausable animation.
+    * The fake "live interview preview" console is replaced by honest
+      artefacts: a still editor frame and a real report row.
+  STATES: default; reduced motion (ambient motion off); offline (actions
+  disabled with explanation).
+  A11Y: one h1; section headings in order; the hero visual is decorative and
+  `aria-hidden`; CTA buttons are links styled as buttons (they navigate).
+
+6.3 SIGN IN (/login)
+
+  JOB: get an email code entered with zero friction, zero cognitive tests.
+  LAYOUT: single 420px card, centred, 2 steps (email -> 6-digit code).
+  WHAT CHANGES:
+    * Code input becomes a single `inputmode="numeric"`,
+      `autocomplete="one-time-code"` field (not 6 boxes — 6 boxes break paste
+      and screen readers, and SC 3.3.8 wants pasting to work).
+    * Email is remembered between steps and on retry (SC 3.3.7 Redundant
+      Entry).
+    * A "resend code" with a visible 30s cooldown and a live countdown.
+    * A persistent, identical "Need help?" link on both steps (SC 3.2.6).
+  STATES: idle, sending, sent, invalid code, expired code, rate limited,
+  network failure. Each has copy written in section 10's voice.
+  A11Y: errors are `role="alert"` on the field, announced once; the step
+  change moves focus to the new step's heading.
+
+6.4 START / SETUP (/start) — NEW ROUTE
+
+  JOB: choose a room and begin, in under a minute, without feeling tested
+  before the test.
+
+  LAYOUT: a 3-step flow with a persistent summary rail (desktop) or a sticky
+  bottom bar (phone).
+    Step 1 — Session. Scenario radio cards (level, topics, 45 min) +
+             "Surprise me" (the account-unseen default).
+    Step 2 — Room. Mode (Learning / Mock / Strict) as radio cards, each with
+             one consequence sentence ("Strict waits longer before it speaks
+             and gives one hint at most"). Tone (Extra nice / Normal / Mean)
+             as a second row with the same treatment.
+    Step 3 — Context (optional). Resume paste, consent checkbox (never
+             pre-ticked), extracted-fact review with per-fact checkboxes and
+             an explicit "Erase source text" control.
+  A right-hand summary rail shows the four choices and the only primary
+  action: "Enter interview". The action is never duplicated.
+
+  WHAT CHANGES: this is an entirely new screen assembled from existing logic;
+  no server contract changes. The current single-page setup becomes three
+  short, reversible steps with a visible summary, which is how people actually
+  make a choice they are anxious about.
+  STATES: scenarios loading (3 skeleton cards), scenario list empty, resume
+  analysis running (inline, cancellable), analysis failed (continue without),
+  admission blocked (capacity), creating session (button loading, 10s timeout
+  with a retry that is idempotent).
+  A11Y: each step is a `<fieldset>` with a `<legend>`; radio cards are real
+  radios with `RadioCard`; the summary rail is `aria-live="polite"` and
+  announces only the final changed value.
+
+6.5 VOICE PREFLIGHT (dialog, before the first interviewer word)
+
+  JOB: prove the microphone and speaker work before the clock matters.
+  LAYOUT: dialog, 560px, three checks as a vertical checklist:
+    1. Microphone permission -> device select + live level meter
+    2. Output device -> "Play test tone" (room tone, 2s)
+    3. Connection -> a single latency reading from the voice-ready probe
+  Primary: "Start the interview". Secondary: "Skip checks".
+  STATES: idle, checking, ready, denied (with the exact browser steps for
+  Chrome/Safari/Firefox), no device, insecure context, already in use.
+  A11Y: the level meter exposes `role="meter"` with value text ("input level
+  62 percent"); nothing relies on the animated bar alone; the dialog is
+  dismissible and never traps a user who cannot pass a check.
+
+6.6 THE INTERVIEW COCKPIT (/interview/[sessionId]) — the centrepiece
+
+  JOB: the candidate codes and talks. Everything else is peripheral.
+
+  LAYOUT (desktop >= 1100px):
+    Row 1  Cockpit bar, 56px, three zones:
+             left   brand mark (24px), session stage ("Implementation"),
+                    connection chip (dot + word)
+             centre StageRail (7 stages, current named)
+             right  PresenceIndicator, TimerDial, overflow menu (Report a
+                    problem, Settings, Complete interview)
+           "Complete interview" leaves the bar and lives in the overflow menu
+           with a confirm dialog — ending a session is a decision, not a CTA,
+           and a 40px red button next to a timer invites misclicks.
+    Row 2  Workspace, a resizable 2-pane split (drag handle, double-click to
+           reset, persisted per user; keyboard-resizable with arrow keys when
+           the handle is focused — and a non-drag alternative in the view menu
+           per SC 2.5.7).
+             left   CodeSurface (Monaco), full height, its own panel header
+                    (file name, language, save state, font size)
+             right  a stack of two panels: NotesSurface and CaptionStream,
+                    each collapsible to a 36px header. Collapsing is how a
+                    candidate gets a full-width editor without leaving.
+    Row 3  (only when the runner is enabled) RunPanel as a bottom drawer,
+           collapsed by default, opens to 240px.
+
+  LAYOUT (tablet 700-1100px): the right stack becomes a tab bar (Notes /
+  Captions) above the editor; the editor keeps >= 60% of height.
+  LAYOUT (phone): single column; a 3-tab bottom bar (Code / Notes / Captions);
+  the cockpit bar collapses to brand + timer + presence; stage moves into a
+  sheet behind the stage chip. `100dvh` with `env(safe-area-inset-*)`.
+
+  THE PRESENCE MODEL (this is the heart of the redesign):
+    * One orb, 28px, three states, each with a distinct SHAPE as well as a
+      colour: listening = three steady bars; waiting = one dim dot; speaking =
+      three bars moving at the audio's own envelope.
+    * When the interviewer speaks, the editor pane dims by 4% and the orb is
+      the only moving thing on screen. When it stops, the dim lifts over
+      220ms. That is the entire "someone is talking to you" affordance: no
+      banner, no transcript, no modal.
+    * Barge-in (candidate talks over the interviewer) shows the orb return to
+      "listening" immediately — the UI confirms the yield the audio already
+      made.
+    * While the candidate speaks, a hairline at the top of the caption panel
+      pulses with their own level. This is the only place candidate audio is
+      visualised, and it is where their eyes already are when they check that
+      they are being heard.
+
+  WHAT CHANGES vs today:
+    * The header loses 3 of its 8 controls to an overflow menu.
+    * Captions get a real panel with its own scroll, a "listening/paused"
+      chip, and an interim line that is visually distinct (italic + 60%
+      opacity) instead of a muted paragraph.
+    * The editor gets a panel header with save state (it has one today) plus
+      font-size control and a collapse toggle for the side stack.
+    * `.workspace-loading`'s opacity+saturate dim is replaced by skeletons
+      inside each panel, so text never drops below contrast.
+    * The voice-onboarding strip becomes a proper, dismissible `Panel` with a
+      single primary action ("Start voice") and the keyboard hint.
+    * All 100vh become 100dvh; the grid uses `min-height: 0` correctly so
+      Monaco stops fighting flexbox on Safari.
+  STATES: connecting, connected, reconnecting (strip, not modal), offline
+  (strip + save queue count), voice idle, voice failed (inline recovery with
+  device picker), microphone lost (recovery in place), provider rotating
+  (invisible by design — the UI must not blink), ending, ended.
+  A11Y:
+    * ONE polite live region for the whole screen, owned by a tiny
+      announcer store. Presence, connection, save state and caption finals all
+      publish into it with priorities; the caption panel itself becomes
+      `aria-live="off"` with a "read captions" toggle for screen-reader users
+      who want them verbatim. This fixes the double-announce problem.
+    * Keyboard map is complete (section 7) and discoverable via "?" overlay.
+    * Panel collapse/expand buttons expose `aria-expanded` + `aria-controls`.
+    * The split handle is `role="separator"` with `aria-valuenow`.
+    * Focus is never obscured by the sticky bar: `scroll-margin-block-start:
+      72px` on all focusables inside scroll containers (SC 2.4.11).
+
+6.7 REPORT (/report/[sessionId])
+
+  JOB: show the candidate what actually happened, with quotes, before any
+  number.
+
+  LAYOUT:
+    1. Header: scenario, mode, date, duration, and a single "Download" menu
+       (JSON / Markdown). No hero mesh, no animated ring.
+    2. "What happened" — a 5-6 row timeline of the interview's observable
+       beats (brief delivered, first approach stated, first code, first run,
+       probe asked, follow-up). Each row is a timestamp + one sentence.
+       This section is NEW and it is the most useful thing on the page.
+    3. Evidence by dimension — DimensionCards, each with a labelled meter, two
+       strengths, two gaps, and 2-3 EvidenceRows (timestamp + exact quote).
+    4. Model-estimated grades — the two independent graders, visually
+       subordinate (secondary surface, smaller type), each with an explicit
+       "model estimate, not an executed test" label and its confidence.
+    5. "What to practise next" — 3 concrete drills derived from the gaps.
+    6. Privacy footer: what was stored, how long, and a delete control.
+  WHAT CHANGES: the score ring stops being the first thing a human sees. The
+  current page leads with a 150px animated orb carrying a single number;
+  that is the one element most likely to be misread as a verdict (I4 applies
+  to the live screen, but the spirit applies here: evidence first).
+  STATES: generating (progress with the 3 phases and an honest estimate),
+  partial (one grader failed — show what exists, say what is missing), failed
+  (retry), expired/deleted, not yours (404).
+  A11Y: the meters expose text values; quotes are `<blockquote>` with
+  `<cite>`; the download menu is a real menu with roving focus.
+
+6.8 HISTORY (/history)
+
+  JOB: resume what is live, open what is done, delete what you regret.
+  LAYOUT: list of HistoryRows: scenario + date + duration, status badge
+  (Active / Completed / Expiring in N days), actions (Resume / Report /
+  Export / Delete). Grouped by month with sticky subheads. Cursor pagination
+  with a "Load more" that preserves scroll.
+  STATES: loading (3 skeleton rows), empty (EmptyState with "Start your first
+  interview"), error, deleting (row-level optimistic state with undo for 5s
+  BEFORE the destructive call fires — not after).
+  A11Y: the list is a `<ul>`; each row's actions are reachable in tab order
+  and labelled with the session name, not "Delete".
+
+6.9 SETTINGS (/settings)
+
+  JOB: make privacy controls obvious and honest.
+  LAYOUT: three cards — Account (email, sign out), Practice data (export all,
+  delete all practice data), Danger zone (delete account). Theme and caption
+  preferences move here too (theme, caption reading mode, editor font size).
+  WHAT CHANGES: destructive actions require typed confirmation (they already
+  do) and now show exactly what will be removed, as a list with counts, before
+  the button is enabled. The receipt after deletion stays, and names anything
+  that could not be reached.
+  A11Y: the confirmation input is labelled with the exact phrase required;
+  the receipt is `role="status"`.
+
+6.10 POLICY, FAQ, SUPPORT
+
+  JOB: be readable. Prose shell, 68ch, h2 sections with anchor links, a table
+  of contents on desktop, "last updated" dates that are real. FAQ becomes a
+  disclosure list (`<details>` styled, or a controlled accordion with proper
+  `aria-expanded`), not a two-column grid that collapses badly.
+
+6.11 ERRORS AND EDGE ROUTES (NEW)
+
+  * app/not-found.tsx — 404 with a search-free, honest message and two links.
+  * app/error.tsx — client error boundary with a support reference id and a
+    "Report a problem" action that pre-fills the diagnostic category.
+  * app/interview/[sessionId]/error.tsx — the one case where the message must
+    say "your code and notes are saved" first, because that is the only
+    question the candidate has.
+  * Offline: a single strip, never a blocking dialog; queued-save count shown.
+
+--------------------------------------------------------------------------------
+7. INTERACTION AND KEYBOARD
+--------------------------------------------------------------------------------
+
+  Global
+    ?            keyboard help overlay (dialog listing everything below)
+    g then h     history        g then s     settings
+    t            cycle theme (system -> light -> dark)
+  Cockpit
+    Cmd/Ctrl+Enter   run tests (when the runner is enabled)
+    Cmd/Ctrl+/       toggle the side stack (full-width editor)
+    Cmd/Ctrl+1/2/3   focus editor / notes / captions
+    m                toggle microphone mute (not while typing in a field)
+    Shift+?          help overlay
+    Escape           close dialog, then popover, then overlay (one level per
+                     press, never navigates away)
+  Rules
+    * Every shortcut is listed in the help overlay and nowhere else is it
+      required to discover.
+    * No single-key shortcut fires while focus is in a text field or Monaco.
+    * No drag-only interaction anywhere (SC 2.5.7): the split handle has menu
+      items for 50/50, editor-wide and notes-wide.
+    * Hit targets >= 40x40 for primary controls, >= 24x24 absolute minimum
+      with 8px spacing for dense icon rows (SC 2.5.8).
+    * Focus order follows DOM order on every screen; no `tabindex > 0`.
+    * `:focus-visible` ring: 2px `border.focus` + 2px offset, on every
+      interactive element including links (today's gap), with a 3:1 contrast
+      check against both adjacent surfaces.
+
+--------------------------------------------------------------------------------
+8. ACCESSIBILITY SPECIFICATION (WCAG 2.2 AA, with the AAA we choose to take)
+--------------------------------------------------------------------------------
+
+  Target: WCAG 2.2 Level AA across the product, plus AAA body-text contrast
+  (7:1) and AAA focus appearance (2.4.13) because this app is used under
+  stress on bad screens.
+
+  The 2.2-specific criteria and how this design satisfies them:
+    2.4.11 Focus Not Obscured (AA)   sticky bars use scroll-margin and never
+                                     overlay the focused element
+    2.5.7  Dragging Movements (AA)   split handle has non-drag equivalents
+    2.5.8  Target Size (AA)          40px primary, 24px floor with spacing
+    3.2.6  Consistent Help (A)       "Report a problem" and "Help" appear in
+                                     the same relative position on every
+                                     authenticated screen
+    3.3.7  Redundant Entry (A)       email persisted across sign-in steps;
+                                     setup choices persisted across the 3
+                                     steps and across a reload
+    3.3.8  Accessible Authentication (AA)  email code only; paste allowed; no
+                                     puzzle, no cognitive test, no CAPTCHA
+
+  Live regions and announcements (the hardest part of this app):
+    * Exactly ONE `aria-live="polite"` announcer element at the app root.
+    * A tiny `announce(message, {priority})` store; components never render
+      their own live regions. Priorities: interviewer-speaking > connection >
+      save-state > caption-final.
+    * Captions default to `aria-live="off"` (they are visual redundancy of the
+      user's own speech, and reading them back is noise for a screen-reader
+      user); a Settings toggle turns verbatim caption announcement on.
+    * `role="alert"` is reserved for failures that stop the interview.
+
+  Screen reader script for the interview (what a blind candidate hears):
+    "Interview, implementation stage. Connected. 38 minutes 12 seconds
+     remaining." ... "Interviewer speaking." ... "Interviewer listening."
+     ... "All changes saved."
+    Nothing else is announced automatically.
+
+  Other requirements:
+    * 400% zoom / 320px-equivalent reflow on every page except the cockpit,
+      which reflows to its phone layout at that scale.
+    * `prefers-contrast: more` increases border contrast one step.
+    * `forced-colors: active` audited on every screen.
+    * All icons `aria-hidden` with adjacent text or `aria-label` on the
+      control.
+    * Captions, timer and presence are never the sole carrier of a critical
+      message.
+    * Motion: everything above section 3.4's rules, plus no parallax, no
+      auto-playing video, ever.
+
+--------------------------------------------------------------------------------
+9. PERFORMANCE AND ENGINEERING BUDGET
+--------------------------------------------------------------------------------
+
+  Field targets (Core Web Vitals, 75th percentile):
+    LCP  <= 2.0s   (marketing), <= 2.5s (app)
+    INP  <= 200ms  everywhere, measured on the cockpit under a live session
+    CLS  <= 0.05
+
+  Bundle budgets, enforced in CI:
+    marketing route   <= 110 KB JS gzipped (today: the landing page is a
+                      client component plus two canvas components)
+    app routes        <= 170 KB JS gzipped excluding Monaco
+    Monaco            lazy, imported on interaction or on idle after the
+                      cockpit's first paint, never in the initial chunk
+    CSS               <= 45 KB gzipped total, split per route by CSS Modules
+
+  Techniques:
+    * Landing, FAQ, privacy, support become server components; the only
+      client islands are the theme toggle and the setup form.
+    * `next/font/local` for both typefaces, `preload` on the two weights used
+      above the fold, `size-adjust` fallback metrics to kill font CLS.
+    * Monaco: `dynamic(() => import(...), { ssr: false, loading: <Skeleton/> })`
+      plus a `requestIdleCallback` prefetch once the cockpit is interactive.
+      Workers already come from our own origin (CSP stays untouched).
+    * The constellation canvases are deleted from the marketing bundle; if the
+      texture survives at all it becomes a static SVG/CSS mask.
+    * Images: the OG image stays generated; no raster assets anywhere else.
+    * Prefetch `/start` from the landing CTA, `/report/[id]` from a completed
+      history row.
+    * Zero layout shift from the timer (tabular figures) and from status chips
+      (fixed min-width).
+
+--------------------------------------------------------------------------------
+10. CONTENT, MICROCOPY AND TONE
+--------------------------------------------------------------------------------
+
+  Voice: calm, concrete, never congratulatory. The interviewer persona is
+  "neutral and unhurried"; the interface matches it.
+
+  Rules:
+    * Say what happened, then what to do. "Your microphone disconnected. Pick
+      another device — your code, notes and time are safe."
+    * Never praise the user ("Great job!"), never apologise theatrically
+      ("Oops!"), never use exclamation marks.
+    * Numbers that are estimates say so, every time they appear.
+    * Destructive copy names the object and the scope: "Delete this interview
+      and its report" not "Are you sure?".
+    * Empty states state the next action, not the absence: "Start your first
+      interview" not "Nothing here yet".
+    * Error messages carry a support reference when one exists.
+    * Buttons are verbs in the user's words: "Enter interview", "Complete
+      interview", "Send diagnostic report".
+    * Nothing in the UI may describe the interviewer's internal reasoning (I6)
+      or imply a live grade (I4).
+
+--------------------------------------------------------------------------------
+11. IMPLEMENTATION PLAN (phased, each phase independently shippable)
+--------------------------------------------------------------------------------
+
+  P0 — Foundations (no visual change)                         ~1 day
+       design/tokens/*.json, `pnpm tokens`, tokens.css generated,
+       app/styles/{index,reset,base,utilities}.css, @layer order declared,
+       globals.css imported LAST inside @layer overrides so nothing moves yet.
+       next/font wired for Inter + JetBrains Mono.
+       Exit: build green, screenshots byte-identical except font rendering.
+
+  P1 — Primitives                                             ~2 days
+       components/ui/* with CSS Modules + unit tests + a /dev/styleguide route
+       (dev-only, excluded from the sitemap and robots) rendering every
+       primitive in every state, both themes, at 3 widths.
+       Exit: styleguide renders; axe clean; no colour literals outside tokens.
+
+  P2 — Theming and the global shell                           ~1 day
+       light-dark() semantic tokens, data-theme script, ThemeToggle,
+       Monaco theme generated, root layout landmarks fixed, forced-colors pass.
+       Exit: both themes pass contrast tests; no flash on load.
+
+  P3 — The cockpit                                            ~3 days
+       CockpitShell, cockpit bar, PresenceIndicator, TimerDial, StageRail,
+       CaptionStream, CodeSurface (lazy Monaco), NotesSurface, resizable
+       split, single announcer, dvh/safe-area, all states.
+       Exit: keyboard-only interview completable end to end; INP <= 200ms with
+       a live session; screen-reader script matches 8.
+
+  P4 — Setup, preflight, sign-in                              ~2 days
+       /start 3-step flow, VoicePreflightDialog, login rework, redundant-entry
+       persistence. Landing becomes a server component and loses the form.
+       Exit: no client JS on / except two islands; flows pass axe + keyboard.
+
+  P5 — Report, history, settings, policy, error routes        ~2 days
+       Timeline section, evidence-first order, subordinate grades, history
+       grouping + undo, settings deletion preview, 404/500/offline.
+       Exit: report renders every partial/failed state from fixtures.
+
+  P6 — Landing and brand                                      ~1.5 days
+       New hero, three-step flow, truth cards, sample evidence block, footer,
+       OG image refresh, icon sprite, monogram.
+       Exit: LCP <= 2.0s on a throttled run; bundle under budget.
+
+  P7 — Deletion                                               ~0.5 day
+       Delete globals.css, the constellation components, and every dead
+       selector. CI check: no file outside app/styles may contain a colour.
+       Exit: CSS total under 45 KB gzipped; visual snapshots unchanged.
+
+  Order rationale: tokens before components, components before screens, the
+  cockpit before everything else because it is where the product lives and
+  where a regression costs a real interview. Marketing last because it is the
+  only surface that can ship visibly unfinished without hurting a user.
+
+  Migration strategy: strangler. globals.css survives inside `@layer overrides`
+  until P7, so a half-migrated screen is never broken — the old rules keep
+  winning until the new component owns the markup.
+
+--------------------------------------------------------------------------------
+12. VERIFICATION AND QA
+--------------------------------------------------------------------------------
+
+  Automated, in CI, blocking:
+    * `pnpm tokens:check` — regenerates tokens and fails on drift.
+    * Contrast test — every semantic pairing in both themes computed against
+      its rule in 3.1; fails the build on a violation. This is why tokens
+      cannot fail contrast: a human never eyeballs a hex again.
+    * axe-core via Playwright on 9 routes x 2 themes x (default + reduced
+      motion). Zero violations allowed; exceptions require a comment with the
+      criterion number.
+    * Playwright visual snapshots at 390 / 834 / 1440 px, both themes.
+    * Keyboard-only script: start an interview, type, mute, open help, end,
+      read the report — asserted by focus order, not by pixels.
+    * Lighthouse CI with the budgets in section 9.
+    * Bundle size check per route.
+
+  Manual, before each phase merges:
+    * NVDA + Chrome and VoiceOver + Safari through the cockpit script in 8.
+    * 400% zoom on every screen.
+    * Windows High Contrast on the cockpit and the report.
+    * One full interview on a 13" laptop at 100% and at 125% OS scaling.
+
+  Definition of done for the redesign as a whole:
+    * Every route renders every state from a fixture, in both themes.
+    * No `#` or `rgba(` outside tokens.css.
+    * globals.css deleted.
+    * All six acceptance checks in section 11's exits pass.
+    * The product invariants in section 0 are visibly intact.
+
+--------------------------------------------------------------------------------
+13. ANTI-GOALS (things a redesign of this product must refuse)
+--------------------------------------------------------------------------------
+
+  * A chat transcript of the interviewer, "so you can scroll back". It turns a
+    listening exercise into a reading exercise and leaks the brief as text.
+  * An avatar, a face, a name, a personality illustration.
+  * Gamification: streaks, XP, badges, "you beat 72% of candidates".
+  * A live score, a confidence meter, or any hint of the gate's reasoning.
+  * Urgency theatre: red timers, heartbeat animation, "2 minutes left!".
+  * AI autocomplete, inline hints, or a "stuck?" helper in the editor.
+  * Modal interruptions during a live interview for anything but a failure
+    that ends it.
+  * A cookie banner we do not need, or any pre-ticked consent.
+  * Infinite ambient animation on any screen where someone is working.
+  * A component library dependency that owns our look (shadcn, MUI, Chakra).
+    The system here is small enough that owning it costs less than theming
+    someone else's.
+
+--------------------------------------------------------------------------------
+14. OPEN QUESTIONS FOR THE OWNER
+--------------------------------------------------------------------------------
+
+  Q1. Brand: keep the coral accent, or move to a cooler, more clinical palette
+      for the interview room and reserve warmth for marketing? The plan keeps
+      coral; one accent is enough either way.
+  Q2. Is /start as a separate route acceptable, or must setup stay on the
+      landing page for conversion reasons? (Recommendation: separate. The
+      landing page's job and the setup form's job are different, and the form
+      is what forces the whole marketing page to be a client component.)
+  Q3. Light theme at launch, or dark-only until after the pilot? (The plan
+      builds both from tokens, so light costs about half a day extra.)
+  Q4. Does the report keep a single headline number at all? The plan demotes
+      it below the timeline and the evidence.
+  Q5. Resizable split and panel collapse are persisted per user — is a
+      server-side preference acceptable, or should it stay in localStorage?
+
+--------------------------------------------------------------------------------
+15. REFERENCES CONSULTED
+--------------------------------------------------------------------------------
+
+  WCAG 2.2 new success criteria, levels and thresholds
+    https://dequeuniversity.com/resources/wcag-2.2/
+  Design Tokens Community Group — Color Module (DTCG format, OKLCH)
+    https://www.designtokens.org/tr/drafts/color/
+  State of CSS 2026 — what is baseline-safe in production
+    https://blog.codercops.com/blog/state-of-css-2026
+  Core Web Vitals thresholds 2026 (LCP / INP / CLS)
+    https://prooflytics.io/blog/core-web-vitals-thresholds-2026-lcp-inp-cls
+  ARIA live regions, announcement discipline
+    https://www.sarasoueidan.com/blog/accessible-notifications-with-aria-live-regions-part-1/
+
+  Internal, and binding where they conflict with anything above:
+    CLAUDE.md (product invariants), docs/adr/ADR-001 (response control),
+    docs/adr/ADR-008 (pre-rendered authored speech), apps/web/components/*
+    (the comments in InterviewerStatus, Timer, CodeEditor and SpeechCaption
+    are the clearest statement of this product's design philosophy that
+    exists; the redesign is built on them, not over them).
+
