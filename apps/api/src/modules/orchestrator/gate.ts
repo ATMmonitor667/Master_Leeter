@@ -95,6 +95,14 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
     return SILENT("barge-in: candidate started speaking while interviewer was speaking");
   }
 
+  // ── 1b. Candidate still speaking ──────────────────────────────────────────
+  // A SPEECH_FINAL can arrive while the candidate has already resumed — a new
+  // SPEECH_STARTED came before the previous transcript was ready. Answering it
+  // now would interrupt them mid-sentence.
+  if (ctx.candidateSpeakingNow) {
+    return SILENT("candidate is still speaking");
+  }
+
   // ── 2. Unfinalized turn ────────────────────────────────────────────────────
   // Acting on a partial transcript means answering a question the candidate
   // hasn't finished asking. Waiting costs a beat; guessing costs the illusion.

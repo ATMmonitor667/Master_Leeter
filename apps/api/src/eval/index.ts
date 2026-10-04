@@ -5,3 +5,4 @@ export * from "./harness.js";
 export * from "./leakage.js";
 export * from "./metrics.js";
 export * from "./report.js";
+export * from "./voice-latency.js";

@@ -1,5 +1,5 @@
 import { LIVE_INPUT_MIME, base64ToPcm16, encodeForLive } from "./audio";
-import { Vad, type VadEvent } from "./vad";
+import { Vad, frameDb, DEFAULT_VAD_CONFIG, type VadEvent } from "./vad";
 
 /**
  * Gemini Live connection for the candidate's voice (M3-2).
@@ -63,7 +63,12 @@ export interface VoiceCredential {
   automaticActivityDetectionDisabled: true;
 }
 
-export type SpeechBoundary = { type: "SPEECH_STARTED" | "SPEECH_STOPPED"; atMs: number };
+export type SpeechBoundary = {
+  type: "SPEECH_STARTED" | "SPEECH_STOPPED";
+  atMs: number;
+  prosody?: { probability: number; confidence: number; reason: string };
+  interimTranscript?: string;
+};
 
 /**
  * An authorization from the server, and the ONLY thing that can produce speech.
@@ -75,6 +80,14 @@ export type SpeechBoundary = { type: "SPEECH_STARTED" | "SPEECH_STOPPED"; atMs: 
 export interface SpeechAuthorization {
   action: string;
   utteranceId: string;
+  /**
+   * Pre-rendered audio head from the server (P3).
+   *
+   * When present, the client schedules this synchronously, cutting the
+   * decision-to-first-audio path from ~1.5 s to ~50 ms. The model is not
+   * asked to speak and the tool relay is skipped entirely.
+   */
+  audio?: { head: string; rate: number; tailFrom?: number | undefined };
 }
 
 /** A tool call from the model, on its way to the server relay. */
@@ -99,6 +112,8 @@ export interface RealtimeVoiceOptions {
   onInputTranscript?: (transcript: { text: string; final: boolean }) => void;
   /** The candidate spoke over the interviewer. Stop playback immediately. */
   onBargeIn?: () => void;
+  /** Cached audio ducks immediately, then either resumes or stops. */
+  onBargeInProvisional?: (ducked: boolean) => void;
   onReady?: () => void;
   /** Latest opaque handle for continuing this logical provider session. */
   onResumptionHandle?: (handle: string) => void;
@@ -128,6 +143,10 @@ export class RealtimeVoice {
   private muted = false;
   /** True while model audio is arriving — the window in which barge-in applies. */
   private interviewerSpeaking = false;
+  /** False after barge-in: drops any model audio still in transit. */
+  private acceptingModelAudio = false;
+  private localPlaybackActive = false;
+  private provisionalBargeAtMs: number | null = null;
 
   constructor(private readonly opts: RealtimeVoiceOptions) {
     this.vad = opts.vad ?? new Vad();
@@ -158,7 +177,9 @@ export class RealtimeVoice {
       onMessage: (raw) => this.handleMessage(raw),
       onClose: () => {
         this.ready = false;
-        this.interviewerSpeaking = false;
+        this.interviewerSpeaking = this.localPlaybackActive;
+        this.acceptingModelAudio = false;
+        this.endProvisionalBarge();
         this.opts.onDisconnected?.();
       },
       onError: (err) => this.opts.onError?.(err),
@@ -166,6 +187,7 @@ export class RealtimeVoice {
   }
 
   disconnect(): void {
+    this.endProvisionalBarge();
     // Close the turn honestly. A session that goes away mid-sentence must not
     // leave the server believing the candidate is still talking, which would
     // hold the gate's floor forever.
@@ -175,7 +197,7 @@ export class RealtimeVoice {
       // the end of the turn. Close it before the socket so a final transcript
       // still has a chance to arrive during an orderly shutdown.
       this.sendActivity("activityEnd");
-      this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs });
+      this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs, ...boundaryProsody(closing) });
     }
 
     this.ready = false;
@@ -195,10 +217,11 @@ export class RealtimeVoice {
     this.muted = muted;
 
     if (muted) {
+      this.endProvisionalBarge();
       const closing = this.vad.reset(this.now());
       if (closing) {
         this.sendActivity("activityEnd");
-        this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs });
+        this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs, ...boundaryProsody(closing) });
       }
     }
   }
@@ -212,8 +235,9 @@ export class RealtimeVoice {
   pushAudio(frame: Float32Array, atMs = this.now()): void {
     if (this.muted) return;
 
-    const event = this.vad.push(frame, atMs);
+    const event = this.vad.push(frame, atMs, this.opts.captureRate);
     if (event) this.handleVadEvent(event);
+    this.resolveProvisionalBarge(frame, atMs);
 
     if (!this.ready || !this.transport?.connected) return;
 
@@ -242,6 +266,7 @@ export class RealtimeVoice {
   requestSpeech(authorization: SpeechAuthorization): void {
     if (!this.ready || !this.transport?.connected) return;
 
+    this.acceptingModelAudio = true;
     this.send({
       clientContent: {
         turns: [
@@ -253,6 +278,13 @@ export class RealtimeVoice {
         turnComplete: true,
       },
     });
+  }
+
+  /** Cached speech is already gate-authorized; this only enables local barge-in. */
+  noteLocalPlayback(active: boolean): void {
+    if (!active) this.endProvisionalBarge();
+    this.localPlaybackActive = active;
+    this.interviewerSpeaking = active;
   }
 
   // ── Internals ──────────────────────────────────────────────────────────────
@@ -271,8 +303,14 @@ export class RealtimeVoice {
       // for a round trip. The gate's rule 1 still yields the floor; this stops
       // the audio.
       if (this.interviewerSpeaking) {
-        this.interviewerSpeaking = false;
-        this.opts.onBargeIn?.();
+        if (this.localPlaybackActive) {
+          this.provisionalBargeAtMs = event.atMs;
+          this.opts.onBargeInProvisional?.(true);
+        } else {
+          this.interviewerSpeaking = false;
+          this.acceptingModelAudio = false;
+          this.opts.onBargeIn?.();
+        }
       }
 
       this.sendActivity("activityStart");
@@ -280,8 +318,31 @@ export class RealtimeVoice {
       return;
     }
 
+    this.endProvisionalBarge();
     this.sendActivity("activityEnd");
-    this.emitBoundary({ type: "SPEECH_STOPPED", atMs: event.atMs });
+    this.emitBoundary({ type: "SPEECH_STOPPED", atMs: event.atMs, ...boundaryProsody(event) });
+  }
+
+  private resolveProvisionalBarge(frame: Float32Array, atMs: number): void {
+    const start = this.provisionalBargeAtMs;
+    if (start === null || atMs - start < 400) return;
+    // VAD stays open during its quiet hangover. Confirm only on voiced audio.
+    if (frameDb(frame) < this.vad.noiseFloor + DEFAULT_VAD_CONFIG.continueMarginDb) return;
+    this.confirmBargeIn();
+  }
+
+  private confirmBargeIn(): void {
+    if (this.provisionalBargeAtMs === null) return;
+    this.provisionalBargeAtMs = null;
+    this.localPlaybackActive = false;
+    this.interviewerSpeaking = false;
+    this.opts.onBargeIn?.();
+  }
+
+  private endProvisionalBarge(): void {
+    if (this.provisionalBargeAtMs === null) return;
+    this.provisionalBargeAtMs = null;
+    this.opts.onBargeInProvisional?.(false);
   }
 
   /**
@@ -388,28 +449,39 @@ export class RealtimeVoice {
     }
 
     const audio = extractModelAudio(msg);
-    if (audio.length > 0) {
+    if (audio.length > 0 && this.acceptingModelAudio) {
       this.interviewerSpeaking = true;
       for (const chunk of audio) this.opts.onModelAudio?.(base64ToPcm16(chunk));
     }
 
     const content = serverContent(msg);
-    if (content?.["interrupted"] === true) {
+    if (content?.["interrupted"] === true && this.acceptingModelAudio && !this.localPlaybackActive) {
       this.interviewerSpeaking = false;
+      this.acceptingModelAudio = false;
       this.opts.onBargeIn?.();
     }
     const interimTranscript = content?.["interimInputTranscription"] ?? content?.["interim_input_transcription"];
     const finalTranscript = content?.["inputTranscription"] ?? content?.["input_transcription"];
     const interimText = transcriptText(interimTranscript);
     const finalText = transcriptText(finalTranscript);
+    if (interimText && this.provisionalBargeAtMs !== null && /\b(wait|sorry|no|hold on|actually|excuse me|stop)\b/i.test(interimText)) {
+      this.confirmBargeIn();
+    }
     if (interimText) this.opts.onInputTranscript?.({ text: interimText, final: false });
     if (finalText) this.opts.onInputTranscript?.({ text: finalText, final: true });
 
     if (content?.["turnComplete"] === true || content?.["turn_complete"] === true) {
       this.interviewerSpeaking = false;
+      this.acceptingModelAudio = false;
       this.opts.onSpeechComplete?.();
     }
   }
+}
+
+function boundaryProsody(event: VadEvent): Pick<SpeechBoundary, "prosody"> {
+  if (!event.prosody) return {};
+  const { probability, confidence, reason } = event.prosody;
+  return { prosody: { probability, confidence, reason: reason.slice(0, 200) } };
 }
 
 function transcriptText(value: unknown): string {
@@ -438,8 +510,8 @@ export function instructionFor(authorization: SpeechAuthorization): string {
     ANSWER_CLARIFICATION:
       "Answer the candidate's question using get_clarification_fact. Say only what it returns.",
     ASK_PROBE: "Ask the authorized probe. Call get_probe_wording and say what it returns.",
-    GIVE_HINT_L1: "Give the authorized hint. Say only the wording you are given.",
-    GIVE_HINT_L2: "Give the authorized hint. Say only the wording you are given.",
+    GIVE_HINT_L1: "Give the authorized hint. Call get_hint_wording and say what it returns.",
+    GIVE_HINT_L2: "Give the authorized hint. Call get_hint_wording and say what it returns.",
     PRESENT_FOLLOW_UP: "Present the follow-up. Call get_follow_up and say what it returns.",
     ACKNOWLEDGE_BRIEFLY: "Acknowledge in three words or fewer. Add nothing.",
     DELIVER_BRIEF: "Deliver the opening brief from get_interview_context, as written.",

@@ -48,7 +48,7 @@ describe("authenticated browser API calls", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
   it("requires auth in production even if development is configured", async () => {
-    vi.stubEnv("NODE_ENV", "production"); vi.stubEnv("NEXT_PUBLIC_AUTH_MODE", "development");
+    vi.stubEnv("NEXT_PUBLIC_APP_ENV", "production"); vi.stubEnv("NEXT_PUBLIC_AUTH_MODE", "development");
     const { authEnabled } = await import("./auth"); expect(authEnabled()).toBe(true);
   });
 });

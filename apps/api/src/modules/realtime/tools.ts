@@ -7,12 +7,12 @@ import {
   isActionAllowed,
 } from "@master-leeter/contracts";
 import { getClarificationFact } from "../scenario/clarification.js";
-import { selectProbeWording } from "../scenario/probes.js";
+import { getHint, selectProbeWording } from "../scenario/probes.js";
 
 /**
  * Voice agent tool surface (M3-3).
  *
- * The realtime model's entire access to this system. Five tools, no database
+ * The realtime model's entire access to this system. Six tools, no database
  * handle, no scenario object, no query language — everything it can learn or do
  * passes through the functions below, and every one of them checks permission
  * before it answers.
@@ -50,6 +50,7 @@ export const VOICE_TOOLS = [
   "get_interview_context",
   "get_clarification_fact",
   "get_probe_wording",
+  "get_hint_wording",
   "get_follow_up",
   "record_delivery",
 ] as const;
@@ -148,6 +149,8 @@ export async function executeVoiceTool(
       return clarificationFact(args, ctx);
     case "get_probe_wording":
       return probeWording(ctx);
+    case "get_hint_wording":
+      return hintWording(ctx);
     case "get_follow_up":
       return followUp(ctx);
     case "record_delivery":
@@ -245,6 +248,33 @@ function followUp(ctx: VoiceToolContext): ToolResult {
   }
 
   return { ok: true, data: { followUpId: branch.id, oralDelta: branch.oralDelta } };
+}
+
+/**
+ * Wording for the hint the gate authorized.
+ *
+ * Authorization is two-way: the gate decided a hint was warranted AND the stage
+ * must permit it. The hint text comes from the pinned scenario's authored ladder —
+ * the model does not compose it (invariant 3). The level comes from the decision;
+ * the model cannot choose a different one.
+ */
+function hintWording(ctx: VoiceToolContext): ToolResult {
+  const action = ctx.authorized?.action;
+  if (action !== "GIVE_HINT_L1" && action !== "GIVE_HINT_L2") {
+    return refuse(
+      "NOT_AUTHORIZED",
+      `the gate authorized ${ctx.authorized?.action ?? "nothing"}, not a hint action`,
+    );
+  }
+  if (!isActionAllowed(ctx.state, action)) {
+    return refuse("STAGE_FORBIDS", `${action} is not permitted in ${ctx.state}`);
+  }
+  const level = ctx.authorized?.hintLevel;
+  if (level === undefined) {
+    return refuse("NOT_AUTHORIZED", "no hint level in the gate decision");
+  }
+  const hint = getHint(ctx.scenario, level);
+  return { ok: true, data: { wording: hint.text, hintLevel: level } };
 }
 
 /**

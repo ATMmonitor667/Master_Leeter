@@ -32,7 +32,7 @@ import { type IntentClassifier, type TurnClassification, ruleBasedClassifier } f
 import { decideAction } from "./gate.js";
 import { INITIAL_STATE, applyEvent } from "./state-machine.js";
 import { type StageSignals, isReasoningIntent, nextStage } from "./stage-advance.js";
-import { estimateTurnCompletion, silenceRequiredFor } from "./turn-completion.js";
+import { estimateTurnCompletion, silenceRequiredFor, type ProsodicEvidence } from "./turn-completion.js";
 
 /**
  * Interview Runtime — the live per-session orchestrator.
@@ -93,6 +93,8 @@ export interface Utterance {
 export interface RuntimeResult {
   decision: GateDecision | null;
   utterance: Utterance | null;
+  /** Server-measured deltas for latency ledger. Present only on SPEECH_FINAL turns. */
+  serverTiming?: { decisionMs: number; classifierMs: number; classifierSource?: "SPECULATIVE" | "DIRECT" };
 }
 
 export interface InterviewRuntimeDeps {
@@ -106,6 +108,10 @@ export interface InterviewRuntimeDeps {
   remainingSeconds: () => number;
   classifier?: IntentClassifier;
   now?: () => number;
+  /** Monotonic server elapsed clock; defaults to performance.now in production. */
+  monotonicNow?: () => number;
+  /** Release switch for the shorter turn-end window. */
+  prosodyEnabled?: boolean;
   /**
    * Delivers a decision reached off the ingest path.
    *
@@ -138,6 +144,12 @@ export interface InterviewRuntimeDeps {
   commitTransition?: (from: InterviewState, to: InterviewState, reason: string) => void | Promise<void>;
 }
 
+const ProsodySchema = z.object({
+  probability: z.number().finite().min(0).max(1),
+  confidence: z.number().finite().min(0).max(1),
+  reason: z.string().max(200).optional(),
+});
+
 const RuntimeCheckpointSchema = z.object({
   version: z.literal(1),
   state: InterviewStateSchema,
@@ -160,6 +172,7 @@ const RuntimeCheckpointSchema = z.object({
   lastSpokeAtMs: z.number().nonnegative(),
   candidateSpeechStarted: z.boolean(),
   lastSpeechStoppedAtMs: z.number().nonnegative().nullable(),
+  lastProsody: ProsodySchema.nullable().optional(),
   answeredFactKeys: z.array(z.string()),
   briefDeliveryCount: z.number().int().nonnegative(),
   observationCount: z.number().int().nonnegative(),
@@ -206,6 +219,7 @@ export class InterviewRuntime {
    * would make every decision a function of how fast the replay ran.
    */
   private lastSpeechStoppedAtMs: number | null = null;
+  private lastProsody: ProsodicEvidence | null = null;
 
   /** Coalescing observation loop. At most one pass in flight, ever. */
   private observationDirty = false;
@@ -232,8 +246,19 @@ export class InterviewRuntime {
    * therefore judged too early and never reconsidered, so the interviewer stayed
    * silent until the candidate spoke again.
    */
-  private heldTurn: { turn: Turn; classification: TurnClassification } | null = null;
+  private heldTurn: { turn: Turn; classification: TurnClassification; attempt: number } | null = null;
   private reevaluationTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Turn held only because candidateSpeakingNow was true; re-judged on SPEECH_STOPPED. */
+  private speakingNowHeld: { turn: Turn; classification: TurnClassification } | null = null;
+  private candidateSpeakingNow = false;
+  /** Accumulated transcript across fragments of one logical turn. Reset when gate speaks. */
+  private openTurn: { transcript: string } | null = null;
+  /** Client silence delta plus server elapsed time; never subtract absolute cross-device clocks. */
+  private silenceBasis: { clientSilenceMs: number; receivedMonoMs: number } | null = null;
+  /** Live-only work. Neither speculation nor its cache is restored from the event log. */
+  private readonly speculativeClassifications = new Map<string, { startedAt: number; result: Promise<TurnClassification | null> }>();
+  private speculatedForTurn = false;
+  private classifierSource: "SPECULATIVE" | "DIRECT" = "DIRECT";
 
   /**
    * The decision currently authorizing speech, if any.
@@ -256,16 +281,24 @@ export class InterviewRuntime {
    */
   private briefDeliveryCount = 0;
 
+  /** Bounded log of utterance ids issued by this runtime, for latency report validation. */
+  private readonly issuedUtteranceIds: string[] = [];
+  private static readonly UTTERANCE_ID_WINDOW = 64;
+
   private readonly classifier: IntentClassifier;
   private readonly buildSnapshot: typeof buildSnapshot;
   private readonly now: () => number;
+  private readonly monotonicNow: () => number;
   private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  private readonly prosodyEnabled: boolean;
 
   constructor(private readonly deps: InterviewRuntimeDeps) {
     this.now = deps.now ?? (() => Date.now());
+    this.monotonicNow = deps.monotonicNow ?? (deps.now ?? (() => performance.now()));
     this.classifier = deps.classifier ?? ruleBasedClassifier;
     this.buildSnapshot = deps.buildSnapshot ?? buildSnapshot;
     this.schedule = deps.schedule ?? ((fn, ms) => setTimeout(fn, ms));
+    this.prosodyEnabled = deps.prosodyEnabled ?? process.env.TURN_END_PROSODY !== "off";
     this.candidateState = emptyCandidateState(new Date(this.now()).toISOString());
     this.lastCodeActivityMs = this.now();
     this.lastSpokeAtMs = this.now();
@@ -301,6 +334,11 @@ export class InterviewRuntime {
       authorized: authorized?.decision ?? null,
       utteranceId: authorized?.utteranceId ?? null,
     };
+  }
+
+  /** Returns true when this runtime minted the given utterance id. Used to gate latency reports. */
+  wasUtteranceIssued(utteranceId: string): boolean {
+    return this.issuedUtteranceIds.includes(utteranceId);
   }
 
   /** Read-only view, for tests and for the resume path. Never mutate through this. */
@@ -384,6 +422,11 @@ export class InterviewRuntime {
     // Recovery never repeats audio or leaves a stale tool authorization open.
     this.authorized = null;
     this.interviewerCurrentlySpeaking = false;
+    this.candidateSpeakingNow = false;
+    this.openTurn = null;
+    this.silenceBasis = null;
+    this.speculativeClassifications.clear();
+    this.speculatedForTurn = false;
     this.clearHeldTurn();
     this.observationDirty = false;
     this.pendingRuns.length = 0;
@@ -409,6 +452,7 @@ export class InterviewRuntime {
     this.lastSpokeAtMs = checkpoint.lastSpokeAtMs;
     this.candidateSpeechStarted = checkpoint.candidateSpeechStarted;
     this.lastSpeechStoppedAtMs = checkpoint.lastSpeechStoppedAtMs;
+    this.lastProsody = this.prosodyEnabled ? checkpoint.lastProsody ?? null : null;
     this.answeredFactKeys.splice(0, this.answeredFactKeys.length, ...checkpoint.answeredFactKeys);
     this.briefDeliveryCount = checkpoint.briefDeliveryCount;
     this.observationCount = checkpoint.observationCount;
@@ -444,16 +488,23 @@ export class InterviewRuntime {
       }
       case "SPEECH_STARTED":
         this.candidateSpeechStarted = true;
+        this.candidateSpeakingNow = true;
         this.lastSpeechStoppedAtMs = null;
+        this.lastProsody = null;
+        this.silenceBasis = null;
         break;
       case "SPEECH_STOPPED":
+        this.candidateSpeakingNow = false;
         this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.lastSpeechStoppedAtMs;
+        this.lastProsody = this.prosodyOf(event);
         break;
       case "SPEECH_FINAL":
         this.candidateSpeechStarted = false;
         break;
       case "BARGE_IN":
         this.candidateSpeechStarted = true;
+        this.candidateSpeakingNow = true;
+        this.lastProsody = null;
         break;
       case "STATE_TRANSITIONED": {
         const to = stringOf(payload["to"]);
@@ -547,6 +598,7 @@ export class InterviewRuntime {
       lastSpokeAtMs: this.lastSpokeAtMs,
       candidateSpeechStarted: this.candidateSpeechStarted,
       lastSpeechStoppedAtMs: this.lastSpeechStoppedAtMs,
+      lastProsody: this.lastProsody,
       answeredFactKeys: [...this.answeredFactKeys],
       briefDeliveryCount: this.briefDeliveryCount,
       observationCount: this.observationCount,
@@ -605,25 +657,51 @@ export class InterviewRuntime {
         // acting on it now would answer a thought they have already continued.
         this.clearHeldTurn();
         this.candidateSpeechStarted = true;
+        this.candidateSpeakingNow = true;
         // New speech invalidates the previous quiet period. Silence is measured
         // from the most recent stop, not the first one in the session.
         this.lastSpeechStoppedAtMs = null;
+        this.lastProsody = null;
         return none;
 
-      case "SPEECH_STOPPED":
+      case "SPEECH_STOPPED": {
         // Still not permission to speak — that is the whole thesis, and nothing
         // here changes it (ADR-001). What it now does is note WHEN, because how
         // long the candidate has been quiet is the only evidence that separates
         // a finished thought from a breath (M4-2). The observation is recorded;
         // the decision still belongs to the gate, and only a finalized turn
         // reaches it.
+        this.candidateSpeakingNow = false;
         this.lastSpeechStoppedAtMs = Date.parse(event.occurredAt) || this.now();
+        this.lastProsody = this.prosodyOf(event);
+        if (!this.speakingNowHeld) this.speculateFromBoundary(event);
+        // A SPEECH_FINAL silenced only because candidateSpeakingNow can now be
+        // re-judged: the floor has been yielded, so timing is the only blocker.
+        if (this.speakingNowHeld && !this.heldTurn) {
+          this.silenceBasis = { clientSilenceMs: 0, receivedMonoMs: this.monotonicNow() };
+          this.heldTurn = {
+            ...this.speakingNowHeld,
+            attempt: 1,
+            turn: { ...this.speakingNowHeld.turn,
+              ...(this.lastProsody ? { prosody: this.lastProsody } : {}) },
+          };
+          this.speakingNowHeld = null;
+          this.reevaluationTimer = this.schedule(() => {
+            void this.onSilenceElapsed().catch(() => this.clearHeldTurn());
+          }, 25);
+        } else {
+          this.speakingNowHeld = null;
+        }
         return none;
+      }
 
       case "BARGE_IN":
         this.clearHeldTurn();
         this.interviewerCurrentlySpeaking = false;
         this.candidateSpeechStarted = true;
+        this.candidateSpeakingNow = true;
+        this.lastProsody = null;
+        this.silenceBasis = null;
         return none;
 
       case "SPEECH_FINAL":
@@ -633,7 +711,11 @@ export class InterviewRuntime {
         // Replay reaches the re-judgement through here; live, the timer has
         // already appended this event and called the same path. Either way the
         // decision is a function of the log.
-        const result = await this.reevaluate(Date.parse(event.occurredAt) || this.now());
+        const loggedSilence = numberOf(event.payload["silenceMs"]);
+        const result = await this.reevaluate(
+          Date.parse(event.occurredAt) || this.now(),
+          loggedSilence !== null && loggedSilence >= 0 ? loggedSilence : undefined,
+        );
         return result ?? none;
       }
 
@@ -658,6 +740,10 @@ export class InterviewRuntime {
 
       case "SESSION_ENDED":
         this.state = applyEvent({ state: this.state, eventType: "SESSION_ENDED" }).state;
+        this.openTurn = null;
+        this.silenceBasis = null;
+        this.speculativeClassifications.clear();
+        this.speculatedForTurn = false;
         return none;
 
       default:
@@ -685,15 +771,37 @@ export class InterviewRuntime {
     // A new turn supersedes any turn still waiting on silence.
     this.clearHeldTurn();
 
-    const transcript = stringOf(event.payload["transcript"]) ?? "";
+    const fragment = stringOf(event.payload["transcript"]) ?? "";
     const finalized = event.payload["finalized"] !== false;
+
+    // Assemble multi-fragment turns. The provider can issue a SPEECH_FINAL for
+    // each short pause; joining them until the gate authorizes speech means the
+    // gate always judges the whole thought, not just the last breath-chunk.
+    if (!this.openTurn) {
+      this.openTurn = { transcript: fragment };
+    } else {
+      const joined = [this.openTurn.transcript, fragment].filter(Boolean).join(" ");
+      this.openTurn = { transcript: joined.slice(0, TURN_TRANSCRIPT_CAP) };
+    }
+    const transcript = this.openTurn.transcript;
+
+    const ingestStart = this.monotonicNow();
+    const silenceAtFinalMs = this.silenceBefore(event);
+    this.silenceBasis = silenceAtFinalMs === undefined ? null
+      : { clientSilenceMs: silenceAtFinalMs, receivedMonoMs: ingestStart };
 
     // The only await between a turn arriving and the gate ruling on it. A model
     // classifier suspends here for a few hundred milliseconds, so anything read
     // into `ctx` below is read AFTER that gap, not before it — which is what we
     // want: the gate should judge the world as it is when it decides, not as it
     // was when the candidate stopped talking.
-    const classification = await this.classifier.classify({ transcript, finalized });
+    const classifierStart = this.monotonicNow();
+    const speculative = finalized ? this.speculativeClassifications.get(transcript) : undefined;
+    const candidate = speculative && performance.now() - speculative.startedAt <= 30_000
+      ? await speculative.result : null;
+    const classification = candidate ?? await this.classifier.classify({ transcript, finalized });
+    this.classifierSource = candidate ? "SPECULATIVE" : "DIRECT";
+    const classifierMs = Math.max(0, Math.round(this.monotonicNow() - classifierStart));
 
     // Stage evidence from the words, folded BEFORE the gate rules on this turn
     // (M1-2b). Order matters: a candidate who commits to an approach while the
@@ -710,7 +818,7 @@ export class InterviewRuntime {
     // timestamps. Undefined when no speech-stop preceded this turn — a text-only
     // client, or voice that has not reported one — and the estimator reads that
     // as unknown rather than zero.
-    const silenceMs = this.silenceBefore(event);
+    const silenceMs = this.silenceNow();
 
     const turn: Turn = {
       turnId: `turn-${event.seq}`,
@@ -722,9 +830,11 @@ export class InterviewRuntime {
       intent: classification.intent,
       intentProbabilities: classification.intentProbabilities,
       endedAt: event.occurredAt,
+      ...(this.lastProsody ? { prosody: this.lastProsody } : {}),
     };
 
     const result = await this.judge(turn, classification, silenceMs, 0);
+    const decisionMs = Math.max(classifierMs, Math.round(this.monotonicNow() - ingestStart));
 
     // Observation starts only after this turn's gate decision. The transcript
     // can inform a later probe, but it must never race the decision about the
@@ -736,7 +846,45 @@ export class InterviewRuntime {
     });
     this.scheduleObservation();
 
-    return result;
+    return { ...result, serverTiming: { decisionMs, classifierMs, classifierSource: this.classifierSource } };
+  }
+
+  private silenceNow(): number | undefined {
+    const basis = this.silenceBasis;
+    return basis ? Math.max(0, basis.clientSilenceMs + this.monotonicNow() - basis.receivedMonoMs) : undefined;
+  }
+
+  private speculateFromBoundary(event: SessionEvent): void {
+    if (this.speculatedForTurn || this.classifier.id === ruleBasedClassifier.id) return;
+    const status = this.classifier as IntentClassifier & { operationalStatus?: () => { circuit: string } };
+    if (status.operationalStatus?.().circuit === "OPEN") return;
+
+    const interim = stringOf(event.payload["interimTranscript"])?.trim().slice(0, 400) ?? "";
+    const assembled = this.openTurn?.transcript ?? "";
+    const transcript = (interim && assembled && (interim.startsWith(assembled) || assembled.endsWith(interim))
+      ? (interim.length >= assembled.length ? interim : assembled)
+      : [assembled, interim].filter(Boolean).join(" ")).slice(0, TURN_TRANSCRIPT_CAP).trim();
+    if (!transcript) return;
+
+    const now = performance.now();
+    for (const [key, value] of this.speculativeClassifications) {
+      if (now - value.startedAt > 30_000) this.speculativeClassifications.delete(key);
+    }
+    while (this.speculativeClassifications.size >= 8) {
+      const oldest = this.speculativeClassifications.keys().next().value;
+      if (oldest === undefined) break;
+      this.speculativeClassifications.delete(oldest);
+    }
+    // Exact text is required for a hit. Even punctuation can change intent, so
+    // a merely similar interim is never substituted for the finalized input.
+    const speculativeClassifier = this.classifier as IntentClassifier & {
+      classifySpeculative?: (input: { transcript: string; finalized: boolean }) => TurnClassification | Promise<TurnClassification>;
+    };
+    const result = Promise.resolve().then(() => speculativeClassifier.classifySpeculative
+      ? speculativeClassifier.classifySpeculative({ transcript, finalized: true })
+      : this.classifier.classify({ transcript, finalized: true })).catch(() => null);
+    this.speculativeClassifications.set(transcript, { startedAt: now, result });
+    this.speculatedForTurn = true;
   }
 
   /**
@@ -760,6 +908,7 @@ export class InterviewRuntime {
       intent: base.intent,
       textEndProbability: classification.semanticEndProbability,
       ...(silenceMs !== undefined ? { silenceMs } : {}),
+      ...(base.prosody ? { prosody: base.prosody } : {}),
       policy: this.deps.policy,
     });
 
@@ -768,6 +917,7 @@ export class InterviewRuntime {
       semanticEndProbability: completion.endProbability,
       textEndProbability: completion.textEndProbability,
       ...(silenceMs !== undefined ? { silenceMsBeforeEnd: silenceMs } : {}),
+      ...(base.prosody ? { prosody: base.prosody } : {}),
     };
 
     const ctx = this.buildContext(turn);
@@ -806,8 +956,14 @@ export class InterviewRuntime {
       semanticEndProbability: completion.endProbability,
       textEndProbability: completion.textEndProbability,
       turnEndReason: completion.reason,
+      ...(completion.prosody ? {
+        prosodyProbability: completion.prosody.probability,
+        prosodyConfidence: completion.prosody.confidence,
+        prosodyPull: completion.prosodyPull,
+      } : {}),
       ...(completion.silenceMs !== undefined ? { silenceMs: completion.silenceMs } : {}),
       classifierId: classification.classifierId,
+      classifierSource: this.classifierSource,
       ...(decision.probeId ? { probeId: decision.probeId } : {}),
       ...(decision.hintLevel ? { hintLevel: decision.hintLevel } : {}),
       ...(decision.factKey ? { factKey: decision.factKey } : {}),
@@ -822,7 +978,13 @@ export class InterviewRuntime {
     if (decision.action === "STAY_SILENT") {
       // The common case, and it costs one append and nothing else.
       this.candidateSpeechStarted = false;
-      if (attempt === 0) this.holdForSilence(turn, classification, completion, silenceMs);
+      if (this.candidateSpeakingNow && attempt === 0) {
+        // Silenced only because the candidate is still speaking. Remember this
+        // turn: SPEECH_STOPPED will promote it to heldTurn for re-evaluation.
+        this.speakingNowHeld = { turn, classification };
+      } else if (attempt < 2) {
+        this.holdForSilence(turn, classification, completion, silenceMs, attempt);
+      }
       return { decision, utterance: null };
     }
 
@@ -863,7 +1025,15 @@ export class InterviewRuntime {
     // Held until the audio actually finishes. Gate rule 1 reads this to yield
     // the floor when the candidate talks over the interviewer, and a flag that
     // is never set makes that rule unreachable.
-    if (utterance) this.interviewerCurrentlySpeaking = true;
+    if (utterance) {
+      this.interviewerCurrentlySpeaking = true;
+      // The interviewer is responding: the accumulated turn is answered.
+      // The next SPEECH_FINAL starts a fresh turn, not a continuation.
+      this.openTurn = null;
+      this.silenceBasis = null;
+      this.speculativeClassifications.clear();
+      this.speculatedForTurn = false;
+    }
 
     return { decision, utterance };
   }
@@ -884,6 +1054,7 @@ export class InterviewRuntime {
     classification: TurnClassification,
     completion: { endProbability: number; textEndProbability: number },
     silenceMs: number | undefined,
+    attempt: number,
   ): void {
     if (silenceMs === undefined) return;
 
@@ -898,7 +1069,7 @@ export class InterviewRuntime {
     if (completion.endProbability >= threshold) return;
     if (completion.textEndProbability < threshold) return;
 
-    const required = silenceRequiredFor(this.deps.policy.endOfTurnThreshold, this.deps.policy);
+    const required = silenceRequiredFor(this.deps.policy.endOfTurnThreshold, this.deps.policy, turn.prosody);
     if (!Number.isFinite(required)) return;
 
     // A small margin past the crossing point, so a rounding error does not cost
@@ -906,7 +1077,7 @@ export class InterviewRuntime {
     const waitMs = required - silenceMs + 25;
     if (waitMs <= 0) return;
 
-    this.heldTurn = { turn, classification };
+    this.heldTurn = { turn, classification, attempt: attempt + 1 };
     this.reevaluationTimer = this.schedule(() => {
       void this.onSilenceElapsed().catch(() => this.clearHeldTurn());
     }, waitMs);
@@ -925,16 +1096,17 @@ export class InterviewRuntime {
     if (!held) return;
 
     const occurredAt = new Date(this.now()).toISOString();
+    const silenceMs = this.silenceNow();
     await this.append(
       "SILENCE_ELAPSED",
       "SYSTEM",
-      { turnId: held.turn.turnId },
-      `silence:${held.turn.turnId}`,
+      { turnId: held.turn.turnId, ...(silenceMs !== undefined ? { silenceMs, basis: "client-delta+server-elapsed" } : {}) },
+      `silence:${held.turn.turnId}:${held.attempt}`,
       occurredAt,
     );
 
-    const result = await this.reevaluate(Date.parse(occurredAt));
-    await this.persistCheckpoint(`silence:${held.turn.turnId}`);
+    const result = await this.reevaluate(Date.parse(occurredAt), silenceMs);
+    await this.persistCheckpoint(`silence:${held.turn.turnId}:${held.attempt}`);
     if (result?.decision && result.decision.action !== "STAY_SILENT") {
       // Nobody is awaiting this call — it came from a timer, not from ingest —
       // so an authorized action has to be handed back explicitly or it would be
@@ -949,20 +1121,21 @@ export class InterviewRuntime {
    * Shared by the live timer and by replay, which reaches it through
    * `ingest(SILENCE_ELAPSED)`. Same inputs, same decision, either way.
    */
-  private async reevaluate(atMs: number): Promise<RuntimeResult | null> {
+  private async reevaluate(atMs: number, loggedSilenceMs?: number): Promise<RuntimeResult | null> {
     const held = this.heldTurn;
     if (!held) return null;
 
     this.clearHeldTurn();
 
-    const silenceMs =
-      this.lastSpeechStoppedAtMs === null ? undefined : Math.max(0, atMs - this.lastSpeechStoppedAtMs);
+    const silenceMs = loggedSilenceMs ??
+      (this.lastSpeechStoppedAtMs === null ? undefined : Math.max(0, atMs - this.lastSpeechStoppedAtMs));
 
-    return this.judge(held.turn, held.classification, silenceMs, 1);
+    return this.judge(held.turn, held.classification, silenceMs, held.attempt);
   }
 
   private clearHeldTurn(): void {
     this.heldTurn = null;
+    this.speakingNowHeld = null;
     if (this.reevaluationTimer !== null) {
       clearTimeout(this.reevaluationTimer);
       this.reevaluationTimer = null;
@@ -1101,6 +1274,21 @@ export class InterviewRuntime {
     return Math.max(0, finalAtMs - this.lastSpeechStoppedAtMs);
   }
 
+  /** Browser measurements are evidence only after strict range validation. */
+  private prosodyOf(event: SessionEvent): ProsodicEvidence | null {
+    if (!this.prosodyEnabled) return null;
+    const raw = event.payload["prosody"];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const candidate = raw as Record<string, unknown>;
+    const parsed = ProsodySchema.safeParse({
+      probability: candidate["probability"],
+      confidence: candidate["confidence"],
+      ...(typeof candidate["reason"] === "string"
+        ? { reason: candidate["reason"].slice(0, 200) } : {}),
+    });
+    return parsed.success ? parsed.data : null;
+  }
+
   /**
    * The interviewer's audio finished playing.
    *
@@ -1132,6 +1320,10 @@ export class InterviewRuntime {
    */
   private async realize(decision: GateDecision, turn: Turn): Promise<Utterance | null> {
     const utteranceId = `utt-${turn.turnId}`;
+    this.issuedUtteranceIds.push(utteranceId);
+    if (this.issuedUtteranceIds.length > InterviewRuntime.UTTERANCE_ID_WINDOW) {
+      this.issuedUtteranceIds.shift();
+    }
     const base = { utteranceId, action: decision.action } as const;
 
     switch (decision.action) {
@@ -1264,6 +1456,7 @@ export class InterviewRuntime {
       turn,
       interviewerCurrentlySpeaking: this.interviewerCurrentlySpeaking,
       candidateSpeechStarted: this.candidateSpeechStarted,
+      candidateSpeakingNow: this.candidateSpeakingNow,
       secondsSinceInterviewerLastSpoke: Math.max(0, (nowMs - this.lastSpokeAtMs) / 1000),
       secondsSinceCodeActivity: Math.max(0, (nowMs - this.lastCodeActivityMs) / 1000),
       remainingSeconds: Math.max(0, Math.round(this.deps.remainingSeconds())),
@@ -1503,6 +1696,15 @@ export class InterviewRuntime {
  * limit is a guard against a rule bug, not a tuning parameter.
  */
 const STAGE_ADVANCE_LIMIT = 8;
+
+/**
+ * Maximum assembled transcript length (characters).
+ *
+ * Fragments beyond this cap are truncated, not dropped — the gate still sees
+ * the newest material. The bound keeps context sizes bounded when a candidate
+ * thinks aloud at length without the gate ever authorizing a response.
+ */
+const TURN_TRANSCRIPT_CAP = 800;
 
 function stringOf(v: unknown): string | null {
   return typeof v === "string" ? v : null;

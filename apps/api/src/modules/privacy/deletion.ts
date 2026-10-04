@@ -55,6 +55,7 @@ export interface DeletionReceipt {
  */
 const IDENTIFYING_FIELDS = new Set([
   "transcript",
+  "interimTranscript",
   "text",
   "stdout",
   "stderr",
@@ -63,6 +64,11 @@ const IDENTIFYING_FIELDS = new Set([
   "input",
   "audioUrl",
   "utterance",
+  "prosody",
+  "prosodyProbability",
+  "prosodyConfidence",
+  "prosodyPull",
+  "turnEndReason",
 ]);
 
 export const REDACTED = "[redacted]" as const;

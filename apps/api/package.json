@@ -11,6 +11,7 @@
     "test": "vitest run --passWithNoTests",
     "test:database": "node scripts/test-database.mjs",
     "spike:realtime": "tsx scripts/m0-1-realtime-spike.ts",
+    "spike:transcription": "tsx scripts/live-transcription-probe.ts",
     "verify:token": "tsx scripts/m3-1-token-check.ts"
   },
   "dependencies": {

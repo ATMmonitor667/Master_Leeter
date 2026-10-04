@@ -25,7 +25,7 @@ import {
 } from "./modules/preparation/index.js";
 import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule, type ConsentStore, type DeletionStore } from "./modules/privacy/index.js";
-import { minterFromEnv, type RealtimeTokenMinter } from "./modules/realtime/index.js";
+import { geminiUtteranceTranscriber, minterFromEnv, ttsFromEnv, type RealtimeTokenMinter, type UtteranceTranscriber } from "./modules/realtime/index.js";
 import { registerScenarioModule } from "./modules/scenario/index.js";
 import { loadScenarioLibrary } from "./modules/scenario/loader.js";
 import type { LoadedScenario } from "./modules/scenario/loader.js";
@@ -103,6 +103,16 @@ export interface ServerOptions {
    * rest of the interview is unaffected.
    */
   realtimeTokenMinter?: RealtimeTokenMinter;
+  /**
+   * TTS renderer for pre-rendering authored utterances (P3).
+   *
+   * When absent, every authored line is spoken by the realtime model as before.
+   * Built by `ttsFromEnv` in `start()` when TTS_PRERENDER is not "off" and a
+   * Gemini API key is available.
+   */
+  ttsRenderer?: import("./modules/realtime/index.js").TtsRenderer;
+  ttsTranscriber?: UtteranceTranscriber;
+  ttsCacheDir?: string;
 }
 
 export function buildServer(opts: ServerOptions) {
@@ -167,6 +177,7 @@ export function buildServer(opts: ServerOptions) {
     realtimeMintsPerMinute: 6,
     runRequestsPerMinute: 10,
     supportReportsPerMinute: 3,
+    voiceLatencyPerMinute: 30,
   };
   app.addHook("preHandler", async (req, reply) => {
     if (req.method !== "POST") return;
@@ -176,6 +187,7 @@ export function buildServer(opts: ServerOptions) {
         : route === "/v1/interview-sessions/:id/realtime-token" ? rateLimits.realtimeMintsPerMinute
           : route === "/v1/interview-sessions/:id/runs" ? rateLimits.runRequestsPerMinute
             : route === "/v1/interview-sessions/:id/support-incidents" ? rateLimits.supportReportsPerMinute
+              : route === "/v1/interview-sessions/:id/voice-latency" ? (rateLimits.voiceLatencyPerMinute ?? 30)
             : undefined;
     if (!limit) return;
     try {
@@ -258,6 +270,9 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
     ...(opts.maxRealtimeMintsPerSession ? { maxRealtimeMintsPerSession: opts.maxRealtimeMintsPerSession } : {}),
     ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
+    ...(opts.ttsRenderer ? { ttsRenderer: opts.ttsRenderer } : {}),
+    ...(opts.ttsTranscriber ? { ttsTranscriber: opts.ttsTranscriber } : {}),
+    ...(opts.ttsCacheDir ? { ttsCacheDir: opts.ttsCacheDir } : {}),
     onRealtimeCircuitOpen: (sessionId, failureKind) =>
       publishAlert({ kind: "REALTIME_CIRCUIT_OPEN", sessionId, failureKind }),
     onCompletionDiscoveryFailure: (consecutiveFailures) =>
@@ -358,6 +373,15 @@ export async function start(): Promise<void> {
   // Null when voice is unconfigured. Built once and shared: the token route is
   // the only caller, and the credential it mints is per-request regardless.
   const realtimeTokenMinter = minterFromEnv();
+  // P3: null when TTS_PRERENDER=off or no API key. Falls back to the realtime model.
+  const ttsRenderer = ttsFromEnv(process.env, geminiApiKeyFromEnv());
+  const verifyTts = process.env["TTS_VERIFY"] !== "off";
+  if (config.production && !verifyTts) throw new Error("TTS_VERIFICATION_REQUIRED");
+  const ttsTranscriber = ttsRenderer && verifyTts
+    ? geminiUtteranceTranscriber(geminiApiKeyFromEnv()!, {
+        model: process.env["TTS_VERIFY_MODEL"] || "gemini-3.5-transcribe",
+      })
+    : undefined;
   const realtimeCircuit = new ProviderCircuit(3, 60_000);
   const alertSink = config.alertWebhookUrl ? new WebhookAlertSink({
     url: config.alertWebhookUrl,
@@ -398,6 +422,9 @@ export async function start(): Promise<void> {
     ...(runner ? { runner } : {}),
     classifier,
     ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
+    ...(ttsRenderer ? { ttsRenderer } : {}),
+    ...(ttsTranscriber ? { ttsTranscriber } : {}),
+    ...(process.env["TTS_CACHE_DIR"] ? { ttsCacheDir: process.env["TTS_CACHE_DIR"] } : {}),
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
     ...(scenarioRestater ? { scenarioRestater } : {}),
     ...(evaluator ? { evaluator } : {}),

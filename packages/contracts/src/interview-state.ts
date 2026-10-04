@@ -169,6 +169,11 @@ export const InterviewPolicySchema = z.object({
    * alone. Between this and the minimum, the ceiling ramps.
    */
   settledTurnEndSilenceMs: z.number().int().min(0),
+  /** Optional bounds keep policies pinned before V2 on their original timing. */
+  minTurnEndSilenceMsConfident: z.number().int().min(0).optional(),
+  settledTurnEndSilenceMsConfident: z.number().int().min(0).optional(),
+  minTurnEndSilenceMsPatient: z.number().int().min(0).optional(),
+  settledTurnEndSilenceMsPatient: z.number().int().min(0).optional(),
   /**
    * Code quiet required before the interviewer may START something (M4-3).
    *

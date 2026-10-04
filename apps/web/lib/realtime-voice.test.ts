@@ -296,6 +296,8 @@ describe("speech boundaries", () => {
 describe("barge-in", () => {
   it("fires the moment the candidate speaks over model audio", () => {
     const h = build();
+    // A request must precede model audio — that is what sets acceptingModelAudio.
+    h.voice.requestSpeech({ action: "ACKNOWLEDGE_BRIEFLY", utteranceId: "utt-barge-test" });
     h.receive({
       serverContent: {
         modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm", data: pcm16ToBase64(new Int16Array(160)) } }] },
@@ -332,6 +334,7 @@ describe("model audio", () => {
     const h = build();
     const pcm = new Int16Array([1, -1, 32767, -32768]);
 
+    h.voice.requestSpeech({ action: "ACKNOWLEDGE_BRIEFLY", utteranceId: "utt-audio-test" });
     h.receive({
       serverContent: {
         modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: pcm16ToBase64(pcm) } }] },
@@ -352,6 +355,7 @@ describe("model audio", () => {
     const h = build();
     const pcm = new Int16Array([7, 8]);
 
+    h.voice.requestSpeech({ action: "ACKNOWLEDGE_BRIEFLY", utteranceId: "utt-snake-test" });
     h.receive({
       server_content: {
         model_turn: { parts: [{ inline_data: { mime_type: "audio/pcm", data: pcm16ToBase64(pcm) } }] },

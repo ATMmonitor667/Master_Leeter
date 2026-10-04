@@ -17,6 +17,17 @@ Branch: production
 Audited commit: b4c25c4
 Status: ITERATION 1 implemented locally; external acceptance remains open.
 
+V-SERIES VOICE LATENCY (branch voice/low-latency, 2026-09-25)
+[~] Latency ledger, turn integrity, cached authored speech, prosodic endpointing,
+    speculative classification, configurable VAD, room tone, and provisional
+    cached-speech barge-in are implemented. See VOICE_BUILD_PLAN.txt and
+    claude/VOICE_BUILD_PROGRESS.md. The six-utterance provider probe favored
+    keeping the 350 ms hangover. Three recorded human sessions still
+    must establish latency AND interruption targets, answer coverage, render
+    fidelity, and backchannel behavior. Optional verified local TTS persistence
+    is available through TTS_CACHE_DIR; a shared multi-instance store remains
+    a follow-up. A cache miss safely falls back to realtime speech.
+
 CURRENT EXECUTION ORDER (supersedes older product/provider proposals below)
 [x] I01 Private Supabase bank migration, adapter, importer and session wiring.
 [ ] I01-CLOUD Owner applies development migration/import and verifies permissions.

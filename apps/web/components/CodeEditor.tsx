@@ -1,7 +1,11 @@
 "use client";
 
-import Editor from "@monaco-editor/react";
+import Editor, { loader } from "@monaco-editor/react";
 import { PanelLabel } from "./Notepad";
+
+// The default loader fetches Monaco from a CDN. Interview code must stay on
+// our origin, and the site's CSP intentionally rejects third-party scripts.
+loader.config({ paths: { vs: "/monaco/vs" } });
 
 /**
  * Monaco, with the assistance turned off.

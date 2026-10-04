@@ -119,7 +119,7 @@ export class InMemorySessionStore implements SessionStore {
       createdAt: this.now(),
       startedAt: null,
       endedAt: null,
-      expectedSeconds: req.expectedSeconds ?? DEFAULT_INTERVIEW_SECONDS,
+      expectedSeconds: req.expectedSeconds ?? req.scenario.version.target.expectedMinutes * 60,
       pausedSeconds: 0,
     };
 

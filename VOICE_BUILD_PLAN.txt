@@ -1,0 +1,1394 @@
+MASTER LEETER -- LOW-LATENCY REAL-TIME VOICE INTERVIEW
+END-TO-END BUILD PLAN (implementable, phase by phase, on top of `main`)
+==========================================================================================
+
+Written:        2026-09-24
+Base commit:    main @ ec8407a  (Merge PR #6, codex-production-08-release-completion)
+Author:         Claude (planning session), for Rahat
+Sources:        claude/VOICE_LATENCY_RESEARCH.md (the research paper)
+                claude/V0_V3_IMPLEMENTATION.md, claude/V2_V5_V7_IMPLEMENTATION.md,
+                claude/V0_V7_REIMPLEMENTATION.md (the three earlier implementation records)
+                plus a direct read of the code on main @ ec8407a on 2026-09-24.
+
+This file is the single source of truth for building the voice path. A future session
+told "implement the plan" should be able to do it from this file alone. It says WHAT to
+build, WHY, WHERE, HOW to test it, and WHEN a step counts as done.
+
+------------------------------------------------------------------------------------------
+TABLE OF CONTENTS
+------------------------------------------------------------------------------------------
+  0.  How to use this file (read first)
+  1.  Goal and definition of done
+  2.  Ground truth on 2026-09-24 (repo state you will find)
+  3.  Invariants that must survive every phase
+  4.  The latency model (the math every phase is judged against)
+  5.  Defects found on main while planning (fix these BEFORE making it faster)
+  6.  Phase overview and order
+  7.  P0  Workspace preparation and baseline
+  8.  P1  Measure first: latency ledger (V0) + provider transcription probe
+  9.  P2  Turn integrity: correctness before speed
+  10. P3  Pre-rendered authored speech (V3 + V3b + render verification)
+  11. P4  Prosodic turn-end prediction (V2)
+  12. P5  Speculative classification (V4)
+  13. P6  VAD hangover decision (V1)
+  14. P7  Presence and backchannel-aware barge-in (V5 + V7)
+  15. P8  Simulation, evaluation and review integration
+  16. P9  Documentation and records
+  17. P10 Human acceptance and tuning protocol
+  18. P11 Optional: smart-turn-v3 behind the predictor seam
+  19. Deliberately NOT building (and why)
+  20. Configuration, kill switches and rollback
+  21. File-by-file change index
+  22. Porting map: what can be reused from the voiceWorks draft
+  23. Test matrix
+  24. Risk register
+  25. Git, commits and delivery
+  26. Appendix A: key numbers
+  27. Appendix B: formulas
+  28. Appendix C: progress log template
+
+
+==========================================================================================
+0. HOW TO USE THIS FILE (READ FIRST)
+==========================================================================================
+
+0.1  Work the phases in order. P0 -> P1 -> P2 -> P3 -> P4 -> P5 -> P6 -> P7 -> P8 -> P9,
+     then P10 with the owner. Each phase ends in one commit (or a few small ones). Never
+     start a phase with a red test suite.
+
+0.2  Line numbers and code snippets in this file were true of main @ ec8407a on 2026-09-24.
+     ALWAYS re-read the actual file before editing. If the code has moved, follow the
+     intent described here, not the line number.
+
+0.3  Every step has four parts:
+       WHY      -- the reason; if the reason no longer holds, stop and re-plan that step.
+       DO       -- the change.
+       TEST     -- the tests to write or update. Write the failing test first where the
+                   step fixes a defect.
+       DONE     -- the objective condition that closes the step.
+
+0.4  Keep a progress log in the project doc `claude/VOICE_BUILD_PROGRESS.md` (template in
+     Appendix C). Update it at the end of every phase: commit hash, test counts, anything
+     that deviated from this plan and why. A session that resumes work reads that log
+     first, then this file.
+
+0.5  Owner decisions already made (do not re-ask):
+       - Ship the prosodic turn-end predictor ON by default, tunable. (2026-09-14)
+       - Build the predictor in-house now, behind an interface that smart-turn-v3 can
+         drop into later. No new ML dependency now. (2026-09-14)
+       - TTS provider: Gemini TTS, same API key and voice family as the realtime model.
+       - Work lands on a branch cut from `main`, not on main directly, and not on the old
+         `voiceWorks` base.
+
+0.6  Owner decisions still OPEN (ask when you reach them, not before):
+       - P2.5: add a sixth voice tool `get_hint_wording` (recommended) or not.
+       - P3.4: persistent render cache location (local disk now; object storage later).
+       - P5.7: enable the rule-based classifier fast path for questions (default OFF).
+       - P6:   hangover 350 ms vs 500 ms -- decided by P1 measurements, owner confirms.
+       - P10:  go/no-go after the recorded sessions.
+
+0.7  Operating rules for the implementing session (learned the hard way):
+       - Use `device_bash` on the owner's machine when it works. It can read/write the
+         connected folder `Master_Leeter`. It cannot delete files unless deletion
+         permission is granted; git needs to delete lock files for EVERY write command,
+         so request delete permission once (device_request_delete_permission) before any
+         git write. For read-only git commands set `GIT_OPTIONAL_LOCKS=0` so git does not
+         create `.git/index.lock` at all. (On 2026-09-24 a plain `git status` left an
+         undeletable empty index.lock that blocked git until deletion was granted.)
+       - Something in this workspace has repeatedly rewritten source files with every line
+         sorted A-Z (see scripts/check-sorted-corruption.mjs). Run
+         `node scripts/check-sorted-corruption.mjs` after every batch of writes and before
+         every commit. A barrel file of only `export * from` lines can trip it falsely;
+         read the file before "fixing" it.
+       - Never push, merge, or open a PR without the owner saying so.
+       - Never paste authored scenario text (probe wordings, facts, hints, brief) into logs,
+         test snapshots sent to the chat, or commit messages.
+
+
+==========================================================================================
+1. GOAL AND DEFINITION OF DONE
+==========================================================================================
+
+GOAL
+  A voice interview where, once the interviewer has decided to speak, the candidate hears it
+  about as fast as a person across a table would answer -- while keeping the product's core
+  property: the interviewer stays silent by default and never talks over someone mid-thought.
+
+  The research paper's key finding, restated: the interviewer's slowness came from HOW its
+  silence was implemented, not from the silence itself. "Reluctant" was being expressed as
+  "slow". The fix is to make the decision well-informed and fast, and to make execution of
+  a decision nearly instant -- without changing how often it decides to speak.
+
+MEASURED DEFINITION OF DONE (all must hold on recorded human sessions, P10)
+  D1  Response latency = first audible interviewer sample minus the candidate's backdated
+      quiet onset, measured in the browser by the V0 ledger:
+        - MOCK, authored utterance after a finished statement: p50 <= 800 ms, p95 <= 1400 ms
+        - Direct question (floor-yielded intent):               p50 <= 800 ms, p95 <= 1400 ms
+        - Stretch target (needs fast provider transcripts, see section 4): p50 <= 600 ms
+  D2  Unwanted interruption rate < 1 material interruption per 30-minute MOCK session
+      (CLAUDE.md quality metric), judged by human review of the recorded session.
+  D3  Missed-response rate: 0 clear questions left unanswered across the acceptance sessions.
+  D4  Backchannel false-stop: a candidate "mm-hm" during interviewer speech does not cancel
+      a pre-rendered utterance (spot-checked, >= 4 of 5 attempts).
+  D5  TTS fidelity: every cached line passes automatic render verification (P3.3); spot
+      listening finds no spoken style direction and no altered word.
+  D6  All automated suites green: typecheck, API, web, contracts, sim, eval thresholds,
+      production build, check:sorted, check:env, check:bundle.
+  D7  Replay determinism preserved: replay.test.ts and the new replay tests pass; logs
+      written before this work replay to identical decisions.
+
+  Report D1 and D2 TOGETHER, always. A system reaches 100 ms by interrupting constantly and
+  0% interruptions by never speaking; either number alone is meaningless (paper, section 8).
+
+
+==========================================================================================
+2. GROUND TRUTH ON 2026-09-24 (WHAT YOU WILL FIND)
+==========================================================================================
+
+2.1  Repository (owner's machine, folder "Master_Leeter")
+       - `main` == `origin/main` == ec8407a. It is 31 commits ahead of e7f2dcb, the commit
+         the research paper was written against. Voice-relevant files that CHANGED since
+         e7f2dcb: apps/web/lib/voice-session.ts (+507 lines: reconnect, GoAway rotation,
+         provider resumption, device recovery, speech-outcome reporting, finishInput),
+         apps/web/lib/realtime-voice.ts, apps/web/lib/session-client.ts,
+         apps/web/app/interview/[sessionId]/page.tsx, apps/api/src/modules/session/index.ts,
+         apps/api/src/modules/orchestrator/runtime.ts (RUNTIME_CHECKPOINT restore),
+         apps/api/src/modules/realtime/{token,persona,resumption}.ts, contracts
+         session-event.ts (+RUNTIME_CHECKPOINT), apps/api/src/index.ts.
+       - Voice-relevant files UNCHANGED since e7f2dcb: apps/web/lib/vad.ts,
+         apps/web/lib/playback.ts, apps/api/src/modules/orchestrator/turn-completion.ts,
+         apps/api/src/modules/orchestrator/policy.ts, packages/contracts/src/gate.ts,
+         packages/contracts/src/interview-state.ts, apps/api/src/eval/index.ts.
+       - The currently checked-out branch is `voiceWorks` (== origin/voiceWorks == e7f2dcb)
+         with UNCOMMITTED work: the V0+V3 and V2+V3b+V5+V7 drafts (20 modified files,
+         14 untracked new files). That draft is based on the OLD e7f2dcb code. It is a
+         reference and a source of reusable files (section 22), not a base to build on.
+       - Two working-tree changes on voiceWorks are NOT voice work and were not made by the
+         voice sessions: `.gitignore` (+ `.worktrees/`) and `scripts/check-env-not-tracked.mjs`.
+         Ask the owner before committing or discarding them.
+       - `apps/api/src/modules/orchestrator/index.ts` in the working tree is CORRUPTED
+         (every line sorted A-Z). It was not part of any voice change. Restore it from git.
+       - The branch described in claude/V0_V7_REIMPLEMENTATION.md (`claude/voice-latency`,
+         commits 33ec661 / 82a302c / 99bba4f on a main @ 6626cc1) does NOT exist in this
+         repository or on origin. It lives on another machine
+         (C:\Users\rhoss\Desktop\Master_Leeter) as a bundle. Its main @ 6626cc1 is also not
+         present here. Treat that record as design reference only.
+
+2.2  What main already has in the voice path (so you do not rebuild it)
+       - Client VAD (apps/web/lib/vad.ts): relative-to-noise-floor energy detector,
+         endHangoverMs = 350, backdated SPEECH_END.
+       - Gemini Live via ephemeral constrained credentials (token.ts constrainedSetup):
+         automaticActivityDetection DISABLED (ADR-001), inputAudioTranscription ON,
+         contextWindowCompression, sessionResumption, persona pinned in the credential,
+         per-session interviewer tone (EXTRA_NICE | NORMAL | MEAN) appended to the persona.
+       - Model: REALTIME_MODEL default gemini-2.5-flash-native-audio-latest; REALTIME_VOICE
+         default Charon; CLASSIFIER_MODEL default gemini-3.5-flash-lite (.env.example).
+       - Transcripts: the provider sends `interimInputTranscription` and
+         `inputTranscription`; realtime-voice.ts maps them to onInputTranscript({text,
+         final}); page.tsx calls sessionClient.speechFinal(text) for EVERY final chunk.
+       - Speech: server pushes ACTION {action, utteranceId}; page.tsx calls
+         voiceSession.speak(); the model is told via clientContent to call a tool
+         (get_probe_wording etc.) through a browser->server relay, then speaks.
+       - voice-session reports utterance outcome COMPLETED | INTERRUPTED to
+         POST /voice-utterance-complete (server currently ignores the body).
+       - Runtime: gate + turn-completion silence ramp (MOCK needs ~2400 ms of quiet for a
+         non-question turn), RUNTIME_CHECKPOINT restore, fenced runtime ownership,
+         durable event log, privacy redaction (deletion.ts IDENTIFYING_FIELDS).
+       - Tooling: `pnpm review -- <session-id>` exports a TSV of interviewer turns;
+         `pnpm sim`; `pnpm eval`; check:sorted / check:env / check:bundle scripts.
+
+2.3  Environment on the owner's machine (device VM, 2026-09-24)
+       - device_bash works (it did not on 2026-09-14; the Windows mount bug is fixed).
+       - node v22.23.2 present. pnpm NOT on PATH. Repo node_modules was installed from
+         Windows and may contain win32 native binaries (esbuild, rollup) that fail in the
+         Linux VM. Do not run tests against the Windows node_modules. See P0.1.
+
+
+==========================================================================================
+3. INVARIANTS THAT MUST SURVIVE EVERY PHASE
+==========================================================================================
+
+From CLAUDE.md (numbers match CLAUDE.md) and ADR-001:
+  I1  Application-controlled response creation. Turn detection is never permission to
+      speak. The Response Gate is the only authority. STAY_SILENT is the default.
+  I2  The problem statement is never rendered as text. Authored wording never crosses to
+      the browser as TEXT. (Audio of an authorized utterance may -- it always did.)
+  I3  Clarifications come from canonical scenario facts; the model never invents.
+  I4  Sessions pin an immutable scenario version.
+  I7  Candidate speech is data, not policy.
+  I8  The event log is append-only; decisions are a function of the log (replay).
+  I9  Deterministic rules run before model reasoning in the gate.
+  I10 No raw audio retention by default. (Derived prosody numbers are not audio, but treat
+      them as personal data for redaction.)
+
+Plan-specific invariants (each phase must keep these true):
+  V-a  A decision-affecting value is either in the log or a pure function of the log.
+       Live-only optimisations (speculation, caches, prewarm) may change WHEN a decision is
+       made, never WHAT it is.
+  V-b  No prosody, no cache, no speculation => behaviour identical to main. Every new
+       mechanism degrades to today's behaviour, not to a guess.
+  V-c  Nothing new can make the interviewer speak. New inputs can only change how long the
+       gate waits, or how fast an already-authorized utterance is executed.
+  V-d  Fail toward yielding the floor: when uncertain whether the candidate took the floor,
+       the interviewer goes quiet.
+  V-e  Browser-supplied numbers are validated server-side; out-of-range values are dropped,
+       not clamped.
+
+
+==========================================================================================
+4. THE LATENCY MODEL
+==========================================================================================
+
+Clock starts at t=0, the candidate's last voiced sample (VAD's backdated quiet onset).
+
+TERMS
+  H     VAD hangover before SPEECH_END is declared           350 ms today (config)
+  T_f   provider delay from activityEnd to the final input    UNMEASURED (P1 measures it)
+        transcription reaching the browser
+  N_up  browser -> API over the app WebSocket                 ~20-60 ms
+  C     classifier call (Gemini flash-lite, structured JSON)  ~300-800 ms (code comment)
+  R     silence the policy requires before a non-question     MOCK 2400 ms today
+        turn may be answered
+  S     execution: decision -> first audible sample           see below
+  L     playback lead (clipping guard)                        60 ms (playback.ts)
+
+EXECUTION S TODAY (model path)
+  ACTION push + model turn -> tool call + relay + model turn -> first audio
+  ~ 30-80 + 400-900 + 50-150 + 644-1958 = ~1.1 - 3.0 s
+
+THE CRITICAL-PATH FORMULA ON MAIN (derived from runtime.ts, see defect D-4)
+  statement turn:  t = H + T_f + N_up + C + max(0, R - (H + T_f)) + 25 + S
+  question turn:   t = H + T_f + N_up + C + S          (floor-yielded: R not applied)
+  NOTE: the paper said C is "absorbed into the silence hold". It is NOT: holdForSilence()
+  computes the wait from timestamps taken BEFORE the classifier returned, then starts the
+  timer AFTER it returned, so C is added on top. (Defect D-4, fixed in P2.4.)
+
+TARGET AFTER THIS PLAN
+  statement turn:  t = max(H + T_f + N_up + C', R') + 25 + S'
+  question turn:   t = H + T_f + N_up + C' + S'
+  where
+    R'  MOCK with confident prosody = 577 ms (Appendix B)     [P4]
+    C'  ~0 when speculation hits, else C                      [P5]
+    S'  ACTION push + N_down + L ~ 10 + 40 + 60 = ~110 ms      [P3: head rides on ACTION]
+    and C is absorbed into the hold for statements             [P2.4]
+
+  Worked budgets (MOCK, N_up = N_down = 40 ms):
+                           T_f=150ms   T_f=300ms   T_f=700ms
+    statement, spec hit       ~710        ~825        ~1225   (max(H+T_f+N_up, 577)+25+110)
+    question,  spec hit       ~650        ~800        ~1200
+    question,  spec miss (C=500)  ~1150   ~1300       ~1700
+
+  Therefore:
+    - After P2-P5, T_f is the dominant unknown and the floor. P1 measures it FIRST.
+    - Speculative classification (P5) is required, not optional, for questions to be fast.
+    - Trimming leading silence from TTS renders (P3.3) and a tighter first-chunk lead
+      (P3.8) are small, free wins inside S'.
+    - The 200 ms human mode is out of reach without predicting turn ends BEFORE the pause
+      (full duplex); this plan targets the human MEAN (345-456 ms, Brady 1968), and the
+      realistic result is 650-850 ms p50 if T_f <= 300 ms.
+
+
+==========================================================================================
+5. DEFECTS FOUND ON MAIN WHILE PLANNING (FIX BEFORE MAKING IT FASTER)
+==========================================================================================
+
+These come from reading main @ ec8407a. Each must be CONFIRMED by a failing test before it
+is fixed (P2). Making endpointing faster without fixing them makes them worse.
+
+D-1  Every provider transcript chunk is judged as a whole turn.
+     page.tsx forwards each `inputTranscription` as its own SPEECH_FINAL; runtime.ts
+     evaluateTurn() classifies that fragment alone and "a new turn supersedes any turn
+     still waiting on silence". If Gemini sends several chunks per utterance (the API
+     documents transcriptions as incremental; P1 confirms), the gate sees "because lookups
+     are constant time" without "I'd use a hash map", and the mid-thought veto reads the
+     wrong tail.
+
+D-2  No "candidate is speaking right now" rule.
+     `candidateSpeechStarted` means "has spoken since the last decision", not "is speaking
+     now". A final chunk arriving while the candidate is still talking (transcription runs
+     during speech) has `silenceMs === undefined` (SPEECH_STARTED nulls it), and
+     estimateTurnCompletion() then judges on the transcript alone. A complete-looking
+     fragment, or any floor-yielded intent, can therefore authorize speech while the
+     candidate is mid-sentence. Suspected interruption source.
+
+D-3  A turn judged without timing is never re-evaluated.
+     holdForSilence() returns immediately when silenceMs is undefined. If the final chunk
+     arrived before SPEECH_STOPPED and the verdict was STAY_SILENT, nothing re-judges the
+     turn after the candidate stops. Suspected missed-response source.
+
+D-4  Silence at re-evaluation mixes two clocks, and re-evaluation happens only once.
+     lastSpeechStoppedAtMs comes from the CLIENT (SPEECH_STOPPED.occurredAt is the VAD time
+     the browser supplied); the SILENCE_ELAPSED timestamp is SERVER time. reevaluate()
+     subtracts one from the other, so client/server clock skew is added to the measured
+     silence. If the client clock is ahead, the re-judged silence is too short, the turn is
+     held again, and since holdForSilence() only runs on attempt 0, it is never answered.
+     Also (section 4) the classifier time is added to, not absorbed by, the hold.
+
+D-5  get_probe_wording speaks the NEXT variant.
+     runtime.realize() selects the wording with useCount, then increments
+     probeUseCounts[probe.id]. tools.ts probeWording() then selects with the incremented
+     count, so the model is handed a different variant than the one realized and logged.
+     (Also recorded in V0_V7_REIMPLEMENTATION.md.)
+
+D-6  Hints have no wording on the model path.
+     instructionFor(GIVE_HINT_L1/L2) says "Say only the wording you are given", but no tool
+     returns hint text. A model-spoken hint must improvise -> leakage risk. (Pre-rendered
+     audio avoids this for cached hints; the model fallback still needs a fix.)
+
+D-7  Model audio after a local barge-in can restart the interviewer.
+     After onBargeIn stops playback, model audio chunks still in flight are enqueued again by
+     onModelAudio. (Recorded as fixed in V0_V7_REIMPLEMENTATION.md on the other machine;
+     not fixed on this main.)
+
+D-8  PlaybackScheduler.release() lets a stale source touch the cursor after stop().
+     (Same record.) Harmless today, matters once completion is driven by the queue draining.
+
+
+==========================================================================================
+6. PHASE OVERVIEW AND ORDER
+==========================================================================================
+
+  P0  Workspace preparation and baseline                 no behaviour change
+  P1  Measure first (V0 ledger + provider probe)          no behaviour change
+  P2  Turn integrity (D-1..D-8)                          correctness, some latency
+  P3  Pre-rendered authored speech (V3/V3b)              -1.0 to -3.0 s execution
+  P4  Prosodic turn-end prediction (V2)                  -1.8 s on statements (MOCK)
+  P5  Speculative classification (V4)                    -0.3 to -0.8 s
+  P6  Hangover decision (V1)                             +/- 150 ms, data-driven
+  P7  Presence and barge-in (V5 + V7)                    perceived naturalness
+  P8  Sim / eval / review integration                    guards the numbers
+  P9  Docs and records
+  P10 Human acceptance and tuning (with the owner)
+
+Why this order:
+  - P1 before everything: the paper's budget has an unmeasured term (T_f) that decides
+    whether P6 matters and how far P5 can go.
+  - P2 before P4: prosody shortens the wait; D-1..D-4 turn a short wait into interruptions
+    and missed responses.
+  - P3 before P4: P3 does not touch any decision boundary and removes the most time with the
+    least risk (paper: "if only one can be done, V3 is the cheaper and the safer").
+  - P5 after P4: once the hold shrinks to ~577 ms, the classifier becomes the bottleneck.
+
+
+==========================================================================================
+7. P0 -- WORKSPACE PREPARATION AND BASELINE
+==========================================================================================
+
+P0.1  Choose the execution route
+  WHY   Tests must run on Linux with Linux-installed dependencies.
+  DO    In device_bash:
+          node -v; git --version
+          npx --yes pnpm@9.15.0 --version        # needs npm registry egress
+        Route A (preferred) -- work in a Linux clone on the owner's machine:
+          git clone "$HOME/mnt/Master_Leeter" "$HOME/ml-work"
+          cd "$HOME/ml-work" && npx --yes pnpm@9.15.0 install --frozen-lockfile
+          (If the registry is unreachable, use Route B.)
+        Route B -- work in the cloud container:
+          In the owner's repo: git bundle create voice-base.bundle main
+          stage the bundle to the container (device_stage_files), git clone it, install,
+          work there, and at the end bundle the new branch back (section 25).
+  DONE  One route installs dependencies and runs `pnpm -v`.
+
+P0.2  Unblock git safely
+  DO    Request delete permission for the Master_Leeter folder once. Use
+        GIT_OPTIONAL_LOCKS=0 for read-only git. If `.git/index.lock` exists and is EMPTY,
+        remove it; if it is non-empty, stop and ask the owner (a real git process may own it).
+
+P0.3  Preserve the voiceWorks draft (do not lose 10 days of work)
+  DO    In the owner's repo (on voiceWorks):
+          git checkout -- apps/api/src/modules/orchestrator/index.ts   # sorted corruption
+          node scripts/check-sorted-corruption.mjs                      # expect only the
+                                                                        # eval/index.ts barrel
+        Ask the owner about `.gitignore` and `scripts/check-env-not-tracked.mjs`.
+        Then commit ONLY the voice draft files (list them explicitly; see section 22) on
+        voiceWorks:
+          "wip(voice): V0-V7 draft on e7f2dcb -- reference only, superseded by voice/low-latency"
+        Do not push.
+  DONE  `git status` on voiceWorks shows only the two owner files (or nothing).
+
+P0.4  Create the working branch from main
+  DO    git switch -c voice/low-latency main      (in the chosen route's clone)
+  DONE  HEAD is voice/low-latency at ec8407a (or current main if it moved; record which).
+
+P0.5  Baseline
+  DO    pnpm check:sorted && pnpm check:env && pnpm typecheck && pnpm test && pnpm sim &&
+        pnpm eval && pnpm build && pnpm check:bundle
+        Record every count in claude/VOICE_BUILD_PROGRESS.md (template, Appendix C).
+        If anything is red on a clean main, fix ONLY stale assertions, in a separate commit
+        "test: repair stale assertions on main", and list each fix with its reason.
+        (The other machine's main had 7 stale failures on 2026-09-21; this main may too.)
+  DONE  Green baseline recorded.
+
+
+==========================================================================================
+8. P1 -- MEASURE FIRST: LATENCY LEDGER (V0) + PROVIDER TRANSCRIPTION PROBE
+==========================================================================================
+
+P1.1  Latency ledger module (client)
+  WHY   "Nothing below should be tuned against a guess" (paper 6.1). Measure where the
+        candidate's ear is.
+  DO    Add apps/web/lib/latency-ledger.ts + latency-ledger.test.ts. Reuse the voiceWorks
+        draft files as-is (section 22). Behaviour:
+          - mark(name, atMs); a new quietOnsetMs resets pending marks; other marks keep
+            their first write.
+          - authorized(utteranceId, action, source, atMs) adopts pending marks; returns
+            false and opens nothing when there is no quietOnsetMs (e.g. DELIVER_BRIEF).
+          - firstSamplePlayed(atMs) closes and reports; abandon() drops (barge-in,
+            disconnect); stale ledgers expire after 30 s.
+          - largestStages() names the three biggest gaps; responseLatencyMs().
+        Marks: quietOnsetMs, vadEndDetectedMs, activityEndSentMs, firstInterimTranscriptMs,
+        transcriptFinalMs (LAST final chunk before authorization), authorizationReceivedMs,
+        speechRequestedMs, audioFetchStartedMs, firstAudioByteMs, firstSamplePlayedMs.
+        Extra fields: source ("CACHED_AUDIO" | "REALTIME_MODEL"), transcriptChunks (count
+        of final chunks in the turn), serverDecisionMs and classifierMs (server-measured
+        DELTAS, see P1.3), classifierSource (P5), prosodyPull (P4).
+  TEST  The 10 tests from the draft, plus: transcriptFinalMs keeps the LAST chunk, and
+        transcriptChunks counts chunks.
+  DONE  Tests pass.
+
+P1.2  Contracts
+  DO    packages/contracts/src/session-event.ts: add "VOICE_LATENCY_MEASURED" to
+        EVENT_TYPES (server-only by derivation; do NOT add to CLIENT_EVENT_TYPES).
+        Add to the ACTION ServerMessage (optional, backward compatible):
+          serverTiming?: { decisionMs: number; classifierMs: number }   // server deltas
+  DONE  contracts tests pass (invariants.test.ts, client-events.test.ts unchanged).
+
+P1.3  Server timing deltas
+  WHY   Server and browser clocks differ; never subtract across them. Send DELTAS.
+  DO    runtime.ts: measure (server monotonic, performance.now()) from SPEECH_FINAL ingest
+        to decision, and the classifier call duration; return them on RuntimeResult.
+        session/index.ts deliver(): include serverTiming on ACTION.
+  DONE  A runtime test sees decisionMs >= classifierMs >= 0.
+
+P1.4  POST /v1/interview-sessions/:id/voice-latency
+  DO    zod body mirroring the ledger (all marks optional except utteranceId, action,
+        source, quietOnsetMs). Append VOICE_LATENCY_MEASURED with actor SYSTEM,
+        idempotencyKey `latency:<utteranceId>`. Accept ONLY utterance ids this runtime
+        issued (keep a bounded set of the last 64 issued ids on the runtime; the
+        V0_V7 record did the same). Register the route under the existing per-route rate
+        limits (find how main registers provider-route rates and follow it). Owner-only
+        access like every other session route (verify registerAccessControl covers it;
+        add a cross-user test).
+  TEST  unknown utterance id -> 409/400 and nothing appended; duplicate -> idempotent;
+        another user's session -> denied.
+
+P1.5  Client wiring
+  DO    voice-session.ts (main's version -- re-apply by hand, do not copy the draft file):
+          - construct VoiceLatencyLedger; onComplete -> POST /voice-latency (keepalive,
+            never awaited, never retried).
+          - onSpeechBoundary SPEECH_STOPPED: mark quietOnsetMs = boundary.atMs,
+            vadEndDetectedMs = now, activityEndSentMs = now.
+          - onInputTranscript: interim -> firstInterimTranscriptMs; final ->
+            transcriptFinalMs (overwrite with the latest) and transcriptChunks++.
+          - speak(): authorized(...) with source by path; model path marks
+            speechRequestedMs; first model audio chunk marks firstAudioByteMs.
+          - firstSamplePlayedMs: use the ACTUAL scheduled start, converted to wall time:
+              Date.now() + (startAt - ctx.currentTime) * 1000 + ctx.outputLatency * 1000
+            (PlaybackScheduler.enqueue/enqueueAt must return startAt -- P3.8).
+          - onBargeIn / reconnect / stop -> ledger.abandon().
+  DONE  A manual dev run posts a ledger per spoken utterance (verified in the log).
+
+P1.6  Evaluation and review
+  DO    apps/api/src/eval/voice-latency.ts + test (reuse the draft as-is), export from
+        eval/index.ts. Add to the /review JSON a `latency` block (overall, byAction,
+        bySource, stageMeansMs, unmeasured) and make `pnpm review` print a short latency
+        summary line per action after writing the TSV. Add per-turn columns to the TSV:
+        responseLatencyMs, speechSource, largestStage.
+  DONE  review.test.ts covers the new block; nearest-rank p50/p95.
+
+P1.7  Provider transcription probe (THE most important measurement)
+  WHY   T_f is the floor for every turn after this plan (section 4), and D-1 depends on
+        how Gemini chunks inputTranscription. Measure both without a human.
+  DO    apps/api/scripts/live-transcription-probe.ts; script "voice:probe" in root
+        package.json. Start from apps/api/scripts/m0-1-realtime-spike.ts. The probe:
+          1. Mints a constrained credential exactly as production does (constrainedSetup:
+             manual activity detection, inputAudioTranscription) with REALTIME_MODEL.
+          2. Synthesizes N=12 test utterances with Gemini TTS (short statement, long
+             statement, question, statement with a 900 ms mid-sentence pause, trailing
+             connective "...but", numbers "O of n log n"), resamples 24 kHz -> 16 kHz.
+             No human or microphone needed.
+          3. For each: activityStart, stream audio in 20 ms frames at real-time pace,
+             then HANGOVER ms of silence frames, then activityEnd.
+          4. Logs every serverContent with ms relative to activityEnd:
+             interimInputTranscription (text), inputTranscription (text), any other field.
+          5. Repeats with HANGOVER = 350 and 500.
+          6. Prints a table: chunks per utterance, time of first/last final chunk relative
+             to activityEnd (T_f), whether finals arrive BEFORE activityEnd, transcript
+             exactness vs the TTS source text.
+        Requires GEMINI/REALTIME key -> the OWNER runs it (or the session with the owner's
+        key present in apps/api/.env.local on the device). Never print the key.
+  DONE  Results recorded in the progress log, answering:
+          Q1 How many inputTranscription chunks per activity segment? (1 or many)
+          Q2 T_f p50/p95 at hangover 350 and 500.
+          Q3 Do final chunks arrive before activityEnd?
+          Q4 Transcript accuracy difference between 350 and 500 (Google documents >= 500
+             ms for manual VAD to avoid fragmented audio).
+        These answers set P2.2 (client coalescing yes/no) and P6 (hangover).
+
+P1.8  Commit: "feat(voice): latency ledger, server timing and transcription probe (V0)"
+
+
+==========================================================================================
+9. P2 -- TURN INTEGRITY: CORRECTNESS BEFORE SPEED
+==========================================================================================
+
+Write the failing test for each defect FIRST (runtime.test.ts / gate.test.ts /
+reevaluation.test.ts / realtime-voice.test.ts / playback.test.ts), then fix.
+
+P2.1  "Candidate is speaking now" gate rule (fixes D-2)
+  DO    Runtime: add `candidateSpeakingNow` (true on SPEECH_STARTED, false on
+        SPEECH_STOPPED, false on BARGE_IN handling as appropriate, false on restore unless
+        the checkpoint says otherwise). Add to RuntimeCheckpoint schema as OPTIONAL
+        (old checkpoints parse; default false).
+        Contracts gate.ts InterviewContext: `candidateSpeakingNow: z.boolean().optional()`.
+        gate.ts: new deterministic rule immediately after rule 1 (barge-in):
+          if (ctx.candidateSpeakingNow) return SILENT("candidate is still speaking")
+        This is invariant I9 in action: a rule, before any model reasoning.
+  TEST  SPEECH_STARTED, SPEECH_FINAL "what's the input size?" (no STOPPED) -> STAY_SILENT;
+        then SPEECH_STOPPED -> answered (needs P2.3). Existing gate tests unchanged.
+
+P2.2  Turn assembly (fixes D-1)
+  DO    Runtime keeps an open candidate turn:
+          openTurn = { segments: string[]; firstSeq: number; lastSeq: number } | null
+        - SPEECH_FINAL appends its transcript to openTurn.segments (creates it if null).
+        - The judged transcript is the joined text (single spaces), capped to the last
+          ~800 characters at a word boundary (bounded classifier input).
+        - openTurn resets when the interviewer takes a turn (the moment a non-silent
+          decision is realized) and on SESSION_ENDED. It does NOT reset on
+          SPEECH_STARTED/STOPPED: a thought that spans a pause is one turn.
+        - turnId stays `turn-<seq of the latest SPEECH_FINAL>` so utterance ids stay
+          unique and existing ids/tests keep their shape.
+        - Everything derives from logged events -> replay-safe (V-a). Include openTurn in
+          the checkpoint (optional field).
+        Client coalescing (only if P1 Q1 = many chunks AND chunks arrive after
+        activityEnd): voice-session buffers final chunks for the current segment and emits
+        ONE speechFinal when no chunk has arrived for 120 ms after SPEECH_STOPPED. Default:
+        server-side assembly only; add client coalescing only if P1 shows it saves
+        classifier calls without adding latency.
+  TEST  Fragments "I think I'd use a hash map" + "because lookups are constant time" ->
+        classifier input contains both; mid-thought veto reads the joined tail; replay of
+        the same log gives identical decisions; sim long-thinker still silent.
+
+P2.3  Re-judge when speech stops (fixes D-3)
+  DO    On SPEECH_STOPPED (live ingest AND replay), if an open turn exists whose latest
+        verdict was STAY_SILENT because of rule "candidate is still speaking" or because
+        timing was unknown, schedule re-evaluation through the SAME holdForSilence ->
+        SILENCE_ELAPSED path (logged, replayable), using the required silence for the
+        current policy (and prosody after P4).
+  TEST  Final chunk before STOPPED + floor-yielded question -> answered within
+        H + 25 ms of STOPPED (fake timers); think-aloud -> answered only after R.
+
+P2.4  Clock-domain-safe silence, absorbed classifier time, bounded re-holds (fixes D-4)
+  DO    - On SPEECH_FINAL ingest, capture two things:
+            silenceAtFinalMs  = finalOccurredAt - lastSpeechStoppedAt   (both CLIENT times)
+            finalReceivedMono = performance.now()                        (SERVER monotonic)
+        - holdForSilence(): wait = required - silenceAtFinalMs
+                                  - (performance.now() - finalReceivedMono) + 25
+          i.e. the classifier's duration is subtracted, so it is absorbed.
+        - onSilenceElapsed(): compute
+            silenceMs = silenceAtFinalMs + (performance.now() - finalReceivedMono)
+          and LOG it in the SILENCE_ELAPSED payload: { turnId, silenceMs, basis:
+          "client-delta+server-elapsed" }.
+        - reevaluate(): if the SILENCE_ELAPSED payload carries silenceMs, use it; otherwise
+          fall back to the old formula (old logs replay identically).
+        - Allow re-holding on attempts 0..2 (max 3 evaluations per turn), each scheduled
+          the same way, so a slightly short re-check does not become a missed response.
+  TEST  Client clock +5 s and -5 s vs server -> question still answered, statement
+        answered at ~R; fake classifier taking 600 ms -> statement answered at ~R, not
+        R + 600; replay of a new log -> identical; replay of an old fixture without
+        silenceMs -> identical to main.
+
+P2.5  Authorized wording is fixed at realization (fixes D-5, D-6)
+  DO    runtime.authorized becomes { decision, utteranceId, text } -- the text realize()
+        returned. voiceContext() exposes `authorizedText` (server-side only).
+        tools.ts: get_probe_wording, get_follow_up and get_clarification_fact return the
+        authorized text for the authorized utterance (same authorization checks as today;
+        clarification still refuses a non-matching utterance).
+        OWNER DECISION (recommended YES): add sixth tool `get_hint_wording` mapped to
+        GIVE_HINT_L1/GIVE_HINT_L2, returning the authorized hint text. Update VOICE_TOOLS,
+        TOOL_ACTION, the Live function declarations (find them: grep -rn
+        "functionDeclarations\|get_probe_wording" apps/api apps/web), persona.ts ("You have
+        exactly five" -> six, list the tool), instructionFor(GIVE_HINT_*) -> "Call
+        get_hint_wording and say what it returns.", and every test that asserts five tools
+        (tools.test.ts, persona.test.ts, injection.test.ts, token.test.ts), with a comment
+        explaining why the surface grew.
+        If the owner says NO: GIVE_HINT on the model path must fall back to STAY_SILENT
+        rather than an unworded instruction.
+  TEST  After realize() picked variant k, the tool returns variant k; hint tool refuses
+        when not authorized; persona still contains every prohibition.
+
+P2.6  Ignore model audio after a local barge-in (fixes D-7)
+  DO    realtime-voice.ts: `acceptingModelAudio` set true in requestSpeech(), false on
+        local barge-in and on provider `interrupted`; onModelAudio is not called while
+        false.
+  TEST  requestSpeech -> audio -> VAD SPEECH_START (barge-in) -> more audio chunks ->
+        onModelAudio not called for the late chunks.
+
+P2.7  Stale source cannot touch the scheduler (fixes D-8)
+  DO    playback.ts release(): `if (!this.active.delete(source)) return;` before touching
+        cursor or firing any callback.
+  TEST  stop() then a late onended -> cursor unchanged, no drain callback.
+
+P2.8  Sim trajectories for the above (add to src/sim/trajectories.ts)
+        - fragmented transcript chunks during speech -> one decision, after the stop
+        - question arriving as a chunk before SPEECH_STOPPED -> not answered until the
+          stop, then answered
+        - client clock skew +/-5 s -> no missed response
+  DONE  pnpm sim green with the new trajectories.
+
+P2.9  Commit: "fix(voice): turn assembly, speaking-now rule, clock-safe silence, authorized
+      wording (D-1..D-8)"
+
+
+==========================================================================================
+10. P3 -- PRE-RENDERED AUTHORED SPEECH (V3 + V3b + RENDER VERIFICATION)
+==========================================================================================
+
+Core idea (paper 6.4): the interviewer never improvises. Every line runtime.realize() can
+return is authored text from the pinned scenario, so the whole vocabulary is finite and
+known at session start. Render it once with TTS, cache it, and play it from a buffer when
+the gate authorizes. This removes a model turn, the tool relay and a second model turn from
+every authored utterance, and takes the model out of the output path.
+
+P3.0  Pick the TTS model
+  DO    List models with the owner's key (GET v1beta/models) and choose the lowest-latency
+        GA TTS model available; default from the records: gemini-2.5-flash-preview-tts.
+        Voice = REALTIME_VOICE (default Charon) so cached and model-spoken lines sound
+        like the same person. Record the choice in the progress log.
+
+P3.1  TTS renderer (apps/api/src/modules/realtime/tts.ts + test; start from the draft)
+  DO    interface TtsRenderer { id; voiceId; configured(); render(text, {tone}) }
+        GeminiTts: POST models/{model}:generateContent with
+          contents: [{role:"user", parts:[{text: <prompt>}]}],
+          generationConfig: { responseModalities: ["AUDIO"],
+                              speechConfig: { voiceConfig: { prebuiltVoiceConfig:
+                                              { voiceName } } } }
+        Parse inlineData / inline_data (both spellings), rate from mime "rate=NNNNN"
+        (default 24000). Typed errors TIMEOUT | RATE_LIMITED | HTTP | MALFORMED | NO_KEY.
+        Refuse empty text. Timeout 30 s (off the critical path).
+        TONE: main has per-session tone (EXTRA_NICE | NORMAL | MEAN). Apply it as a short
+        natural-language style direction before the text, in the format Google documents
+        for TTS style control. This risks the direction being SPOKEN or words being
+        altered -> P3.3 verification is mandatory, not optional.
+        FakeTts for tests. ttsFromEnv(env, apiKey): null when TTS_PRERENDER=off or no key.
+  TEST  Draft tests (request shape, verbatim text, both spellings, typed failures, empty
+        text) + tone appears in the request for EXTRA_NICE/MEAN and not for NORMAL.
+
+P3.2  Authored vocabulary and cache (apps/api/src/modules/realtime/utterance-audio.ts)
+  DO    authoredUtterances(scenario): opening script, repeat variants, every probe variant,
+        every fact value, all four hint levels, every follow-up delta. Deduplicated,
+        trimmed, stable order. Nothing else (no hidden tests, solution families, examples).
+        UtteranceAudioCache keyed `${renderer.id}::${tone}::${sha256(trimmed text)}`:
+          get(text, tone) -- synchronous, NEVER renders on the speaking path
+          ensure(text, tone) -- dedupes concurrent renders, rejects on failure
+          prewarm(scenario, tone) -- concurrency 3, never throws, returns a report
+          coverage(scenario, tone)
+  TEST  Draft tests against the real scenario file + tone keying (same text, two tones ->
+        two entries).
+
+P3.3  Render verification and leading-silence trim (NEW)
+  WHY   Style directions can be spoken aloud; TTS can change a word. A cached line is played
+        verbatim to candidates, so it must say exactly the authored words. And TTS output
+        often starts with 100-300 ms of silence -- free latency to remove.
+  DO    After rendering, before caching:
+          1. Trim leading samples below -45 dBFS down to 20 ms of lead-in; trim trailing
+             silence to 80 ms.
+          2. Verify: send the trimmed audio to a Gemini text model ("Transcribe verbatim;
+             output only the words") and compare word sequences after normalizing
+             (lowercase, strip punctuation, numbers as words). Accept only an exact match.
+             On mismatch: do NOT cache (the line falls back to the model path), log
+             { textHash, tone, reason } (never the text itself).
+        TTS_VERIFY=on by default; off only for local development.
+  TEST  Fake transcriber returning an extra "Say calmly" prefix -> rejected; exact ->
+        accepted; trim removes leading silence and keeps the first voiced sample.
+
+P3.4  Persistent render cache (optional, recommended)
+  DO    TTS_CACHE_DIR (default unset): write `<key>.pcm` + `<key>.json` (rate, voice,
+        model, tone, verified:true, createdAt) and read on startup/lookup. Script
+        `pnpm voice:prerender` renders + verifies every ACTIVE question x tone at deploy.
+        Object storage (Supabase storage) for multi-instance is a later step; note it in
+        PRODUCTION_TODO. OWNER DECISION on location before enabling in production.
+
+P3.5  Prewarm triggers
+  DO    - Session creation: prewarm the opening script and first repeat variant for the
+          session's tone (so even the FIRST utterance can be cached).
+        - POST /realtime-token (mint): prewarm the full vocabulary (not awaited).
+        - POST /voice-ready: prewarm again (idempotent; costs lookups only).
+        Log each PrewarmReport (counts, failures, elapsed) at info; never the text.
+
+P3.6  Server delivery (session/index.ts, main's version -- re-apply by hand)
+  DO    - deliver(): stop discarding the realized text (`void utterance`). Keep
+          authorizedUtterance: Map<sessionId, {utteranceId, text, tone}>; clear it when the
+          utterance completes (POST /voice-utterance-complete) and on session end.
+        - If cached: ACTION carries
+            audio: { head: base64(first 400 ms, even byte count), rate: number,
+                     tailFrom?: number }   // tailFrom absent when the head is the whole line
+          Name the field `audio` (one object). Contracts: optional, zod-validated.
+          The ACTION must never contain the text: add a test that serializes the ACTION and
+          asserts no authored string appears in it.
+        - GET /v1/interview-sessions/:id/voice-utterance-audio?utteranceId=&fromByte=
+            1. session exists and is live
+            2. utteranceId === authorizedUtterance.get(id).utteranceId
+            3. runtime.voiceContext().utteranceId === utteranceId (same field the tool
+               surface checks)
+            -> 403 NOT_AUTHORIZED otherwise; 404 NOT_RENDERED on a miss (client falls
+            back); fromByte rounded down to even and clamped; content-type
+            audio/L16;codec=pcm;rate=N; header x-utterance-sample-rate; cache-control
+            no-store. Owner-only access control + per-route rate limit.
+        - POST /voice-utterance-complete: parse the body {outcome: COMPLETED|INTERRUPTED}
+          (main's client already sends it); log it; clear authorizedUtterance.
+        - realtime/index.ts: export tts + utterance-audio.
+        - apps/api/src/index.ts: build the renderer with ttsFromEnv(process.env,
+          geminiApiKeyFromEnv()); pass to the session module; log `speech: <renderer id>`
+          or warn that pre-rendering is off.
+  TEST  Route: wrong id 403, after completion 403, miss 404, fromByte odd/negative/huge,
+        other user denied. deliver(): ACTION has audio when cached, none when not, never
+        text.
+
+P3.7  Client playback (voice-session.ts, main's version -- re-apply by hand)
+  DO    speak(authorization):
+          - If authorization.audio: decode head (atob) and schedule it SYNCHRONOUSLY
+            (before any await) via playback.enqueueAt(pcm, rate); speechSource = "CACHED";
+            speechInFlight = true; voice.noteLocalPlayback(true); status SPEAKING; ledger
+            firstSamplePlayed. Then, if tailFrom is set, stream the tail from the GET route
+            with an AbortController, converting chunks with toPcm16(bytes, carry) (odd-byte
+            carry across chunks). Completion = all bytes scheduled AND queue drained ->
+            reportSpeechOutcome("COMPLETED").
+          - Cached audio does NOT need the provider socket: never queue it as
+            pendingSpeech; play it even while the provider is reconnecting.
+          - Tail fetch fails AFTER the head played -> finish early, report COMPLETED; do not
+            fall back to the model (the gate believes it was delivered; restarting would
+            repeat the interviewer mid-sentence).
+          - No audio at all (no head, or head decode fails, and the tail fetch fails before
+            any byte) -> fall back to voice.requestSpeech(authorization), source =
+            "REALTIME_MODEL" (queue as pendingSpeech if the provider is not ready, as main
+            does).
+          - GoAway rotation (scheduleGoAwayRotation) and scheduleReconnect must NOT stop
+            CACHED speech; they still stop MODEL speech as today.
+          - Barge-in: abort the tail fetch, playback.stop(), report INTERRUPTED,
+            ledger.abandon().
+        realtime-voice.ts: SpeechAuthorization gains optional `audio`; add
+        noteLocalPlayback(active) which only sets the barge-in window flag (it can make the
+        interviewer stop, never speak; realtime-voice.test.ts must list it among methods
+        that cannot produce turnComplete).
+        page.tsx: pass msg.audio through to speak().
+  TEST  toPcm16 reassembles byte-exactly across every split point (draft test); head
+        scheduled in the same tick as speak(); tail failure after head -> COMPLETED, no
+        requestSpeech; no audio -> requestSpeech; GoAway during cached speech -> playback
+        continues.
+
+P3.8  Playback scheduler (playback.ts)
+  DO    enqueue()/enqueueAt(pcm, rate) return the scheduled startAt; onDrained option
+        (fired only on natural drain, never by stop()); release() guard from P2.7.
+        First-chunk lead: keep 60 ms by default; allow 30 ms when the AudioContext state is
+        "running" (cuts 30 ms off S'); make it a constructor option and test both.
+  TEST  playback.test.ts updated; drain fires once after the last buffer; stop() never
+        fires drain.
+
+P3.9  Commit: "feat(voice): pre-rendered authored speech with verified renders (V3/V3b)"
+      and add docs/adr/ADR-008-pre-rendered-authored-speech.md (start from the draft;
+      update: tone, verification, trim, inline head, persistent cache).
+
+
+==========================================================================================
+11. P4 -- PROSODIC TURN-END PREDICTION (V2)
+==========================================================================================
+
+Core idea: "I'll use a hash map." (finished) and "I'll use a hash map..." (continuing) are
+the same string at the pause but not the same audio. The finished one falls in pitch,
+lengthens its last syllable and trails off in energy; the continuing one holds a level pitch
+and stops at full volume. Measure that and let it move the silence window.
+
+P4.1  Predictor (apps/web/lib/turn-predictor.ts + test; reuse the draft as-is)
+        TurnEndPredictor interface { id; push(frame, sampleRate, atMs); estimate(atMs);
+        reset() }, NullTurnEndPredictor, ProsodicTurnEndPredictor:
+          - per 20 ms frame: dBFS and F0 by normalized autocorrelation on a frame decimated
+            to 8 kHz (DC removed; lags for 70-400 Hz; voiced if peak >= 0.32)
+          - estimate(atMs) reads the 800 ms tail ENDING at the backdated quiet onset:
+            terminal pitch slope (semitones/s, least squares), final lengthening (final
+            voiced run / median run), terminal energy slope (dB/s)
+          - score terms (PROSODY_WEIGHTS, exported, tunable):
+              falling <= -2 st/s: +0.9 * min(1, -slope/6)
+              rising  >= +3 st/s: +0.7 * min(1, slope/8)       (a question yields)
+              level   otherwise:  -1.0 * (1 - min(1, |slope|/3))
+              lengthening > 1.15: +0.8 * min(1, (r-1.15)/0.85)
+              energy <= -6 dB/s:  +0.6 * min(1, -decay/25)
+              energy >= -1 dB/s:  -0.7   (stopped at full volume)
+              probability = sigmoid(1.6 * score)
+          - confidence = clamp((voiced - 8) / 8) over voiced tail frames; 0 below 8 voiced
+            frames -> exactly "no evidence".
+        Measured cost on the other machine: ~0.05 ms per frame.
+  TEST  The 17 draft tests (falling -> finished, level -> continuing, rising -> yielded,
+        confidence 0 for short/silent/noise, semitone invariance across registers, slope
+        recovery within 2%).
+
+P4.2  VAD integration (apps/web/lib/vad.ts; reuse the draft as-is -- vad.ts is unchanged
+      on main)
+        new Vad(config, predictor | null); push(frame, atMs, sampleRate) feeds the predictor
+        every frame; SPEECH_END carries prosody = predictor.estimate(backdated onset); reset()
+        also closes with prosody and resets the predictor.
+  TEST  vad.test.ts: update constructor calls; SPEECH_END carries prosody when a predictor
+        is attached and not otherwise.
+
+P4.3  Transport (re-apply by hand on main's files)
+        realtime-voice.ts: option turnEndPredictor; SpeechBoundary.prosody on SPEECH_STOPPED
+          (including the forced-close paths: mute, disconnect).
+        voice-session.ts: pass `new ProsodicTurnEndPredictor()` unless
+          NEXT_PUBLIC_TURN_PREDICTOR=off (then null).
+        session-client.ts: speechBoundary(type, atMs, prosody?) puts
+          {probability, confidence, reason} on the SPEECH_STOPPED payload (it rides the
+          boundary event so it cannot arrive after the turn it describes).
+        page.tsx: forward boundary.prosody.
+
+P4.4  Contracts (reuse the draft as-is -- both files unchanged on main)
+        gate.ts Turn: prosody?: {probability 0..1, confidence 0..1, reason?}.
+        interview-state.ts InterviewPolicy: optional minTurnEndSilenceMsConfident,
+        settledTurnEndSilenceMsConfident, minTurnEndSilenceMsPatient,
+        settledTurnEndSilenceMsPatient.
+
+P4.5  Ramp (turn-completion.ts + policy.ts; reuse the draft as-is)
+        prosodyPull = confidence * (2 * probability - 1) in [-1, 1] (0 when absent or
+        confidence 0).
+        turnEndWindow(policy, prosody): pull > 0 lerps (min, settled) toward the confident
+        pair; pull < 0 toward the patient pair; a policy without the pairs ignores prosody.
+        silenceCeiling() and silenceRequiredFor() take prosody; the ramp's shape, the
+        mid-thought veto, the floor-yielded exemption and the "never exceeds text
+        probability" property are unchanged. Reasons name the direction, magnitude and cue.
+        Policy numbers (ms):
+                     clock (today)   confident   patient
+          LEARNING   1200 / 2400     250 / 600   1800 / 3200
+          MOCK       1500 / 2800     300 / 700   2200 / 3800
+          STRICT     2200 / 4000     500 / 1200  3000 / 5200
+        NOTE: sessions pin their policy at creation. New sessions get the pairs; existing
+        sessions keep behaving as before (V-b). Confirm how main pins policies (session
+        store) and that old pinned policies parse without the new fields.
+
+P4.6  Runtime (re-apply by hand on main's runtime.ts)
+        - prosodyOf(event): validate the SPEECH_STOPPED payload; drop non-finite or
+          out-of-range values (V-e); cap reason at 200 chars.
+        - lastProsody set on SPEECH_STOPPED, cleared on SPEECH_STARTED; in BOTH the live
+          ingest switch and restoreEvent(); OPTIONAL field in RuntimeCheckpoint.
+        - Pass prosody into estimateTurnCompletion, onto the Turn, into holdForSilence /
+          P2.3 / P2.4 required-silence computations.
+        - ACTION_DECIDED payload: prosodyProbability, prosodyConfidence, prosodyPull.
+        - Server kill switch: TURN_END_PROSODY=off -> the runtime ignores prosody entirely.
+        - Privacy: add "prosody" to deletion.ts IDENTIFYING_FIELDS (derived from the
+          person's voice; redact conservatively). Test redaction.
+  TEST  turn-completion-prosody.test.ts (16 draft tests: absence == old numbers exactly;
+        MOCK confident required = 576.9 ms; patient waits longer than clock; never exceeds
+        text probability across a sweep; mid-thought veto still wins; questions skip the
+        wait; legacy policy ignores prosody; reasons). The existing turn-completion.test.ts
+        must pass UNCHANGED -- if it does not, V-b is broken; fix that first.
+        Runtime: malformed prosody dropped; replay of logs without prosody identical;
+        checkpoint round-trip keeps lastProsody.
+
+P4.7  Commit: "feat(voice): prosodic turn-end prediction moves the silence window (V2)"
+
+
+==========================================================================================
+12. P5 -- SPECULATIVE CLASSIFICATION (V4)
+==========================================================================================
+
+WHY  After P4, a MOCK statement can be answered ~577 ms after the quiet onset, and a
+     question as soon as its transcript lands -- but only if the classifier has already run.
+     Otherwise C (300-800 ms) sits on the critical path (section 4).
+
+P5.1  Client: send the best current text at the boundary
+  DO    voice-session tracks the latest interimInputTranscription text of the current speech
+        segment. session-client.speechBoundary(SPEECH_STOPPED, ...) adds
+        `interimTranscript` (trimmed, capped 400 chars) to the payload when present.
+        Privacy: add "interimTranscript" to deletion.ts IDENTIFYING_FIELDS.
+
+P5.2  Runtime: speculate, never decide
+  DO    SpeculationCache: Map<normalizedText, Promise<TurnClassification>>, max 8 entries,
+        entries expire after 30 s.
+        normalize(t) = lowercase, collapse whitespace, strip trailing punctuation.
+        On SPEECH_STOPPED during LIVE ingest only (never in restoreEvent / replay):
+          text = joined(openTurn.segments) + " " + interimTranscript (dedupe the overlap
+          if the interim repeats the last final chunk)
+          if text is non-empty and the classifier is not the rule stub and its circuit
+          breaker is closed: cache.set(normalize(text), classifier.classify(...)) --
+          not awaited, errors swallowed, nothing appended, no state mutated.
+        On SPEECH_FINAL: text = assembled turn text (P2.2); if cache has normalize(text),
+        await that promise; else classify as today. Record classifierSource
+        "SPECULATIVE" | "DIRECT" on ACTION_DECIDED and in serverTiming.
+  WHY IT IS SAFE (V-a, V-c): the classification used is still classify(the logged final
+        text); speculation only changes when it was computed. ACTION_DECIDED already logs
+        intent and probabilities, so replay does not depend on it.
+  TEST  Fake classifier with 600 ms delay: final text == interim -> decision within 50 ms
+        of SPEECH_FINAL ingest (fake timers); different text -> DIRECT call; replay with
+        speculation on vs off -> identical decisions (stub classifier); restoreEvent never
+        calls the classifier.
+
+P5.3  Budget
+        Speculation adds at most one classifier call per candidate turn. Respect the
+        existing quota circuit breaker in gemini-classifier.ts; count speculative calls in
+        the classifier's metrics so the free-tier budget stays visible.
+
+P5.4  Optional rule fast path (OWNER DECISION, default OFF)
+        CLASSIFIER_RULE_FASTPATH=on: when ruleBasedClassifier returns EXPLICIT_QUESTION or
+        CLARIFICATION_REQUEST with high confidence (ends with "?" or a clear wh-question),
+        skip the model call. Evaluate its accuracy in sim before offering to turn it on.
+
+P5.5  Report the hit rate in review (classifierSource column) and the ledger.
+
+P5.6  Commit: "feat(voice): speculative classification at the speech boundary (V4)"
+
+
+==========================================================================================
+13. P6 -- VAD HANGOVER DECISION (V1)
+==========================================================================================
+
+WHY  Google documents >= 500 ms end-of-speech silence for manual activity detection;
+     shorter can fragment audio and degrade transcription. Main uses 350 ms. After P4, a
+     MOCK statement waits ~577 ms from the quiet onset anyway, so a longer hangover costs
+     nothing on statements -- but it delays activityEnd, and therefore T_f, on questions.
+
+DO   Make the hangover configurable: NEXT_PUBLIC_VAD_HANGOVER_MS (validated 250-800,
+     default 350) read in voice-session and passed to new Vad({endHangoverMs}).
+     Decide the default from P1 (Q2, Q4):
+       - 500 transcribes measurably better and T_f(500) - T_f(350) < ~100 ms -> default 500
+       - otherwise keep 350
+     Owner confirms. Record the data behind the choice in the progress log and ADR-009.
+TEST vad.test.ts with both values; SPEECH_END still backdated to the quiet onset.
+COMMIT "feat(voice): configurable VAD hangover, default chosen from measurements (V1)"
+
+
+==========================================================================================
+14. P7 -- PRESENCE AND BACKCHANNEL-AWARE BARGE-IN (V5 + V7)
+==========================================================================================
+
+P7.1  Room tone (apps/web/lib/room-tone.ts; reuse the draft as-is)
+        -54 dBFS (gain 0.002) twice-lowpassed noise, 8 s buffer, cross-faded loop seam,
+        1.5 s fade-in, started when voice connects, stopped on teardown. Not a backchannel;
+        says nothing. VoiceSession option roomTone (default true); env
+        NEXT_PUBLIC_ROOM_TONE=off. Connect it to the SAME output as the interviewer so
+        switchSpeaker() (setSinkId on main) moves it too -- check main's speaker-switch code.
+  TEST  fillWithFilteredNoise: finite values, seam continuity (|first - last| small),
+        RMS within expected range.
+
+P7.2  Gain stage (playback.ts + voice-session WebAudioSink; draft logic, re-applied)
+        AudioSink.setGain?(value, seconds); WebAudioSink routes every buffer through one
+        GainNode (ramps via cancelScheduledValues + linearRamp). PlaybackScheduler
+        duck() -> gain 0.025 (-32 dB) over 30 ms; restore() -> 1 over 30 ms; stop() resets
+        gain to 1 if ducked; a sink without setGain makes duck() == stop() (V-d).
+
+P7.3  Provisional barge-in (realtime-voice.ts)
+        On SPEECH_START while the interviewer is speaking:
+          - speechSource CACHED -> onBargeInProvisional(true) (duck); confirm with
+            onBargeIn() when (a) the candidate is still voiced 400 ms of AUDIO time later,
+            or (b) the interim transcript contains a yield word (wait, sorry, no, hold on,
+            actually, excuse me, stop); restore with onBargeInProvisional(false) when the
+            vocalization ends before 400 ms.
+          - speechSource MODEL -> confirm immediately, exactly as today. Reason: we send
+            activityStart to the provider at speech onset, which interrupts model
+            generation server-side; a ducked model utterance cannot be resumed.
+        Resolved per frame in pushAudio (no timers), cleared on turnComplete and on
+        speech completion. DEFAULT_BARGE_IN_CONFIRM_MS = 400 (75% of natural overlaps are
+        under 374 ms; modal ~96 ms).
+        Server: BARGE_IN (if the client emits it on main -- verify) only on CONFIRMED
+        barge-in; a continuer must not clear the held turn.
+  TEST  200 ms vocalization during cached speech -> duck then restore, audio continues;
+        600 ms -> cancel at 400 ms; yield word -> cancel immediately; model path -> cancel
+        immediately; stop() while ducked -> gain restored.
+
+P7.4  Commit: "feat(voice): room tone and duck-then-cancel barge-in (V5/V7)"
+
+
+==========================================================================================
+15. P8 -- SIMULATION, EVALUATION AND REVIEW INTEGRATION
+==========================================================================================
+
+P8.1  Timed sim trajectories (apps/api/src/sim/trajectories.ts + harness support for
+      SPEECH_STOPPED payloads with prosody and interimTranscript):
+        T1 long thinker, many 1.2-1.8 s pauses, LEVEL prosody -> 0 interruptions
+        T2 finished statements, FALLING prosody -> probe decided within the confident
+           window (MOCK <= 600 ms simulated from the quiet onset)
+        T3 direct question, no prosody -> answered without a silence hold
+        T4 fragmented transcript chunks -> one decision on the assembled turn
+        T5 clock skew +/-5 s -> no missed response
+        T6 prosody absent everywhere -> decisions identical to main's fixtures
+        T7 speculation hit and miss -> identical decisions
+P8.2  Eval thresholds: add simulated decision-latency expectations to the eval harness
+        (expectations.ts / metrics.ts): interruptions 0 on T1, T2 latency bound, T3 no
+        hold. Keep existing thresholds unchanged.
+P8.3  Review: TSV columns prosodyProbability, prosodyConfidence, prosodyPull,
+        classifierSource, speechSource, responseLatencyMs, largestStage; review latency
+        block (P1.6).
+P8.4  Commit: "test(voice): timed trajectories and latency thresholds"
+
+
+==========================================================================================
+16. P9 -- DOCUMENTATION AND RECORDS
+==========================================================================================
+
+  - docs/adr/ADR-008-pre-rendered-authored-speech.md (P3.9)
+  - docs/adr/ADR-009-turn-integrity-and-endpointing.md: turn assembly, speaking-now rule,
+    clock-domain silence, prosodic window, speculation, hangover data. Include the
+    "what was given up" and "what is not proven" sections like ADR-008.
+  - docs/adr/README.md: rows for ADR-008 and ADR-009 (ADR-006/007 are taken).
+  - .env.example: TTS_PRERENDER, TTS_MODEL, TTS_VERIFY, TTS_CACHE_DIR,
+    TURN_END_PROSODY, CLASSIFIER_RULE_FASTPATH, NEXT_PUBLIC_TURN_PREDICTOR,
+    NEXT_PUBLIC_VAD_HANGOVER_MS, NEXT_PUBLIC_ROOM_TONE -- each with a one-line comment and
+    its default. Run pnpm check:env afterwards.
+  - PRODUCTION_TODO.txt: a "V-series voice latency" entry with status and remaining
+    acceptance (P10), and the multi-instance render store follow-up.
+  - docs/voice/TUNING.txt: how to read `pnpm review` latency output and adjust
+    PROSODY_WEIGHTS and the policy pairs (copy section 17's procedure).
+  - Project docs: update claude/VOICE_BUILD_PROGRESS.md; write
+    claude/VOICE_BUILD_RESULT.md at the end (what shipped, numbers, what is open).
+  - Commit: "docs(voice): ADR-008/009, env, tuning guide, backlog"
+
+
+==========================================================================================
+17. P10 -- HUMAN ACCEPTANCE AND TUNING PROTOCOL (WITH THE OWNER)
+==========================================================================================
+
+Sessions (owner runs them; the implementing session prepares and reads the output)
+  S1  MOCK, headset microphone, quiet room, 30 min, NORMAL tone
+  S2  MOCK, laptop microphone, some background noise, 30 min
+  S3  LEARNING or STRICT, 20 min, EXTRA_NICE or MEAN tone (exercises tone renders)
+  Raw audio is not retained (I10). The ledger, decisions and transcripts are enough.
+
+After each session
+  1. pnpm review -- <session-id>  -> TSV + latency summary.
+  2. The owner marks every interviewer turn in the TSV `judgment` column:
+     OK | INTERRUPTED_ME | TOO_SLOW | WRONG_MOMENT | NO_ANSWER.
+  3. Compute: response latency p50/p95 by action and by source; material interruptions per
+     30 min; missed responses; speculation hit rate; cache coverage; backchannel
+     false-stops (owner tries 5 deliberate "mm-hm"s during interviewer speech).
+  4. Perceived naturalness 1-5 (owner, plus 2-4 other raters if available).
+
+Tuning procedure (change ONE thing at a time, re-run a session)
+  - Interruptions > target:
+      a. Read prosodyPull / reason on the offending turns.
+      b. If prosody said "finished" on mid-thought speech: raise the confident MIN by 100 ms
+         (MOCK 300 -> 400) or lower PROSODY_WEIGHTS.sharpness 1.6 -> 1.3.
+      c. If there was no prosody and it still interrupted: it is a gate/turn bug, not
+         tuning -- write a failing sim trajectory from the log first.
+  - p50 latency above target:
+      a. Read largestStage. transcriptFinalMs -> authorizationReceivedMs large = classifier
+         (check classifierSource hit rate) or the silence hold (check prosodyConfidence).
+      b. quietOnsetMs -> transcriptFinalMs large = T_f; revisit P6 and client coalescing.
+      c. authorizationReceivedMs -> firstSamplePlayedMs large = execution; check
+         speechSource (cache misses?) and leading silence in renders.
+  - Missed responses: always a defect; write a failing trajectory from the log.
+Go / no-go
+  GO when D1-D7 (section 1) hold across S1-S3. NO-GO with a written list of the failing
+  metrics, the log evidence and the next change.
+
+
+==========================================================================================
+18. P11 -- OPTIONAL: SMART-TURN-V3 BEHIND THE PREDICTOR SEAM
+==========================================================================================
+
+Only if P10 shows prosodic-v1 is the limiting factor (interruptions or low confidence on
+think-aloud speech).
+  - Add onnxruntime-web and the smart-turn-v3 int8 model (~8 MB, ~12 ms CPU inference,
+    23 languages; open weights). SmartTurnPredictor implements TurnEndPredictor with the
+    same estimate() shape; confidence from the model's margin.
+  - Load lazily after voice connects; fall back to prosodic-v1 until loaded.
+  - Compare offline on derived features only if audio retention is OFF (I10); an A/B on live
+    sessions with the ledger is the honest comparison.
+  - Separate commit and ADR addendum.
+
+
+==========================================================================================
+19. DELIBERATELY NOT BUILDING (AND WHY)
+==========================================================================================
+
+  - V6 continuers ("mm-hm" from the interviewer): the paper flags it as the one change that
+    can make the product worse if tuned badly; it needs a persona amendment distinguishing a
+    continuer from an acknowledgement. Revisit after P10 with the owner.
+  - Full-duplex models (Moshi class): the gate architecture depends on discrete, authorized
+    utterances.
+  - Letting the realtime model decide when to speak: forbidden by I1.
+  - Deciding on interim (unfinalized) transcripts: gate rule 2 stays. Speculation (P5) only
+    precomputes the classification.
+  - Switching to a newer "Live" model for capability: the paper's TTFA table shows newer is
+    not faster (Gemini 3.1 Flash Live ~2.99 s vs 2.5 Flash native audio ~0.63 s). Any model
+    change must be justified by measured TTFA, and with P3 most utterances no longer use the
+    model's voice at all.
+
+
+==========================================================================================
+20. CONFIGURATION, KILL SWITCHES AND ROLLBACK
+==========================================================================================
+
+  Server (apps/api)
+    TTS_PRERENDER=on|off     default on. off -> every line on the model path (== main).
+    TTS_MODEL                default gemini-2.5-flash-preview-tts (P3.0 may change).
+    TTS_VERIFY=on|off        default on. off only for local development.
+    TTS_CACHE_DIR            default unset (memory only).
+    TURN_END_PROSODY=on|off  default on. off -> prosody ignored (== main timing).
+    CLASSIFIER_RULE_FASTPATH default off.
+    Existing: REALTIME_MODEL, REALTIME_VOICE (also the TTS voice), GEMINI_API_KEY /
+    REALTIME_API_KEY, CLASSIFIER_MODEL.
+
+  Web (apps/web, NEXT_PUBLIC_* -- baked at build time)
+    NEXT_PUBLIC_TURN_PREDICTOR=on|off   default on.
+    NEXT_PUBLIC_VAD_HANGOVER_MS         default from P6 (350 or 500).
+    NEXT_PUBLIC_ROOM_TONE=on|off        default on.
+
+  Rollback order if something is wrong in production (each is one env change):
+    1. TURN_END_PROSODY=off         (interruptions)
+    2. TTS_PRERENDER=off            (wrong words / wrong voice)
+    3. NEXT_PUBLIC_ROOM_TONE=off    (audible hiss complaints)
+    4. Revert the phase commit.
+  Every switch returns behaviour to main's for that mechanism (V-b).
+
+
+==========================================================================================
+21. FILE-BY-FILE CHANGE INDEX
+==========================================================================================
+
+  packages/contracts/src/
+    session-event.ts        P1 VOICE_LATENCY_MEASURED; ACTION.serverTiming; P3 ACTION.audio
+    gate.ts                 P2 InterviewContext.candidateSpeakingNow; P4 Turn.prosody
+    interview-state.ts      P4 optional confident/patient policy pairs
+  apps/api/src/modules/orchestrator/
+    gate.ts                 P2 rule "candidate is still speaking"
+    runtime.ts              P1 timing deltas, issued ids; P2 openTurn, speaking-now,
+                            re-judge on stop, clock-safe silence, re-holds, authorized text;
+                            P4 prosody; P5 speculation; checkpoint fields
+    turn-completion.ts      P4 turnEndWindow, prosodyPull, prosody-aware ramp
+    policy.ts               P4 pairs per mode
+    gemini-classifier.ts    P5 speculative call accounting (breaker-aware)
+  apps/api/src/modules/realtime/
+    tts.ts (new)            P3
+    utterance-audio.ts (new) P3 (+ verification, trim, persistent cache)
+    tools.ts                P2 authorized text; optional get_hint_wording
+    persona.ts              P2 tool list (if the sixth tool is approved)
+    token.ts / declarations P2 tool declaration (if approved)
+    index.ts                exports
+  apps/api/src/modules/session/
+    index.ts                P1 /voice-latency; P3 deliver() audio head, /voice-utterance-audio,
+                            outcome parsing, prewarm triggers
+    review.ts               P1/P8 latency block and columns
+  apps/api/src/modules/privacy/deletion.ts   P4 "prosody", P5 "interimTranscript"
+  apps/api/src/eval/        voice-latency.ts (new), index.ts, expectations/metrics (P8)
+  apps/api/src/sim/         trajectories.ts, harness.ts (P2/P8)
+  apps/api/src/index.ts     P3 renderer wiring and boot log
+  apps/api/scripts/         live-transcription-probe.ts (P1), voice-prerender.ts (P3.4),
+                            session-review.ts (P1 summary)
+  apps/web/lib/
+    latency-ledger.ts (new) P1
+    turn-predictor.ts (new) P4
+    room-tone.ts (new)      P7
+    vad.ts                  P4 predictor; P6 hangover config
+    playback.ts             P2 release guard; P3 enqueueAt/startAt/onDrained/lead;
+                            P7 duck/restore/setGain
+    realtime-voice.ts       P2 acceptingModelAudio; P3 audio on authorization,
+                            noteLocalPlayback; P4 prosody on boundary; P7 provisional barge-in
+    voice-session.ts        P1 ledger; P3 cached playback, GoAway/reconnect rules;
+                            P4 predictor; P5 interim tracking; P6 hangover; P7 room tone, gain
+    session-client.ts       P4 prosody and P5 interimTranscript on SPEECH_STOPPED
+  apps/web/app/interview/[sessionId]/page.tsx   P3 audio passthrough; P4 prosody forward
+  root package.json         scripts voice:probe, voice:prerender
+  .env.example, docs/adr/*, docs/voice/TUNING.txt, PRODUCTION_TODO.txt (P9)
+
+
+==========================================================================================
+22. PORTING MAP: WHAT CAN BE REUSED FROM THE voiceWorks DRAFT
+==========================================================================================
+
+The draft (uncommitted on voiceWorks until P0.3 commits it) was written against e7f2dcb.
+
+COPY AS-IS (file unchanged on main, or new file), then apply the plan's additions:
+  apps/web/lib/latency-ledger.ts, latency-ledger.test.ts                 (P1, + chunk fields)
+  apps/web/lib/turn-predictor.ts, turn-predictor.test.ts                 (P4)
+  apps/web/lib/room-tone.ts                                              (P7, + test)
+  apps/web/lib/vad.ts                                                    (P4)
+  apps/web/lib/playback.ts                                               (P3/P7, + P2.7 check)
+  apps/api/src/modules/realtime/tts.ts, tts.test.ts                      (P3, + tone)
+  apps/api/src/modules/realtime/utterance-audio.ts, utterance-audio.test.ts (P3, + tone,
+                                                                          verify, trim)
+  apps/api/src/modules/orchestrator/turn-completion.ts                   (P4)
+  apps/api/src/modules/orchestrator/turn-completion-prosody.test.ts      (P4)
+  apps/api/src/modules/orchestrator/policy.ts                            (P4)
+  apps/api/src/eval/voice-latency.ts, voice-latency.test.ts              (P1)
+  packages/contracts/src/gate.ts, interview-state.ts                     (P4; P2 adds field)
+  docs/adr/ADR-008-pre-rendered-authored-speech.md                       (P3, update)
+  How: `git checkout voiceWorks -- <path>` on voice/low-latency after P0.3.
+
+RE-APPLY BY HAND (main changed these substantially; use the draft only as a diff guide):
+  apps/web/lib/voice-session.ts        (+507 lines on main: reconnect, GoAway, resumption,
+                                        outcome reporting, device recovery, finishInput)
+  apps/web/lib/realtime-voice.ts       (main: transcripts, interrupted, GoAway, resumption)
+  apps/web/lib/session-client.ts
+  apps/web/app/interview/[sessionId]/page.tsx
+  apps/api/src/modules/session/index.ts (main: ownership, deliverOwned, rate limits,
+                                         resumption route)
+  apps/api/src/modules/orchestrator/runtime.ts (main: checkpoint/restoreEvent split)
+  apps/api/src/index.ts, apps/api/src/modules/realtime/index.ts, apps/api/src/eval/index.ts,
+  packages/contracts/src/session-event.ts (main added RUNTIME_CHECKPOINT), docs/adr/README.md
+
+DO NOT PORT: anything in the draft's voice-session.ts that assumes the old single-socket
+lifecycle (no reconnect, no pendingSpeech, no outcome reporting).
+
+
+==========================================================================================
+23. TEST MATRIX
+==========================================================================================
+
+  Unit (web): latency-ledger, turn-predictor, room-tone, vad (+prosody, hangover),
+              playback (enqueueAt, drain, release guard, duck/restore, lead),
+              realtime-voice (acceptingModelAudio, noteLocalPlayback cannot speak,
+              provisional barge-in, prosody on boundary), voice-session helpers (toPcm16,
+              base64ToBytes), session-client (payload shapes)
+  Unit (api): tts, utterance-audio (+verify, trim, tone), turn-completion (+prosody),
+              gate (speaking-now rule), runtime (openTurn, re-judge on stop, clock skew,
+              re-holds, authorized text, prosody validation, speculation, checkpoint
+              round-trip, issued ids), tools (authorized text, hint tool), session routes
+              (voice-latency, voice-utterance-audio, outcome), deliver() (audio head, no
+              text), deletion (prosody, interimTranscript redacted), review (latency)
+  Contracts:  invariants.test.ts, client-events.test.ts unchanged and green
+  Sim:        T1-T7 (section 15) + all existing trajectories
+  Replay:     replay.test.ts + new: old-log fixture identical; speculation on/off identical
+  Eval:       pnpm eval thresholds (+ latency expectations)
+  Build:      pnpm build, check:bundle, check:sorted, check:env
+  Manual:     one dev run with the probe (P1.7) and one short live session per phase from P3
+  Human:      P10 sessions S1-S3
+
+
+==========================================================================================
+24. RISK REGISTER
+==========================================================================================
+
+  R1  T_f (provider final-transcript delay) is large (> 600 ms).
+      Impact: questions stay above 1 s regardless of this plan.
+      Mitigation: measured in P1 before building; hangover and coalescing choices in
+      P2.2/P6; last resort is a separate streaming STT for finals (new ADR, out of scope).
+  R2  Prosody weights misjudge think-aloud speech -> interruptions.
+      Mitigation: confidence gating, patient pair, speaking-now rule, kill switch
+      TURN_END_PROSODY=off, P10 tuning, P11 smart-turn-v3.
+  R3  TTS speaks the style direction or alters words.
+      Mitigation: P3.3 verification (exact match or not cached), NORMAL tone without a
+      direction, spot listening in P10.
+  R4  Cached voice differs noticeably from the model voice -> speaker seems to change.
+      Mitigation: same voice name; model path becomes rare (misses, ACKNOWLEDGE_BRIEFLY,
+      END_INTERVIEW). If still jarring, route END_INTERVIEW through an authored closing line.
+  R5  Multi-instance deployments: runtime ownership can move a session to a cold cache.
+      Mitigation: falls back to the model (correct, slower); persistent render store
+      follow-up (P3.4).
+  R6  Speculation spends classifier quota.
+      Mitigation: <= 1 extra call per turn, breaker-aware, visible in metrics.
+  R7  Sorted-line corruption of files during the work.
+      Mitigation: check:sorted after every write batch and before every commit.
+  R8  Replay drift from new live-only mechanisms.
+      Mitigation: V-a; SILENCE_ELAPSED logs silenceMs; speculation never in restore;
+      replay tests for old and new logs.
+  R9  Autoplay / AudioContext suspended -> first playback delayed.
+      Mitigation: voice starts from a user click on main; assert context.state before
+      scheduling and resume() if needed; ledger shows it.
+  R10 Clock skew handling changes existing timing tests.
+      Mitigation: keep the old formula for logs without silenceMs; update tests only where
+      the new behaviour is the intended fix, with a comment.
+
+
+==========================================================================================
+25. GIT, COMMITS AND DELIVERY
+==========================================================================================
+
+  Branch: voice/low-latency, cut from main (P0.4). One commit per phase (messages given in
+  each phase), each green on its own. End every commit message with the attribution lines
+  the session's system prompt specifies at that time.
+
+  Route A (Linux clone on the owner's machine):
+    work in $HOME/ml-work; when a phase is green:
+      git -C "$HOME/ml-work" push "$HOME/mnt/Master_Leeter" voice/low-latency
+    (pushing a branch that is not checked out into the owner's repo is safe).
+  Route B (cloud): git bundle create voice-low-latency.bundle main..voice/low-latency,
+    SendUserFile + device_commit_files into the repo folder as
+    claude-handoff/voice-low-latency.bundle; the owner runs
+      git fetch claude-handoff/voice-low-latency.bundle voice/low-latency:voice/low-latency
+  Never push to origin or open a PR unless the owner says so; when asked, write
+  PR_DESCRIPTION.md (phases, numbers, what is not verified) as the PR body.
+
+
+==========================================================================================
+26. APPENDIX A -- KEY NUMBERS
+==========================================================================================
+
+  Human turn-taking (Levinson & Torreira 2015; Stivers et al. 2009; Brady 1968)
+    modal gap ~200 ms; 51-55% of transitions < 200 ms
+    telephone mean gaps 345-456 ms, medians 264-347 ms
+    overlap modal ~96 ms; 75% of overlaps < 374 ms
+    speech planning ~600 ms for one word, ~1500 ms for a sentence (humans predict turn ends)
+  Provider / main
+    ADR-001 Gemini native-audio time to first audio: p50 1044 ms, p95 1638 ms (n=20)
+    Artificial Analysis TTFA: Gemini 2.5 Flash Native Audio 0.63 s; GPT-Realtime-1.5 0.81 s;
+      Gemini 3.1 Flash Live High 2.99 s
+    Google: manual VAD end-of-speech silence >= 500 ms recommended
+    VAD endHangoverMs 350; playback lead 60 ms; HELD_FLOOR_CEILING 0.35
+    Policy thresholds: LEARNING 0.75, MOCK 0.80, STRICT 0.88
+  Derived on main (paper): MOCK probe after think-aloud 3.9-5.2 s; direct question 1.7-3.3 s
+  Backchannels vs interruptions: ~7:1 (Deepgram production data)
+  Turn detectors for reference: smart-turn-v3 8 MB int8, ~12 ms CPU; LiveKit v1 9.9% false
+    cutoff at 300 ms; Deepgram Flux EagerEndOfTurn 150-250 ms early
+
+
+==========================================================================================
+27. APPENDIX B -- FORMULAS
+==========================================================================================
+
+  Silence ramp (turn-completion.ts):
+    ceiling(s) = 0.35                         if s <= min
+               = 1                            if s >= settled
+               = 0.35 + t * 0.65, t = (s - min) / (settled - min)   otherwise
+    required(threshold) = min + ((threshold - 0.35) / 0.65) * (settled - min)
+
+  Prosody:
+    pull = confidence * (2 * probability - 1)                 in [-1, 1]
+    pull > 0: min' = lerp(min, minConfident, pull); settled' = lerp(settled, settledConfident, pull)
+    pull < 0: min' = lerp(min, minPatient, -pull);  settled' = lerp(settled, settledPatient, -pull)
+
+  Required silence (ms):          clock      confident (pull=1)   patient (pull=-1)
+    LEARNING (0.75, t=0.6154)     1938.5      465.4                2661.5
+    MOCK     (0.80, t=0.6923)     2400.0      576.9                3307.7
+    STRICT   (0.88, t=0.8154)     3667.7     1070.8                4793.8
+
+  Clock-safe silence (P2.4):
+    silenceAtFinal   = finalOccurredAt(client) - speechStoppedAt(client)
+    silenceNow       = silenceAtFinal + (serverMonoNow - finalReceivedServerMono)
+    wait             = required - silenceNow + 25
+
+  Audio head: headBytes = floor(rate * 0.400) * 2   (24 kHz -> 19,200 bytes, ~26 KB base64)
+  First-sample wall time: Date.now() + (startAt - ctx.currentTime) * 1000 + ctx.outputLatency * 1000
+
+
+==========================================================================================
+28. APPENDIX C -- PROGRESS LOG TEMPLATE (claude/VOICE_BUILD_PROGRESS.md)
+==========================================================================================
+
+  # Voice build progress
+  Plan: VOICE_BUILD_PLAN.txt (2026-09-24). Branch: voice/low-latency. Route: A | B.
+
+  ## Baseline (P0)
+  main commit:            ______
+  typecheck / api / web / contracts / sim / eval / build:  __ / __ / __ / __ / __ / __ / __
+  stale tests repaired:   (list with reasons, or "none")
+
+  ## P1 measurements
+  Q1 chunks per segment:  ______
+  Q2 T_f p50/p95 @350:    ____ / ____    @500: ____ / ____
+  Q3 finals before activityEnd: yes/no
+  Q4 accuracy 350 vs 500: ______
+
+  ## Phases
+  | Phase | Commit | Tests (api/web/contracts/sim) | Deviations from plan |
+  |-------|--------|-------------------------------|----------------------|
+  | P0    |        |                               |                      |
+  | P1    |        |                               |                      |
+  | ...   |        |                               |                      |
+
+  ## Owner decisions
+  - P2.5 hint tool: ______   - P3.4 cache location: ______
+  - P5.4 rule fast path: ______   - P6 hangover: ______
+
+  ## P10 acceptance
+  | Session | p50/p95 latency | interruptions/30min | missed | naturalness | notes |
+
+  ## Open issues
+
+END OF PLAN
