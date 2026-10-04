@@ -1,0 +1,62 @@
+MASTER LEETER — FREE CAPPED BETA COMPLETION CHECKLIST
+Updated: 2026-10-04
+Baseline: main includes voice/low-latency (PR #8). This checklist supersedes
+historical branch handoff notes; detailed evidence remains in
+docs/PRODUCTION_REMAINING.md and claude/VOICE_BUILD_PROGRESS.md.
+
+SCOPE
+  Free, capped beta; model-estimated grades are labeled as estimates.
+  No required Run button, paid billing, or code-execution sandbox at this gate.
+  Supabase is the hosted authentication/database backend. Invite beta uses ONE
+  API replica until owner-routed runtime input recovery is built and verified.
+
+CODE ITERATION — can be done in this repository
+[~] C01 New realtime voice credentials are now bounded by the interview's
+        remaining lifetime, with a 30-second final-input drain, and mints are
+        refused after the deadline. Existing reconnects and the mint cap remain.
+        Fake-provider request verification passed; live Gemini and browser
+        behavior must be checked before claiming a hard cost cap. An already
+        issued credential cannot be shortened when an interview ends early.
+        Provider field reference: https://ai.google.dev/api/live
+[ ] C02 Complete the timed voice simulation/evaluation coverage in P8 of
+        VOICE_BUILD_PLAN.txt (assigned to a separate AI per owner request).
+[ ] C03 Audit any defects revealed by a real voice session; fix each with a
+        reproducible event trace and rerun the existing checks.
+[ ] C04 If more than one API replica becomes a launch requirement, implement
+        owner-routed commands and safe reconciliation of unfinished runtime
+        inputs before removing the current single-replica guard.
+[ ] C05 Re-run typecheck, tests, sim, eval, production build, sorted/env/bundle
+        checks, and release preflight on the final merged release commit.
+
+SUPABASE AND HOSTED STAGING — requires live project access/owner setup
+[ ] S01 Obtain the project's working database and migration-owner connection
+        strings; apply numbered migrations and import reviewed private content.
+        Verify private-table isolation with release:preflight --database.
+[ ] S02 Verify real Supabase sign-in, token expiry/revocation, two-account
+        ownership, export/deletion, and recovery after an API restart.
+[ ] S03 Provision protected Vercel + single-replica API staging with exact
+        origins, domain, provider quotas, alerts, and managed backup/PITR.
+[ ] S04 Run hosted smoke, database checks, backup/isolated restore, rollback,
+        deadline/disconnect, and provider-outage drills; retain evidence.
+
+HUMAN ACCEPTANCE — cannot be closed by a green build
+[ ] H01 Run P10's three microphone sessions (quiet headset, noisy laptop,
+        alternate tone). Review latency p50/p95 AND material interruptions,
+        unanswered questions, cached-word fidelity, and five backchannels.
+[ ] H02 Run at least one full 45-minute session with reconnect, device change,
+        final-transcript drain, report generation, and session resume.
+[ ] H03 Review grade calibration, scenario correctness/oral wording, privacy
+        copy, screen-reader/contrast/device behavior, and support response.
+[ ] H04 Invite 5–10 users; observe ten full interviews before G1 sign-off.
+        Expand and review the question bank before wider public-beta cohorts.
+
+RELEASE GATES
+[ ] G0 Protected staging is authenticated, persistent, observable, and restorable.
+[ ] G1 Invite beta meets P01–P27 plus ten observed full interviews.
+[ ] G2 Public beta meets capacity/cost/quality targets and two cohorts.
+
+CURRENT ITERATION LOG
+  2026-10-04: checklist created. C01 code implemented on
+  codex-release-completion. Token expiry and new-session cutoff were verified
+  against a fake provider without sending a real credential. No cloud or human
+  acceptance is implied by the local checks.

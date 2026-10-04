@@ -93,6 +93,7 @@ export const DEFAULT_MAX_MINTS_PER_SESSION = 12;
 
 export type RealtimeTokenErrorKind =
   | "NOT_CONFIGURED"
+  | "DEADLINE_EXPIRED"
   | "RATE_LIMITED"
   | "PROVIDER_ERROR"
   | "TIMEOUT"
@@ -139,7 +140,16 @@ export interface RealtimeTokenMinter {
   /** Stable identity for the boot log, mirroring `IntentClassifier.id`. */
   readonly id: string;
   configured(): boolean;
-  mint(context?: { tone?: InterviewerTone; resumptionHandle?: string }): Promise<RealtimeCredential>;
+  mint(context?: RealtimeTokenMintContext): Promise<RealtimeCredential>;
+}
+
+export interface RealtimeTokenMintContext {
+  tone?: InterviewerTone;
+  resumptionHandle?: string;
+  /** Absolute interview boundary; an existing session may need a short final-input drain. */
+  expireNoLaterThanMs?: number;
+  /** New provider connections must start before the interview clock runs out. */
+  newSessionNoLaterThanMs?: number;
 }
 
 export interface GeminiTokenMinterOptions {
@@ -240,6 +250,14 @@ export class GeminiTokenMinter implements RealtimeTokenMinter {
     this.now = opts.now ?? (() => Date.now());
     this.ttlSeconds = opts.ttlSeconds ?? DEFAULT_TTL_SECONDS;
     this.startWindowSeconds = opts.startWindowSeconds ?? DEFAULT_START_WINDOW_SECONDS;
+    // The provider rejects timestamps 20 hours or more into the future.
+    // Reject malformed deployment values at boot instead of misreporting a
+    // broken TTL as an expired interview during a candidate's session.
+    if (![this.ttlSeconds, this.startWindowSeconds].every(
+      (seconds) => Number.isFinite(seconds) && seconds > 0 && seconds < 72_000,
+    )) {
+      throw new RangeError("realtime credential lifetimes must be positive and under 20 hours");
+    }
     this.timeoutMs = opts.requestTimeoutMs ?? 5_000;
     this.id = `gemini-live:${opts.model}@v1`;
   }
@@ -248,14 +266,24 @@ export class GeminiTokenMinter implements RealtimeTokenMinter {
     return Boolean(this.opts.apiKey) && Boolean(this.opts.model);
   }
 
-  async mint(context: { tone?: InterviewerTone; resumptionHandle?: string } = {}): Promise<RealtimeCredential> {
+  async mint(context: RealtimeTokenMintContext = {}): Promise<RealtimeCredential> {
     if (!this.opts.apiKey) {
       throw new RealtimeTokenError("no realtime API key configured", "NOT_CONFIGURED");
     }
 
     const nowMs = this.now();
-    const expiresAt = new Date(nowMs + this.ttlSeconds * 1_000).toISOString();
-    const sessionExpiresAt = new Date(nowMs + this.startWindowSeconds * 1_000).toISOString();
+    const expireMs = Math.min(nowMs + this.ttlSeconds * 1_000, context.expireNoLaterThanMs ?? Infinity);
+    const newSessionExpireMs = Math.min(
+      nowMs + this.startWindowSeconds * 1_000,
+      context.newSessionNoLaterThanMs ?? Infinity,
+      expireMs,
+    );
+    if (!Number.isFinite(expireMs) || !Number.isFinite(newSessionExpireMs) ||
+        expireMs <= nowMs || newSessionExpireMs <= nowMs) {
+      throw new RealtimeTokenError("interview voice deadline has passed", "DEADLINE_EXPIRED");
+    }
+    const expiresAt = new Date(expireMs).toISOString();
+    const sessionExpiresAt = new Date(newSessionExpireMs).toISOString();
 
     const body = {
       // Single use. A token that opens two sessions is a token that survives

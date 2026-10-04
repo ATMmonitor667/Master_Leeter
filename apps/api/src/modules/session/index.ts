@@ -966,6 +966,16 @@ export async function registerSessionModule(
     if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
     if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
 
+    // A token minted near the deadline must not authorize a new provider
+    // connection after the interview clock expires. The short tail is for the
+    // final candidate transcript already in flight, not another speaking turn.
+    const deadlineMs = session.startedAt
+      ? Date.parse(session.startedAt) + (session.expectedSeconds + session.pausedSeconds) * 1_000
+      : null;
+    if (deadlineMs !== null && (!Number.isFinite(deadlineMs) || deadlineMs <= Date.now())) {
+      return reply.code(409).send({ error: "SESSION_TIME_EXPIRED" });
+    }
+
     if (!opts.realtimeTokenMinter) {
       // Same posture as the runner: a missing capability is a 503 that explains
       // itself, not a boot failure and not a silent stub.
@@ -1000,7 +1010,20 @@ export async function registerSessionModule(
       const credential = await opts.realtimeTokenMinter.mint({
         tone: session.interviewerTone ?? "NORMAL",
         ...(storedHandle ? { resumptionHandle: storedHandle } : {}),
+        ...(deadlineMs !== null ? {
+          expireNoLaterThanMs: deadlineMs + 30_000,
+          newSessionNoLaterThanMs: deadlineMs,
+        } : {}),
       });
+      // Minting awaits the provider. The session may end while that request is
+      // in flight, so do not hand the credential to a browser based on a stale
+      // pre-mint snapshot.
+      const currentSession = await store.get(id);
+      if (!currentSession || currentSession.endedAt ||
+          (deadlineMs !== null && deadlineMs <= Date.now())) {
+        realtimeCircuit.release();
+        return reply.code(409).send({ error: "SESSION_TIME_EXPIRED" });
+      }
       realtimeCircuit.success();
 
       app.log.info(
@@ -1044,6 +1067,11 @@ export async function registerSessionModule(
       return reply.code(201).send(credential);
     } catch (err) {
       const kind = err instanceof RealtimeTokenError ? err.kind : "PROVIDER_ERROR";
+
+      if (kind === "DEADLINE_EXPIRED") {
+        realtimeCircuit.release();
+        return reply.code(409).send({ error: "SESSION_TIME_EXPIRED" });
+      }
 
       realtimeCircuit.failure(kind === "RATE_LIMITED");
       if (realtimeCircuit.state() === "OPEN") opts.onRealtimeCircuitOpen?.(id, kind);
