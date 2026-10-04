@@ -19,6 +19,7 @@ Node 22+ is required. Configure both API and browser public auth settings for
 protected use; live Supabase and browser acceptance remain pending. The current
 release artifact and environment inventory are in
 [production configuration](docs/PRODUCTION_CONFIGURATION.md).
+For a local run, use the [local development guide](docs/LOCAL_DEVELOPMENT.md).
 
 Practice coding interviews the way they actually happen: you hear the problem spoken aloud, think out loud, write code, and run tests — while an AI interviewer watches and **speaks only when it has something authorized to say**. Silence is a system action, not a prompt suggestion.
 

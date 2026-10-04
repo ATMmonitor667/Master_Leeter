@@ -1148,16 +1148,26 @@ export async function registerSessionModule(
     const runtime = runtimes.get(id);
     if (!runtime) return reply.code(409).send({ error: "NO_LIVE_SESSION" });
 
+    const parsed = z.object({
+      // Optional only for clients already connected during a rolling deploy.
+      utteranceId: z.string().min(1).max(200).optional(),
+      outcome: z.enum(["COMPLETED", "INTERRUPTED"]).default("COMPLETED"),
+    }).safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_SPEECH_OUTCOME" });
+    const currentUtteranceId = runtime.voiceContext().utteranceId;
+    if (!currentUtteranceId ||
+        (parsed.data.utteranceId && parsed.data.utteranceId !== currentUtteranceId)) {
+      return reply.code(409).send({ error: "STALE_SPEECH_OUTCOME" });
+    }
+
     // P3: clear the authorized utterance so the GET audio route returns 403
     // for any subsequent request after this turn is done.
     const completed = authorizedUtterances.get(id);
-    if (completed) {
+    if (completed?.utteranceId === currentUtteranceId) {
       authorizedUtterances.delete(id);
     }
 
-    const body = (req.body ?? {}) as { outcome?: string };
-    const outcome = body.outcome === "INTERRUPTED" ? "INTERRUPTED" : "COMPLETED";
-    app.log.info({ sessionId: id, utteranceId: completed?.utteranceId, outcome }, "speech outcome reported");
+    app.log.info({ sessionId: id, utteranceId: currentUtteranceId, outcome: parsed.data.outcome }, "speech outcome reported");
 
     await runtime.markSpeechFinished();
     return reply.send({ ok: true });

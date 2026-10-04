@@ -177,6 +177,7 @@ export class VoiceSession {
   private activeSinkId: string | undefined;
   private deviceChangeListener: (() => void) | null = null;
   private speechInFlight = false;
+  private activeUtteranceId: string | null = null;
   private modelAudioStarted = false;
   private speechSource: "CACHED" | "MODEL" | null = null;
   private cachedAbort: AbortController | null = null;
@@ -514,7 +515,9 @@ export class VoiceSession {
 
   private reportSpeechOutcome(outcome: "COMPLETED" | "INTERRUPTED"): void {
     if (!this.speechInFlight) return;
+    const utteranceId = this.activeUtteranceId;
     this.speechInFlight = false;
+    this.activeUtteranceId = null;
     this.speechSource = null;
     this.modelAudioStarted = false;
     this.voice?.noteLocalPlayback(false);
@@ -523,7 +526,7 @@ export class VoiceSession {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ outcome }),
+        body: JSON.stringify({ outcome, utteranceId }),
         keepalive: true,
       },
     ).catch(() => {});
@@ -553,6 +556,7 @@ export class VoiceSession {
     serverTiming?: { decisionMs?: number; classifierMs?: number; classifierSource?: string },
   ): void {
     const now = Date.now();
+    this.activeUtteranceId = authorization.utteranceId;
     const opened = this.ledger.authorized(
       authorization.utteranceId,
       authorization.action,

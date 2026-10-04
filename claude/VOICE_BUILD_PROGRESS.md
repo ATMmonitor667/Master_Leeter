@@ -34,3 +34,19 @@ P1 provider probe (six generic TTS utterances, both hangovers, one run):
 Cached-speech word fidelity, microphone behavior, and the plan's end-to-end
 p50/p95 target remain unmeasured. `TURN_END_PROSODY=off` or
 `NEXT_PUBLIC_TURN_PREDICTOR=off` restores the clock-only turn window.
+
+## 2026-10-03 code review and local smoke check
+
+- Speech completion reports now carry the authorized utterance ID. The API
+  rejects a report for an older utterance before closing the current speech
+  authorization; outcome-only reports remain accepted for connected older
+  clients during rollout.
+- Monaco is served from the web app's own origin, so the code editor loads under
+  the existing content security policy. Its assets are prepared by the web
+  dev/build scripts and excluded from Git.
+- Local file-bank, in-memory API mode returned HTTP 200 for health and the
+  scenario catalog; the web home page and Monaco loader asset also returned
+  HTTP 200. This does not establish hosted Supabase or microphone behavior.
+- Typecheck, 960 existing tests (16 database integration tests skipped), 32
+  simulation tests, evaluation thresholds, production build, sorted-file,
+  environment and bundle checks passed. No test files were added.
