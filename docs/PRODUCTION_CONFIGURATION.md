@@ -62,6 +62,15 @@ name invalid variables and never include their values.
 `ALLOW_INSECURE_DEV=1`, file questions, HTTP origins, in-memory storage and
 development authentication are rejected when `NODE_ENV=production`.
 
+The free beta currently permits one hosted API replica. On startup, the API
+holds a session-scoped PostgreSQL advisory lock until shutdown. A second replica
+fails with `API_REPLICA_ALREADY_ACTIVE`; readiness also fails if the held
+connection is lost. Use a direct or session-pooler database connection, not a
+transaction pooler that cannot preserve session locks. During replacement,
+allow the old instance to release its lock before starting the new one. This
+guard must be redesigned alongside durable cross-replica command routing and
+safe recovery before enabling multiple hosted API instances.
+
 Migration 012 adds a database backstop for one active interview per account and
 atomic rate buckets shared by every API replica. New-session admission takes a
 transaction-scoped Supabase advisory lock, then checks the process kill switch,

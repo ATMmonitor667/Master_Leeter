@@ -13,6 +13,7 @@ interface Counts {
   recovered_interviews: string;
   support_incidents: string;
   pending_deletions: string;
+  pending_runtime_inputs: string;
   mean_report_seconds: string | null;
 }
 
@@ -58,6 +59,8 @@ async function main() {
         (SELECT count(*) FROM event_flags WHERE disconnected AND recovered)::text AS recovered_interviews,
         (SELECT count(*) FROM public.support_incidents WHERE created_at >= now() - ($1::integer * interval '1 day'))::text AS support_incidents,
         (SELECT count(*) FROM public.privacy_deletion_requests WHERE completed_at IS NULL)::text AS pending_deletions,
+        (SELECT count(*) FROM public.runtime_inputs i JOIN public.interview_sessions s ON s.id=i.session_id
+          WHERE i.completed_at IS NULL AND s.deleted_at IS NULL AND s.ended_at IS NULL)::text AS pending_runtime_inputs,
         (SELECT round(avg(extract(epoch FROM (r.completed_at-r.created_at)))::numeric,2)::text
           FROM public.session_reports r JOIN recent s ON s.id=r.session_id
           WHERE r.status='READY' AND r.completed_at IS NOT NULL) AS mean_report_seconds`, [days]);
@@ -84,6 +87,7 @@ async function main() {
         recoveredInterviews: number(row.recovered_interviews),
         supportIncidents: number(row.support_incidents),
         pendingDeletions: number(row.pending_deletions),
+        pendingRuntimeInputs: number(row.pending_runtime_inputs),
       },
       ratesPercent: {
         voiceActivation: rate(voice, attempted),

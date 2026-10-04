@@ -51,6 +51,7 @@ Configure the host/log service to alert the operator on these structured events:
 | `report evaluation attempts exhausted` | Webhook after the final attempt; inspect provider quota/model/schema and the cited opaque session ID |
 | `realtime token mint failed` or voice circuit `OPEN` | Webhook when the circuit opens; inspect Gemini quota and account/model availability |
 | `automatic session completion failed` | Inspect lifecycle/storage before deadlines accumulate |
+| `SESSION_COMPLETION_UNAVAILABLE` | Webhook on first and every twelfth failed deadline-discovery sweep; inspect database and API connectivity before deadlines accumulate |
 | `shutdown failed` | Verify the previous instance released ownership and report jobs |
 
 The escalation contact and log retention remain hosting decisions and must be

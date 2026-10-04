@@ -11,7 +11,12 @@ import { PgPreparationStore } from "./modules/preparation/pg-store.js";
 import { PgRateLimitStore, type SessionAdmissionPolicy } from "./modules/admission/index.js";
 import { PgSupportIncidentStore } from "./modules/support/index.js";
 
-export interface StorageDatabase extends TransactionPool { close(): Promise<void> }
+export interface StorageDatabase extends TransactionPool {
+  close(): Promise<void>;
+  acquireProcessLease?(): Promise<void>;
+  checkProcessLease?(): Promise<void>;
+  isProcessLeaseHealthy?(): boolean;
+}
 
 /** Check each required privilege separately: PostgreSQL comma lists mean ANY. */
 const tableRequirements = [
@@ -63,15 +68,21 @@ export async function createSupabaseStorage(
   connectionString: string,
   createDatabase: (url: string) => StorageDatabase = (url) => new PgDatabase(url),
   admission?: SessionAdmissionPolicy,
+  enforceSingleReplica = false,
 ) {
   const db = createDatabase(connectionString);
   try {
     await assertDurableSchema(db);
+    if (enforceSingleReplica) {
+      if (!db.acquireProcessLease || !db.checkProcessLease || !db.isProcessLeaseHealthy) throw new Error("API_REPLICA_LEASE_UNAVAILABLE");
+      await db.acquireProcessLease();
+    }
   } catch (error) {
     try { await db.close(); } catch { /* Preserve readiness failure. */ }
     // Driver errors can include host/connection details. Expose only safe codes.
-    throw new Error(error instanceof Error && error.message === "STORAGE_SCHEMA_INCOMPLETE"
-      ? "STORAGE_SCHEMA_INCOMPLETE" : "STORAGE_UNAVAILABLE");
+    const safe = error instanceof Error ? error.message : "";
+    throw new Error(["STORAGE_SCHEMA_INCOMPLETE", "API_REPLICA_ALREADY_ACTIVE", "API_REPLICA_LEASE_UNAVAILABLE"].includes(safe)
+      ? safe : "STORAGE_UNAVAILABLE");
   }
   let closing: Promise<void> | undefined;
   return {
@@ -87,8 +98,10 @@ export async function createSupabaseStorage(
     preparationStore: new PgPreparationStore(db),
     rateLimiter: new PgRateLimitStore(db),
     storageReadiness: async () => {
+      if (enforceSingleReplica) await db.checkProcessLease!();
       await db.query("SELECT 1 AS ready");
     },
+    writesPermitted: () => !enforceSingleReplica || db.isProcessLeaseHealthy!(),
     closeStorage: () => closing ??= db.close(),
   };
 }

@@ -27,6 +27,9 @@ async function main() {
     try {
       await client.query("BEGIN READ ONLY");
       await assertDurableSchema(client);
+      const browserRoles = await client.query<{ present: boolean }>(`SELECT
+        count(*) = 2 AS present FROM pg_roles WHERE rolname IN ('anon','authenticated')`);
+      if (browserRoles.rows[0]?.present !== true) throw new Error("SUPABASE_BROWSER_ROLES_MISSING");
       // Check effective privileges as well as RLS. An accidental table grant
       // can expose data through a later permissive policy or view.
       const tableAccess = await client.query<{ exposed: boolean }>(`SELECT EXISTS (
@@ -52,12 +55,18 @@ async function main() {
           AND proc.prosecdef AND has_function_privilege(role.oid,proc.oid,'EXECUTE')
       ) AS exposed`);
       if (functions.rows[0]?.exposed !== false) throw new Error("DEFINER_FUNCTION_ACCESS_EXPOSED");
+      const unfinished = await client.query<{ pending: boolean }>(`SELECT EXISTS (
+        SELECT 1 FROM public.runtime_inputs i
+        JOIN public.interview_sessions s ON s.id=i.session_id
+        WHERE i.completed_at IS NULL AND s.ended_at IS NULL AND s.deleted_at IS NULL
+      ) AS pending`);
+      if (unfinished.rows[0]?.pending !== false) throw new Error("UNPROCESSED_RUNTIME_INPUTS");
       const bank = await client.query<{ available: boolean }>(
         "SELECT EXISTS (SELECT 1 FROM public.interview_questions WHERE status='ACTIVE') AS available",
       );
       if (bank.rows[0]?.available !== true) throw new Error("ACTIVE_QUESTION_BANK_REQUIRED");
       await client.query("COMMIT");
-      console.log("Required schema, API privileges, browser-role isolation and active bank passed (read-only).");
+      console.log("Required schema, API privileges, browser-role isolation, settled runtime inputs and active bank passed (read-only).");
       console.log("Run db:migrate --check separately with the migration connection to verify the release journal.");
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
@@ -69,7 +78,7 @@ async function main() {
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : "";
   // No driver/provider exception strings or environment values reach output.
-  const allowed = /^(CONFIGURATION_INVALID:[A-Z_,]+|RELEASE_ID_REQUIRED|STORAGE_SCHEMA_INCOMPLETE|DATABASE_CONFIGURATION|PRIVATE_TABLE_ACCESS_EXPOSED|DEFINER_FUNCTION_ACCESS_EXPOSED|ACTIVE_QUESTION_BANK_REQUIRED)$/;
+  const allowed = /^(CONFIGURATION_INVALID:[A-Z_,]+|RELEASE_ID_REQUIRED|STORAGE_SCHEMA_INCOMPLETE|DATABASE_CONFIGURATION|SUPABASE_BROWSER_ROLES_MISSING|PRIVATE_TABLE_ACCESS_EXPOSED|DEFINER_FUNCTION_ACCESS_EXPOSED|UNPROCESSED_RUNTIME_INPUTS|ACTIVE_QUESTION_BANK_REQUIRED)$/;
   console.error(allowed.test(message) || message.startsWith("Usage:") ? message : "RELEASE_PREFLIGHT_FAILED");
   process.exitCode = 1;
 });
