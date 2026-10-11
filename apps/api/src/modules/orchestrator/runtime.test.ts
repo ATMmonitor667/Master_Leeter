@@ -6,7 +6,7 @@ import type {
   RunResult,
   SessionEvent,
 } from "@master-leeter/contracts";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildSnapshot } from "../observer/index.js";
 import { InMemoryEventLog } from "../session/event-log.js";
 import { loadScenarioFile } from "../scenario/loader.js";
@@ -112,6 +112,49 @@ const typesIn = async (): Promise<string[]> => (await log.read(SESSION_ID)).map(
 
 const payloadsOf = async (type: SessionEvent["type"]) =>
   (await log.read(SESSION_ID)).filter((e) => e.type === type).map((e) => e.payload);
+
+describe("speculative classifier reuse", () => {
+  function classifier() {
+    const answer = { intent: "THINK_ALOUD" as const, intentProbabilities: { THINK_ALOUD: 1 },
+      semanticEndProbability: 0.1, classifierId: "fixture-model" };
+    return { id: "fixture-model", classify: vi.fn().mockResolvedValue(answer),
+      classifySpeculative: vi.fn().mockResolvedValue(answer) };
+  }
+
+  it("reuses only an exactly matching finalized transcript and does not speak at the boundary", async () => {
+    const model = classifier(); const runtime = build({ classifier: model });
+    await advanceTo(runtime, "IMPLEMENTATION");
+    const text = "I am considering the input";
+    const boundary = await feed(runtime, "SPEECH_STOPPED", { interimTranscript: text }, "boundary");
+    expect(boundary.utterance).toBeNull();
+    const result = await feed(runtime, "SPEECH_FINAL", { transcript: text }, "final");
+    expect(model.classifySpeculative).toHaveBeenCalledTimes(1);
+    expect(model.classify).not.toHaveBeenCalled();
+    expect(result.serverTiming?.classifierSource).toBe("SPECULATIVE");
+    runtime.dispose();
+  });
+
+  it("reclassifies changed wording rather than substituting the interim result", async () => {
+    const model = classifier(); const runtime = build({ classifier: model });
+    await advanceTo(runtime, "IMPLEMENTATION");
+    await feed(runtime, "SPEECH_STOPPED", { interimTranscript: "I am considering the input" }, "boundary");
+    const result = await feed(runtime, "SPEECH_FINAL", { transcript: "I am considering the input?" }, "final");
+    expect(model.classify).toHaveBeenCalledWith({ transcript: "I am considering the input?", finalized: true });
+    expect(result.serverTiming?.classifierSource).toBe("DIRECT");
+    runtime.dispose();
+  });
+
+  it("falls back to direct classification after speculative failure", async () => {
+    const model = classifier(); model.classifySpeculative.mockRejectedValue(new Error("outage"));
+    const runtime = build({ classifier: model });
+    await advanceTo(runtime, "IMPLEMENTATION");
+    await feed(runtime, "SPEECH_STOPPED", { interimTranscript: "I am considering the input" }, "boundary");
+    const result = await feed(runtime, "SPEECH_FINAL", { transcript: "I am considering the input" }, "final");
+    expect(model.classify).toHaveBeenCalledTimes(1);
+    expect(result.serverTiming?.classifierSource).toBe("DIRECT");
+    runtime.dispose();
+  });
+});
 
 describe("every finalized turn produces a recorded decision", () => {
   it("records STAY_SILENT with a reason, not nothing", async () => {
