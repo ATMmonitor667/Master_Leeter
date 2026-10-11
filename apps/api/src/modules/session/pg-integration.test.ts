@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PgDatabase } from "./pg-database.js";
@@ -17,6 +17,10 @@ import { buildServer } from "../../index.js";
 import { EvaluationQueue } from "../report/index.js";
 import { PgRuntimeOwnership } from "./runtime-ownership.js";
 import { PgRuntimeInputs } from "./runtime-inputs.js";
+import { PgPreparationStore } from "../preparation/pg-store.js";
+import { PgSupportIncidentStore } from "../support/pg-store.js";
+import { PgDeletionStore } from "../privacy/pg-deletion-store.js";
+import { PgRateLimitStore } from "../admission/index.js";
 
 const adminUrl = process.env["TEST_DATABASE_ADMIN_URL"];
 if (!adminUrl && process.env["REQUIRE_DATABASE_TESTS"] === "1") throw new Error("TEST_DATABASE_ADMIN_URL_REQUIRED");
@@ -48,7 +52,9 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
     // Temporary cluster role belongs to this run; never change existing roles.
     await admin.query(`CREATE ROLE "${role}" NOLOGIN`);
     roleCreated = true;
-    for (const migration of ["001_init.sql", "002_session_storage.sql", "003_client_sequence.sql", "004_socket_tickets.sql", "005_report_job_leases.sql", "006_consent_grants.sql", "007_deletion_tombstones.sql", "008_runtime_ownership.sql", "009_runtime_inputs.sql"]) {
+    const migrations = (await readdir(new URL("../../../migrations/", import.meta.url)))
+      .filter((file) => /^\d+_[a-z0-9_]+\.sql$/.test(file)).sort();
+    for (const migration of migrations) {
       await db.query(await readFile(new URL(`../../../migrations/${migration}`, import.meta.url), "utf8"));
     }
     const library = await loadScenarioLibrary(fileURLToPath(new URL("../../../../../content/scenarios/", import.meta.url)));
@@ -67,6 +73,73 @@ describe.skipIf(!adminUrl)("PostgreSQL migrations and repository integration", (
 
   const create = (key = randomUUID(), userId = randomUUID()) => store.create({
     userId, scenario, mode: "MOCK", idempotencyKey: key,
+  });
+
+  it("keeps resume deletion fenced against an analysis worker using another pool", async () => {
+    const fresh = new PgDatabase(connection);
+    try {
+      const first = new PgPreparationStore(db);
+      const second = new PgPreparationStore(fresh);
+      const input = { userId: randomUUID(), idempotencyKey: randomUUID(), resumeText: "Private Python resume",
+        tone: "NORMAL" as const, noticeVersion: "v1", resumeExpiresAt: new Date(Date.now() + 86_400_000).toISOString() };
+      const { record } = await first.create(input);
+      expect((await second.create(input)).record.id).toBe(record.id);
+      const token = randomUUID();
+      expect(await second.claimAnalysis(record.id, token, "1970-01-01T00:00:00Z")).toBe(true);
+      await first.deleteResume(record.id);
+      await expect(second.saveAnalysis(record.id, { summary: "Python", facts: [], model: "fixture", promptVersion: "v1" }, token))
+        .rejects.toThrow("PREPARATION_STATE_CONFLICT");
+      expect((await second.get(record.id))?.analysis).toBeNull();
+      await first.delete(record.id);
+      await expect(second.create(input)).rejects.toThrow("PREPARATION_DELETED");
+    } finally { await fresh.close(); }
+  });
+
+  it("deduplicates support reports across pools and deletes them with the session", async () => {
+    const session = await create(); const fresh = new PgDatabase(connection);
+    try {
+      const first = new PgSupportIncidentStore(db); const second = new PgSupportIncidentStore(fresh);
+      const input = { userId: session.userId, sessionId: session.id, idempotencyKey: randomUUID(), category: "VOICE" as const,
+        diagnostics: { connected: true, online: true, visibility: "visible" as const, pendingSaves: 0,
+          stage: "ORAL_PROBLEM_DELIVERY" as const, voiceStatus: "LISTENING" as const },
+        requestId: "fixture", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString() };
+      const results = await Promise.all([first.create(input), second.create(input)]);
+      expect(results[0]!.id).toBe(results[1]!.id);
+      expect(await second.deleteForSession(session.id)).toBe(1);
+      expect(await first.deleteForSession(session.id)).toBe(0);
+    } finally { await fresh.close(); }
+  });
+
+  it("deduplicates unfinished account erasures and fences old workers across pools", async () => {
+    const fresh = new PgDatabase(connection);
+    try {
+      const first = new PgDeletionStore(db); const second = new PgDeletionStore(fresh);
+      const userId = randomUUID();
+      const input = { dedupeKey: randomUUID(), scope: "ACCOUNT" as const, reason: "USER_REQUEST" as const,
+        userId, sessionIds: [], requestedAt: new Date().toISOString() };
+      const original = await first.enqueue(input);
+      expect((await second.enqueue({ ...input, dedupeKey: randomUUID() })).id).toBe(original.id);
+      const owner = await first.claim(original.id, 60_000);
+      expect(await second.claim(original.id, 60_000)).toBeNull();
+      await first.release(original.id, owner!.token);
+      const replacement = await second.claim(original.id, 60_000);
+      const receipt = { scope: "ACCOUNT" as const, userId, sessionIds: [], eventsRedacted: 0, reportsDeleted: 0,
+        audioDeleted: 0, completedAt: new Date().toISOString(), unreachable: [] };
+      await expect(first.complete(original.id, owner!.token, receipt)).rejects.toThrow("DELETION_CLAIM_LOST");
+      await second.complete(original.id, replacement!.token, receipt);
+      expect(await first.pendingForUser(userId)).toBeNull();
+    } finally { await fresh.close(); }
+  });
+
+  it("enforces one shared rate bucket for concurrent requests from separate pools", async () => {
+    const fresh = new PgDatabase(connection);
+    try {
+      const stores = [new PgRateLimitStore(db), new PgRateLimitStore(fresh)];
+      const key = randomUUID(); const now = Date.now();
+      const results = await Promise.all(Array.from({ length: 20 }, (_, i) => stores[i % 2]!.take(key, 3, 60_000, now)));
+      expect(results.filter((result) => result.allowed)).toHaveLength(3);
+      expect((await stores[0]!.take(key, 3, 60_000, now + 60_000)).allowed).toBe(true);
+    } finally { await fresh.close(); }
   });
 
   it("serves persisted sessions and resumes code from a fresh server over the full bundle", async () => {
