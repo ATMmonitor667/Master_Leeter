@@ -268,7 +268,7 @@ export class InterviewRuntime {
    * finishes, so a model that calls a tool a second later gets a refusal rather
    * than a second turn.
    */
-  private authorized: { decision: GateDecision; utteranceId: string } | null = null;
+  private authorized: { decision: GateDecision; utteranceId: string; text: string } | null = null;
 
   /** Fact keys already answered aloud, so the agent knows what it has said. */
   private readonly answeredFactKeys: string[] = [];
@@ -319,6 +319,7 @@ export class InterviewRuntime {
     answeredFactKeys: readonly string[];
     authorized: GateDecision | null;
     utteranceId: string | null;
+    authorizedBrief: string | null;
   } {
     const authorized =
       this.authorized && !this.staleGroundingReason(this.authorized.decision)
@@ -333,6 +334,7 @@ export class InterviewRuntime {
       answeredFactKeys: [...this.answeredFactKeys],
       authorized: authorized?.decision ?? null,
       utteranceId: authorized?.utteranceId ?? null,
+      authorizedBrief: authorized?.decision.action === "DELIVER_BRIEF" ? authorized.text : null,
     };
   }
 
@@ -1018,7 +1020,7 @@ export class InterviewRuntime {
 
     // The window in which the voice agent may fetch words. Opened by the gate,
     // closed by markSpeechFinished — nothing else opens it.
-    this.authorized = utterance ? { decision, utteranceId: utterance.utteranceId } : null;
+    this.authorized = utterance ? { decision, utteranceId: utterance.utteranceId, text: utterance.text } : null;
 
     this.lastSpokeAtMs = this.now();
     this.candidateSpeechStarted = false;
@@ -1252,7 +1254,7 @@ export class InterviewRuntime {
       endedAt: new Date(this.now()).toISOString(),
     });
 
-    this.authorized = utterance ? { decision, utteranceId: utterance.utteranceId } : null;
+    this.authorized = utterance ? { decision, utteranceId: utterance.utteranceId, text: utterance.text } : null;
     this.lastSpokeAtMs = this.now();
     if (utterance) this.interviewerCurrentlySpeaking = true;
 

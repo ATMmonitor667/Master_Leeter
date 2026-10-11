@@ -112,6 +112,18 @@ describe("the minted token cannot auto-respond", () => {
     expect(setup.generationConfig.responseModalities).toEqual(["AUDIO"]);
   });
 
+  it("registers all six callable voice tools in the constrained provider session", async () => {
+    const { instance, calls } = minter(() => ok());
+    await instance.mint();
+    const setup = calls[0]!.body["bidiGenerateContentSetup"] as {
+      tools: Array<{ functionDeclarations: Array<{ name: string }> }>;
+    };
+    expect(setup.tools[0]!.functionDeclarations.map((tool) => tool.name)).toEqual([
+      "get_interview_context", "get_clarification_fact", "get_probe_wording",
+      "get_hint_wording", "get_follow_up", "record_delivery",
+    ]);
+  });
+
   it("always pins a voice, defaulting to a chosen one", () => {
     // Previously the voice was omitted when unconfigured, which left the choice
     // to the provider. M3-6 makes it a decision: prosody carries as much of

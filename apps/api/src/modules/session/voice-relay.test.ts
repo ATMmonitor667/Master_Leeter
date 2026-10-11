@@ -247,10 +247,33 @@ describe("the authorization survives long enough to be used", () => {
       body.data["authorizedAction"],
       "the authorization was closed before the voice agent could use it",
     ).not.toBe("STAY_SILENT");
+    expect(body.data["stage"]).toBe("CLARIFICATION");
+    expect(body.data["openingScript"]).toBe(
+      [...library.values()].find((q) => q.version.id === "conveyor-rescan@1")!.version.oralBrief.openingScript,
+    );
   });
 });
 
 describe("the interview actually opens", () => {
+  it("delivers a reviewed repeat when asked the question from the failing session", async () => {
+    const { port } = await start();
+    const id = await newSession(port);
+    const api = `http://127.0.0.1:${port}/v1/interview-sessions/${id}`;
+    await fetch(`${api}/voice-ready`, { method: "POST" });
+    await fetch(`${api}/voice-utterance-complete`, { method: "POST" });
+    const before = await (await callTool(port, id, "get_interview_context")).json() as { data: Record<string, unknown> };
+    expect(before.data.openingScript).toBeUndefined();
+
+    const messages = await speak(port, id, "So wha t is the problem that we'll be solving today?");
+    expect(messages.some((m) => m["kind"] === "ACTION" && m["action"] === "DELIVER_BRIEF")).toBe(true);
+    const body = await (await callTool(port, id, "get_interview_context")).json() as { data: Record<string, unknown> };
+    expect(body.data.openingScript).toBe(
+      [...library.values()].find((q) => q.version.id === "conveyor-rescan@1")!.version.oralBrief.repeatVariants[0],
+    );
+    await fetch(`${api}/voice-utterance-complete`, { method: "POST" });
+    const after = await (await callTool(port, id, "get_interview_context")).json() as { data: Record<string, unknown> };
+    expect(after.data.openingScript).toBeUndefined();
+  });
   /**
    * SESSION_STARTED was appended at creation and never dispatched, so the whole
    * brief-delivery path was unreachable. The problem only got delivered if the

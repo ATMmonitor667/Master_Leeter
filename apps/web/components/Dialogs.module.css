@@ -1,0 +1,92 @@
+@layer reset, tokens, base, layout, components, utilities;
+@layer components {
+  .dialog {
+    width: min(560px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    padding: 28px;
+    overflow: auto;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--dialog-shadow);
+  }
+  .dialog::backdrop {
+    background: var(--backdrop);
+  }
+  .dialog h2 {
+    margin: 12px 0;
+  }
+  .dialog p {
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .dialog :global(.dialog-kicker) {
+    color: var(--accent);
+    font-size: 13px;
+  }
+  .dialog :global(.dialog-actions) {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 24px;
+  }
+  .dialog :global(.preflight-checks) {
+    display: grid;
+    gap: 12px;
+    margin: 24px 0;
+  }
+  .dialog :global(.preflight-row) {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 12px;
+    border: 1px solid var(--border);
+    padding: 16px;
+    border-radius: 8px;
+  }
+  .dialog :global(.preflight-row > span) {
+    font: 14px var(--mono);
+    color: var(--muted);
+  }
+  .dialog :global(.preflight-row strong),
+  .dialog :global(.preflight-row small) {
+    display: block;
+  }
+  .dialog :global(.preflight-row small) {
+    margin: 6px 0 12px;
+    color: var(--muted);
+  }
+  .dialog :global(.preflight-row select) {
+    width: 100%;
+    margin-top: 12px;
+  }
+  .dialog :global(.mic-meter) {
+    height: 6px;
+    background: var(--border);
+    border-radius: 4px;
+    margin: 12px 0;
+  }
+  .dialog :global(.mic-meter span) {
+    display: block;
+    height: 100%;
+    background: var(--ok);
+  }
+  .dialog :global(.preflight-error),
+  .dialog :global(.support-error) {
+    color: var(--err);
+  }
+  .dialog :global(label) {
+    display: block;
+    margin: 20px 0 8px;
+  }
+  .dialog :global(select) {
+    width: 100%;
+  }
+  .dialog :global(code) {
+    overflow-wrap: anywhere;
+  }
+  .dialog :global(.ready > span) {
+    color: var(--ok);
+  }
+}

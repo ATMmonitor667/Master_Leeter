@@ -57,6 +57,29 @@ export const VOICE_TOOLS = [
 
 export type VoiceToolName = (typeof VOICE_TOOLS)[number];
 
+/** Provider declarations are required; naming tools in a prompt does not register them. */
+export const VOICE_FUNCTION_DECLARATIONS = [
+  {
+    name: "get_interview_context",
+    description: "Fetch interview state and the complete openingScript for an authorized DELIVER_BRIEF. Read openingScript in full without summarizing or inventing a problem count.",
+  },
+  {
+    name: "get_clarification_fact",
+    description: "Fetch a canonical fact for authorized ANSWER_CLARIFICATION. Supply the candidate's exact question. Never invent a missing fact.",
+    parameters: { type: "OBJECT", properties: { utterance: { type: "STRING" } }, required: ["utterance"] },
+  },
+  { name: "get_probe_wording", description: "Fetch the exact wording of the gate-authorized probe. Say only the returned wording." },
+  { name: "get_hint_wording", description: "Fetch the authored hint at the gate-authorized level. Say only the returned wording." },
+  { name: "get_follow_up", description: "Fetch the gate-authorized follow-up's oralDelta. Read the complete oralDelta." },
+  {
+    name: "record_delivery",
+    description: "Record an authorized utterance actually delivered. This does not authorize more speech.",
+    parameters: { type: "OBJECT", properties: {
+      kind: { type: "STRING" }, ref: { type: "STRING" }, transcript: { type: "STRING" },
+    }, required: ["kind"] },
+  },
+];
+
 const TOOL_SET = new Set<string>(VOICE_TOOLS);
 
 /**
@@ -101,6 +124,8 @@ export interface VoiceToolContext {
    * tool refuses. This is the field that keeps the gate authoritative.
    */
   authorized: GateDecision | null;
+  /** Exact brief selected by the runtime, including a reviewed repeat variant. */
+  authorizedBrief?: string | null;
 }
 
 export interface VoiceToolDeps {
@@ -177,9 +202,10 @@ function interviewContext(ctx: VoiceToolContext): ToolResult {
 
   // The brief, only while delivering it. Held to the authored text and the
   // reviewed repeat variants — the agent picks among them, it does not compose.
-  if (ctx.state === "ORAL_PROBLEM_DELIVERY") {
-    data["openingScript"] = ctx.scenario.oralBrief.openingScript;
-    data["repeatVariants"] = [...ctx.scenario.oralBrief.repeatVariants];
+  // The stage advances when the action is committed, before the model fetches
+  // its words. Authorization, rather than that stale stage, owns delivery.
+  if (ctx.authorized?.action === "DELIVER_BRIEF") {
+    data["openingScript"] = ctx.authorizedBrief ?? ctx.scenario.oralBrief.openingScript;
   }
 
   return { ok: true, data };

@@ -256,7 +256,7 @@ describe("get_interview_context", () => {
    * answer at some point in forty minutes, so it only gets it while delivering.
    */
   it("returns the oral brief only while delivering it", async () => {
-    const delivering = await call("get_interview_context", {}, ctx({ state: "ORAL_PROBLEM_DELIVERY" }));
+    const delivering = await call("get_interview_context", {}, ctx({ state: "ORAL_PROBLEM_DELIVERY", authorized: authorize("DELIVER_BRIEF") }));
     expect(delivering.ok).toBe(true);
     if (delivering.ok) expect(delivering.data["openingScript"]).toBe(scenario.version.oralBrief.openingScript);
 
@@ -267,6 +267,19 @@ describe("get_interview_context", () => {
         expect(later.data["openingScript"], `brief leaked in ${state}`).toBeUndefined();
       }
     }
+  });
+
+  it("retains exact authorized wording after the stage advances and for repeats", async () => {
+    const repeat = scenario.version.oralBrief.repeatVariants[0]!;
+    for (const state of ["CLARIFICATION", "IMPLEMENTATION"] as InterviewState[]) {
+      const result = await call("get_interview_context", {}, ctx({
+        state, authorized: authorize("DELIVER_BRIEF"), authorizedBrief: repeat,
+      }));
+      expect(result).toMatchObject({ ok: true, data: { openingScript: repeat } });
+    }
+    const noAuthorization = await call("get_interview_context", {}, ctx({ state: "ORAL_PROBLEM_DELIVERY" }));
+    expect(noAuthorization).toMatchObject({ ok: true });
+    if (noAuthorization.ok) expect(noAuthorization.data["openingScript"]).toBeUndefined();
   });
 
   it("needs no authorization, because knowing the time is not speaking", async () => {

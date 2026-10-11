@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pcm16ToBase64 } from "./audio";
+import { base64ToPcm16, pcm16ToBase64 } from "./audio";
 import {
   RealtimeVoice,
   type RealtimeTransport,
@@ -40,6 +40,7 @@ interface Harness {
 function build(
   options: {
     vad?: Vad;
+    deferSetup?: boolean;
     callTool?: (call: VoiceToolCall) => Promise<Record<string, unknown>>;
   } = {},
 ): Harness {
@@ -77,7 +78,7 @@ function build(
 
   voice.connect();
   handlers.onOpen();
-  handlers.onMessage(JSON.stringify({ setupComplete: {} }));
+  if (!options.deferSetup) handlers.onMessage(JSON.stringify({ setupComplete: {} }));
 
   const FRAME = 20;
   const CAPTURE_FRAME = Math.floor((48_000 * FRAME) / 1000);
@@ -225,6 +226,17 @@ describe("only an authorization can make the model speak", () => {
 });
 
 describe("setup", () => {
+  it("opens an input boundary when speech begins during the handshake", () => {
+    const h = build({ deferSetup: true });
+    h.speak(100);
+    expect(h.sent).toHaveLength(1);
+    h.receive({ setupComplete: {} });
+    expect(h.sent[1]).toEqual({ realtimeInput: { activityStart: {} } });
+    expect(JSON.stringify(h.sent.slice(2))).toContain('"audio"');
+    h.quiet(900);
+    expect(h.sent.at(-1)).toEqual({ realtimeInput: { activityEnd: {} } });
+    expect(h.boundaries.map((b) => b.type)).toEqual(["SPEECH_STARTED", "SPEECH_STOPPED"]);
+  });
   it("sends only the model, leaving the credential's constraints to win", () => {
     const h = build();
     const setup = h.sent.find((m) => m["setup"]) as { setup: Record<string, unknown> };
@@ -255,6 +267,51 @@ describe("setup", () => {
 });
 
 describe("speech boundaries", () => {
+  it("sends audio only inside activity boundaries, including bounded pre-roll", () => {
+    const h = build();
+    expect(h.sent).toHaveLength(1); // setup; room tone never reaches the provider
+    h.speak(400);
+    h.quiet(900);
+    h.speak(200);
+    h.quiet(900);
+
+    let open = false;
+    let starts = 0;
+    let ends = 0;
+    let firstSamples: number[] = [];
+    for (const message of h.sent) {
+      const input = message["realtimeInput"] as Record<string, unknown> | undefined;
+      if (!input) continue;
+      if (input["activityStart"]) { expect(open).toBe(false); open = true; starts++; }
+      if (input["activityEnd"]) { expect(open).toBe(true); open = false; ends++; }
+      if (input["audio"]) {
+        expect(open).toBe(true);
+        if (starts === 1) {
+          const data = (input["audio"] as { data: string }).data;
+          firstSamples.push(...base64ToPcm16(data));
+        }
+      }
+    }
+    expect(starts).toBe(2);
+    expect(ends).toBe(2);
+    // 400ms voiced + <=160ms pre-roll + 350ms hangover, no idle backlog.
+    expect(firstSamples.length).toBeLessThanOrEqual(16_000 * 0.92);
+    // All 400ms of speech are present, including the frames before VAD onset.
+    expect(firstSamples.filter((sample) => Math.abs(sample) > 1000).length).toBeGreaterThan(5500);
+    const count = h.sent.length;
+    h.quiet(5_000);
+    expect(h.sent).toHaveLength(count);
+  });
+
+  it("preserves a natural 400ms pause with the browser's 500ms hangover", () => {
+    const h = build({ vad: new Vad({ endHangoverMs: 500 }) });
+    h.speak(200);
+    h.quiet(400);
+    h.speak(200);
+    expect(h.boundaries.map((b) => b.type)).toEqual(["SPEECH_STARTED"]);
+    h.quiet(600);
+    expect(h.boundaries.map((b) => b.type)).toEqual(["SPEECH_STARTED", "SPEECH_STOPPED"]);
+  });
   it("reports a turn start and end from the VAD, not from the transport", () => {
     const h = build();
     h.speak(400);
@@ -294,6 +351,46 @@ describe("speech boundaries", () => {
 });
 
 describe("barge-in", () => {
+  it("does not treat separated short noises as a sustained interruption", () => {
+    const h = build();
+    h.voice.noteLocalPlayback(true);
+    h.speak(100);
+    h.quiet(300);
+    h.speak(100);
+    expect(h.bargeIns).toBe(0);
+    h.quiet(600);
+    h.speak(500);
+    expect(h.bargeIns).toBe(1);
+  });
+
+  it("recognizes an explicit stop in the provider's final transcript", () => {
+    const h = build();
+    h.voice.noteLocalPlayback(true);
+    h.speak(100);
+    h.receive({ serverContent: { inputTranscription: { text: "stop please" } } });
+    expect(h.bargeIns).toBe(1);
+  });
+  it("interrupts queued speech even after the provider completed generation", () => {
+    const h = build();
+    h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "queued" });
+    h.voice.noteModelPlayback(true);
+    h.receive({ serverContent: { turnComplete: true } });
+    h.speak(100);
+    expect(h.bargeIns).toBe(1);
+    h.receive({ serverContent: { modelTurn: { parts: [{ inlineData: {
+      mimeType: "audio/pcm", data: pcm16ToBase64(new Int16Array(160)),
+    } }] } } });
+    expect(h.audio).toHaveLength(0);
+  });
+
+  it("releases the floor after the queued playback drains", () => {
+    const h = build();
+    h.voice.noteModelPlayback(true);
+    h.receive({ serverContent: { turnComplete: true } });
+    h.voice.noteModelPlayback(false);
+    h.speak(100);
+    expect(h.bargeIns).toBe(0);
+  });
   it("fires the moment the candidate speaks over model audio", () => {
     const h = build();
     // A request must precede model audio — that is what sets acceptingModelAudio.

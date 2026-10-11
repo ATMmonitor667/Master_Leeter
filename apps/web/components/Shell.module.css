@@ -1,0 +1,104 @@
+@layer reset, tokens, base, layout, components, utilities;
+@layer layout {
+  .nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    min-height: 72px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 40px;
+  }
+  .links {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 14px;
+  }
+  .theme {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    padding: 8px 12px;
+    min-height: 40px;
+    font-size: 14px;
+  }
+  .footer {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    gap: 32px;
+    padding: 40px 0;
+    margin-top: 72px;
+    border-top: 1px solid var(--border);
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .footer a {
+    display: block;
+    padding: 4px 0;
+  }
+  .footer strong {
+    display: block;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+  .offline {
+    padding: 8px 24px;
+    border-bottom: 1px solid var(--warn);
+    color: var(--warn);
+    background: var(--panel);
+    font-size: 14px;
+  }
+  .shortcuts {
+    display: grid;
+    gap: 12px;
+  }
+  .shortcuts > div {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 16px;
+  }
+  .shortcuts dd {
+    margin: 0;
+  }
+  .shortcuts kbd {
+    font: 13px var(--mono);
+  }
+  @media (max-width: 500px) {
+    .nav :global(.brand > span) {
+      display: none;
+    }
+    .links {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+  }
+  @media (max-width: 700px) {
+    .nav {
+      margin-bottom: 24px;
+      gap: 12px;
+    }
+    .links {
+      gap: 8px;
+    }
+    .links > a {
+      display: none;
+    }
+    .theme span {
+      display: none;
+    }
+    .footer {
+      grid-template-columns: 1fr 1fr;
+    }
+    .footer > div:first-child {
+      grid-column: 1/-1;
+    }
+    .shortcuts > div {
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
+  }
+}

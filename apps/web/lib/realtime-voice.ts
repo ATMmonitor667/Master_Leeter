@@ -146,6 +146,10 @@ export class RealtimeVoice {
   /** False after barge-in: drops any model audio still in transit. */
   private acceptingModelAudio = false;
   private localPlaybackActive = false;
+  private modelPlaybackActive = false;
+  private inputActivityOpen = false;
+  private readonly preSpeechFrames: Float32Array[] = [];
+  private preSpeechSamples = 0;
   private provisionalBargeAtMs: number | null = null;
 
   constructor(private readonly opts: RealtimeVoiceOptions) {
@@ -177,7 +181,9 @@ export class RealtimeVoice {
       onMessage: (raw) => this.handleMessage(raw),
       onClose: () => {
         this.ready = false;
-        this.interviewerSpeaking = this.localPlaybackActive;
+        this.inputActivityOpen = false;
+        this.clearPreSpeech();
+        this.interviewerSpeaking = this.localPlaybackActive || this.modelPlaybackActive;
         this.acceptingModelAudio = false;
         this.endProvisionalBarge();
         this.opts.onDisconnected?.();
@@ -201,6 +207,8 @@ export class RealtimeVoice {
     }
 
     this.ready = false;
+    this.inputActivityOpen = false;
+    this.clearPreSpeech();
     this.transport?.close();
     this.transport = null;
   }
@@ -217,6 +225,7 @@ export class RealtimeVoice {
     this.muted = muted;
 
     if (muted) {
+      this.clearPreSpeech();
       this.endProvisionalBarge();
       const closing = this.vad.reset(this.now());
       if (closing) {
@@ -235,17 +244,40 @@ export class RealtimeVoice {
   pushAudio(frame: Float32Array, atMs = this.now()): void {
     if (this.muted) return;
 
+    // Manual VAD has no provider-side look-back. Keep only 160 ms locally,
+    // then send it AFTER activityStart, so the first consonant is preserved.
+    if (!this.inputActivityOpen) this.bufferPreSpeech(frame);
+
     const event = this.vad.push(frame, atMs, this.opts.captureRate);
     if (event) this.handleVadEvent(event);
     this.resolveProvisionalBarge(frame, atMs);
 
-    if (!this.ready || !this.transport?.connected) return;
+    if (!this.ready || !this.transport?.connected || !this.inputActivityOpen) return;
+    // The start frame was already included in the pre-roll flush.
+    if (event?.type !== "SPEECH_START") this.sendAudio(frame);
+  }
 
+  private sendAudio(frame: Float32Array): void {
     this.send({
       realtimeInput: {
         audio: { data: encodeForLive(frame, this.opts.captureRate), mimeType: LIVE_INPUT_MIME },
       },
     });
+  }
+
+  private bufferPreSpeech(frame: Float32Array): void {
+    const limit = Math.ceil(this.opts.captureRate * 0.16);
+    const copy = frame.slice(-limit);
+    this.preSpeechFrames.push(copy);
+    this.preSpeechSamples += copy.length;
+    while (this.preSpeechFrames.length > 1 && this.preSpeechSamples > limit) {
+      this.preSpeechSamples -= this.preSpeechFrames.shift()!.length;
+    }
+  }
+
+  private clearPreSpeech(): void {
+    this.preSpeechFrames.length = 0;
+    this.preSpeechSamples = 0;
   }
 
   /**
@@ -284,7 +316,13 @@ export class RealtimeVoice {
   noteLocalPlayback(active: boolean): void {
     if (!active) this.endProvisionalBarge();
     this.localPlaybackActive = active;
-    this.interviewerSpeaking = active;
+    this.interviewerSpeaking = active || this.modelPlaybackActive;
+  }
+
+  /** Provider completion can precede audible completion by several seconds. */
+  noteModelPlayback(active: boolean): void {
+    this.modelPlaybackActive = active;
+    this.interviewerSpeaking = active || this.localPlaybackActive;
   }
 
   // ── Internals ──────────────────────────────────────────────────────────────
@@ -314,6 +352,10 @@ export class RealtimeVoice {
       }
 
       this.sendActivity("activityStart");
+      if (this.inputActivityOpen) {
+        for (const frame of this.preSpeechFrames) this.sendAudio(frame);
+      }
+      this.clearPreSpeech();
       this.emitBoundary({ type: "SPEECH_STARTED", atMs: event.atMs });
       return;
     }
@@ -325,9 +367,13 @@ export class RealtimeVoice {
 
   private resolveProvisionalBarge(frame: Float32Array, atMs: number): void {
     const start = this.provisionalBargeAtMs;
-    if (start === null || atMs - start < 400) return;
+    if (start === null) return;
     // VAD stays open during its quiet hangover. Confirm only on voiced audio.
-    if (frameDb(frame) < this.vad.noiseFloor + DEFAULT_VAD_CONFIG.continueMarginDb) return;
+    if (frameDb(frame) < this.vad.noiseFloor + DEFAULT_VAD_CONFIG.continueMarginDb) {
+      this.provisionalBargeAtMs = atMs;
+      return;
+    }
+    if (atMs - start < 400) return;
     this.confirmBargeIn();
   }
 
@@ -354,8 +400,10 @@ export class RealtimeVoice {
    * this class never sends it (M3-5 owns that, under gate authorization).
    */
   private sendActivity(kind: "activityStart" | "activityEnd"): void {
+    if (kind === "activityEnd") this.inputActivityOpen = false;
     if (!this.ready || !this.transport?.connected) return;
     this.send({ realtimeInput: { [kind]: {} } });
+    this.inputActivityOpen = kind === "activityStart";
   }
 
   private emitBoundary(boundary: SpeechBoundary): void {
@@ -415,6 +463,13 @@ export class RealtimeVoice {
 
     if (msg["setupComplete"] !== undefined || msg["setup_complete"] !== undefined) {
       this.ready = true;
+      // Speech may have begun while the socket was handshaking. Re-open its
+      // provider boundary before sending samples, without duplicating the log.
+      if (this.vad.isSpeaking && !this.muted) {
+        this.sendActivity("activityStart");
+        for (const frame of this.preSpeechFrames) this.sendAudio(frame);
+        this.clearPreSpeech();
+      }
       this.opts.onReady?.();
       return;
     }
@@ -464,14 +519,14 @@ export class RealtimeVoice {
     const finalTranscript = content?.["inputTranscription"] ?? content?.["input_transcription"];
     const interimText = transcriptText(interimTranscript);
     const finalText = transcriptText(finalTranscript);
-    if (interimText && this.provisionalBargeAtMs !== null && /\b(wait|sorry|no|hold on|actually|excuse me|stop)\b/i.test(interimText)) {
+    if (this.provisionalBargeAtMs !== null && /\b(wait|sorry|no|hold on|actually|excuse me|stop)\b/i.test(interimText || finalText)) {
       this.confirmBargeIn();
     }
     if (interimText) this.opts.onInputTranscript?.({ text: interimText, final: false });
     if (finalText) this.opts.onInputTranscript?.({ text: finalText, final: true });
 
     if (content?.["turnComplete"] === true || content?.["turn_complete"] === true) {
-      this.interviewerSpeaking = false;
+      this.interviewerSpeaking = this.localPlaybackActive || this.modelPlaybackActive;
       this.acceptingModelAudio = false;
       this.opts.onSpeechComplete?.();
     }
@@ -514,7 +569,7 @@ export function instructionFor(authorization: SpeechAuthorization): string {
     GIVE_HINT_L2: "Give the authorized hint. Call get_hint_wording and say what it returns.",
     PRESENT_FOLLOW_UP: "Present the follow-up. Call get_follow_up and say what it returns.",
     ACKNOWLEDGE_BRIEFLY: "Acknowledge in three words or fewer. Add nothing.",
-    DELIVER_BRIEF: "Deliver the opening brief from get_interview_context, as written.",
+    DELIVER_BRIEF: "Call get_interview_context and read the complete openingScript verbatim. Read every sentence, including the actual coding task. Do not summarize, add a greeting, or invent a problem count. If openingScript is missing, say you couldn't load the problem and ask the candidate to request a repeat.",
     END_INTERVIEW: "Close the interview in one sentence. No assessment.",
   };
 

@@ -14,6 +14,7 @@ import {
 } from "../scenario/probes.js";
 import type { ProbeSelectionContext } from "../scenario/probes.js";
 import { canHintNow, canInterruptNow, stallPressure } from "./policy.js";
+import { isBriefRequest } from "./brief-request.js";
 
 /**
  * The Response Gate (M1-3).
@@ -52,9 +53,6 @@ export interface GateDependencies {
  * someone said "sorry" or "again" mid-sentence, and re-reading the problem over
  * a working candidate is a far worse interruption than most.
  */
-const REPEAT_REQUEST =
-  /\b(say that again|repeat (that|the (question|problem))|hear that again|didn'?t (quite )?catch|missed that)\b/i;
-
 export function decideAction(ctx: InterviewContext, deps: GateDependencies): GateDecision {
   const decision = decide(ctx, deps);
 
@@ -124,7 +122,7 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
   // ── 3b. "Sorry, can you say that again?" ───────────────────────────────────
   // Answered from the reviewed repeat variants rather than by paraphrase, so a
   // second telling cannot disclose more than the first (invariant 2).
-  if (REPEAT_REQUEST.test(turn.transcript) && deps.briefDeliveryCount > 0) {
+  if (isBriefRequest(turn.transcript) && deps.briefDeliveryCount > 0) {
     return {
       action: "DELIVER_BRIEF",
       reason: "candidate asked to hear the problem again",

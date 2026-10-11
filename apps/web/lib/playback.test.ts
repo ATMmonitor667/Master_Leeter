@@ -110,6 +110,20 @@ describe("gapless scheduling", () => {
 });
 
 describe("barge-in", () => {
+  it("keeps speech audible during provisional interruption and restores it", () => {
+    const f = fakeSink();
+    const gains: number[] = [];
+    const scheduler = new PlaybackScheduler({ sink: {
+      ...f.sink, setGain: (value) => { gains.push(value); },
+    } });
+    scheduler.enqueue(chunk());
+    scheduler.duck();
+    scheduler.duck();
+    expect(gains).toEqual([0.25]);
+    expect(scheduler.isPlaying).toBe(true);
+    scheduler.restore();
+    expect(gains).toEqual([0.25, 1]);
+  });
   /**
    * The most visible failure this product can produce.
    *

@@ -1,0 +1,166 @@
+@layer reset, tokens, base, layout, components, utilities;
+@layer components {
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .button[data-variant="primary"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .button[data-variant="ghost"] {
+    background: var(--transparent);
+    border-color: var(--transparent);
+  }
+  .button[data-variant="danger"] {
+    border-color: var(--err);
+    color: var(--err);
+  }
+  .button:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .button[data-size="sm"] {
+    min-height: 32px;
+  }
+  .button[data-size="lg"] {
+    min-height: 48px;
+  }
+  .iconButton {
+    width: 40px;
+    height: 40px;
+    padding: 8px;
+  }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    padding: 24px;
+  }
+  .field {
+    display: grid;
+    gap: 8px;
+    margin-block: 16px;
+  }
+  .field label {
+    font-weight: 500;
+  }
+  .hint {
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .error {
+    color: var(--err);
+  }
+  .skeleton {
+    display: block;
+    min-height: 20px;
+    border-radius: 6px;
+    background: var(--panel-raised);
+  }
+  .dialog {
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    padding: 28px;
+    width: min(560px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
+    box-shadow: var(--dialog-shadow);
+  }
+  .dialog::backdrop {
+    background: var(--backdrop);
+  }
+  .badge {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    padding: 4px 10px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .meter {
+    width: 100%;
+    height: 6px;
+    accent-color: var(--blue);
+  }
+  .radio {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    padding: 16px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .radio:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .radio strong,
+  .radio small {
+    display: block;
+  }
+  .radio small {
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+  }
+  .tabs [aria-selected="true"] {
+    background: var(--blue-soft);
+  }
+  .stat {
+    display: grid;
+    gap: 4px;
+  }
+  .stat strong {
+    font: 600 28px var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat span {
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-block: 16px;
+  }
+  .popover {
+    position: relative;
+  }
+  .popover summary {
+    cursor: pointer;
+    min-height: 40px;
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .popover > div {
+    position: absolute;
+    z-index: 20;
+    top: 48px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+    min-width: 200px;
+  }
+}

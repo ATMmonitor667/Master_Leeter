@@ -1,4 +1,5 @@
 import type { TurnIntent } from "@master-leeter/contracts";
+import { isBriefRequest } from "./brief-request.js";
 
 /**
  * Turn / intent classifier — deterministic stub (M4-1 placeholder).
@@ -163,6 +164,7 @@ export class RuleBasedClassifier implements IntentClassifier {
 
   private intentOf(transcript: string): TurnIntent {
     if (transcript.length === 0) return "THINK_ALOUD";
+    if (isBriefRequest(transcript)) return "EXPLICIT_QUESTION";
 
     for (const rule of INTENT_RULES) {
       if (rule.pattern.test(transcript)) return rule.intent;
@@ -193,6 +195,7 @@ export class RuleBasedClassifier implements IntentClassifier {
     if (transcript.length === 0) return 0;
 
     if (TRAILING_CONTINUATION.test(transcript)) return 0.2;
+    if (isBriefRequest(transcript)) return 0.95;
     if (transcript.endsWith("?")) return 0.95;
     if (/[.!]$/.test(transcript)) return 0.85;
 

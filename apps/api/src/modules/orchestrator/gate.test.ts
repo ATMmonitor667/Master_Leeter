@@ -334,6 +334,15 @@ describe("the oral brief (M3-4)", () => {
     expect(decision.action).toBe("DELIVER_BRIEF");
   });
 
+  it.each(["CLARIFICATION", "APPROACH_EXPLORATION", "IMPLEMENTATION", "TEST_AND_DEBUG"] as const)(
+    "answers a request for the problem in %s instead of an unmatched fact acknowledgement", (state) => {
+      const decision = decideAction(ctx({ state,
+        turn: turn("And what are the problem s ?", "EXPLICIT_QUESTION"),
+      }), deps());
+      expect(decision.action).toBe("DELIVER_BRIEF");
+    },
+  );
+
   it("does not re-read the problem over a working candidate", () => {
     // The matcher is narrow on purpose: re-delivering the brief because someone
     // said "again" mid-sentence is a worse interruption than most.

@@ -159,12 +159,14 @@ export class PlaybackScheduler {
     }
   }
 
-  /** Make cached speech inaudible while deciding whether a vocalization is a barge-in. */
+  /** Lower cached speech while deciding whether a vocalization is a barge-in. */
   duck(): void {
     if (!this.sink.setGain) { this.stop(); return; }
     if (this.ducked) return;
     this.ducked = true;
-    this.sink.setGain(0.025, 0.03);
+    // Keep words audible through a cough or background noise; confirmation
+    // stops playback entirely. Near-zero gain sounds like a random dropout.
+    this.sink.setGain(0.25, 0.03);
   }
 
   restore(): void {

@@ -1,4 +1,5 @@
 import { TURN_INTENTS, type TurnIntent } from "@master-leeter/contracts";
+import { isBriefRequest } from "./brief-request.js";
 import {
   GeminiClient,
   type GeminiSchema,
@@ -192,7 +193,7 @@ export class GeminiClassifier implements IntentClassifier {
     // Cheap exits first, and they are not optimisations. An unfinalized turn is
     // already decided by invariant — the gate never acts on one — so spending a
     // model call and 500ms to confirm it would be latency bought for nothing.
-    if (!input.finalized || transcript.length === 0) {
+    if (!input.finalized || transcript.length === 0 || isBriefRequest(transcript)) {
       return this.fallback.classify(input);
     }
 

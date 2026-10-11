@@ -1,0 +1,410 @@
+@layer reset, tokens, base, layout, components, utilities;
+@layer components {
+  .page {
+    max-width: 1040px;
+    margin: auto;
+    padding: 0 32px 72px;
+  }
+  .page :global(.history-nav),
+  .page :global(.report-nav) {
+    display: none;
+  }
+  .page :global(.history-heading),
+  .page :global(.settings-heading),
+  .page :global(.report-hero),
+  .page :global(.policy-shell) > header {
+    margin: 40px 0 32px;
+  }
+  .page :global(.history-heading) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  .page :global(.history-heading h1),
+  .page :global(.settings-heading h1) {
+    margin: 12px 0;
+  }
+  .page :global(.history-card),
+  .page :global(.settings-card),
+  .page :global(.settings-receipt),
+  .page :global(.report-panel),
+  .page :global(.dimension-card),
+  .page :global(.grader-card) {
+    padding: 24px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    margin: 16px 0;
+  }
+  .page :global(.history-card) {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 16px 24px;
+  }
+  .page :global(.history-actions) {
+    grid-column: 1/-1;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .page :global(.history-card h2) {
+    margin: 8px 0;
+    font-size: 19px;
+  }
+  .page :global(.history-card p) {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .page :global(.history-meta) {
+    display: grid;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 14px;
+    text-align: right;
+  }
+  .page :global(.meta-mono) {
+    font: 13px var(--mono);
+  }
+  .page :global(.history-status) {
+    font-size: 13px;
+    color: var(--ok);
+  }
+  .page :global(.history-status.active) {
+    color: var(--blue);
+  }
+  .page :global(.history-empty),
+  .page :global(.history-loading),
+  .page :global(.report-state) {
+    padding: 56px 24px;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .page :global(.history-more) {
+    margin-top: 24px;
+  }
+  .page :global(.settings-card p),
+  .page :global(.settings-heading p),
+  .page :global(.report-hero p),
+  .page :global(.panel-line),
+  .page :global(.grader-note) {
+    color: var(--muted);
+    max-width: 68ch;
+  }
+  .page :global(.settings-delete-row) {
+    display: flex;
+    gap: 12px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .page :global(.settings-delete-row input) {
+    flex: 1;
+    min-width: 160px;
+  }
+  .page :global(.danger-zone) {
+    border-color: var(--err);
+  }
+  .page :global(.settings-warning) {
+    color: var(--warn);
+  }
+  .page :global(.auth-shell) {
+    width: min(100%, 440px);
+    margin: 72px auto;
+  }
+  .page :global(.auth-card) {
+    margin: 28px 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    background: var(--panel);
+  }
+  .page :global(.auth-card h1) {
+    font-size: 32px;
+  }
+  .page :global(.auth-card p) {
+    color: var(--muted);
+  }
+  .page :global(.auth-form) {
+    display: grid;
+    gap: 10px;
+  }
+  .page :global(.auth-form input) {
+    width: 100%;
+    min-height: 48px;
+  }
+  .page :global(.auth-form button) {
+    margin-top: 8px;
+  }
+  .page :global(.auth-caption) {
+    font-size: 13px;
+  }
+  .page :global(.policy-shell) {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  .page :global(.policy-shell p) {
+    max-width: 68ch;
+    color: var(--muted-strong);
+  }
+  .page :global(.policy-shell section) {
+    margin: 32px 0;
+  }
+  .page :global(.policy-shell a) {
+    color: var(--blue);
+    text-decoration: underline;
+  }
+  .page :global(.faq-list details) {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 0;
+  }
+  .page :global(.faq-list summary) {
+    cursor: pointer;
+    font-size: 19px;
+    font-weight: 500;
+    padding: 8px 0;
+  }
+  .page :global(.report-hero) {
+    display: block;
+  }
+  .page :global(.report-hero-mesh),
+  .page :global(.score-ring) {
+    display: none;
+  }
+  .page :global(.score-orb) {
+    display: none;
+  }
+  .page :global(.report-meta) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 16px 0;
+    color: var(--muted);
+    font-size: 13px;
+    border-block: 1px solid var(--border);
+  }
+  .page :global(.meta-key) {
+    display: none;
+  }
+  .page :global(.report-highlights) {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .page :global(.highlight-card) {
+    border: 1px solid var(--border);
+    padding: 20px;
+    border-radius: 12px;
+    display: grid;
+    gap: 8px;
+    background: var(--bg-soft);
+  }
+  .page :global(.highlight-label) {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .page :global(.highlight-card strong) {
+    text-transform: capitalize;
+  }
+  .page :global(.highlight-card > span:last-child) {
+    font: 14px var(--mono);
+  }
+  .page :global(.dimension-grid) {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .page :global(.dimension-card) {
+    margin: 0;
+  }
+  .page :global(.dimension-header) {
+    display: grid;
+    gap: 10px;
+  }
+  .page :global(.dimension-header h3) {
+    margin: 0;
+  }
+  .page :global(.dimension-score) {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .page :global(.dimension-score span) {
+    font-size: 14px !important;
+  }
+  .page :global(.dimension-card p) {
+    font-size: 14px !important;
+  }
+  .page :global(.dimension-meter) {
+    height: 4px;
+    background: var(--border);
+    margin-top: 16px;
+  }
+  .page :global(.dimension-meter span) {
+    display: block;
+    height: 100%;
+    background: var(--blue);
+  }
+  .page :global(.evidence-list) {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    gap: 12px;
+  }
+  .page :global(.evidence-row) {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 12px;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .page :global(.evidence-time) {
+    font: 14px var(--mono);
+    color: var(--blue);
+  }
+  .page :global(.evidence-timeline) {
+    display: grid;
+    gap: 16px;
+    padding: 0;
+    list-style: none;
+  }
+  .page :global(.evidence-timeline li) {
+    border-left: 2px solid var(--accent);
+    padding: 4px 0 4px 20px;
+  }
+  .page :global(.evidence-timeline blockquote) {
+    margin: 8px 0;
+  }
+  .page :global(.evidence-timeline cite) {
+    font-size: 13px;
+    color: var(--muted);
+    font-style: normal;
+  }
+  .page :global(.grader-grid) {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .page :global(.grader-card header) {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .page :global(.grader-card h2) {
+    font-size: 19px;
+    margin: 8px 0;
+  }
+  .page :global(.grader-score) {
+    font: 600 24px var(--mono);
+  }
+  .page :global(.grader-score small) {
+    font-size: 13px;
+  }
+  .page :global(.grader-confidence),
+  .page :global(.grader-dimensions),
+  .page :global(.grader-card p) {
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .page :global(.grader-dimensions > div) {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .page :global(.grader-dimensions dd) {
+    margin: 4px 0;
+  }
+  .page :global(.drill-grid) {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+  }
+  .page :global(.drill dt) {
+    font-weight: 600;
+  }
+  .page :global(.drill dd) {
+    margin: 8px 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .page :global(.report-spinner) {
+    width: 32px;
+    height: 32px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    margin: 0 auto 20px;
+  }
+  .page :global(.undo-banner) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px;
+    border: 1px solid var(--warn);
+    border-radius: 8px;
+    background: var(--panel);
+  }
+  .page :global(.preference-options) {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin: 12px 0;
+  }
+  .page :global(.preference-options label),
+  .page :global(.preference-check) {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .page :global(.preference-check) {
+    margin-top: 24px;
+  }
+  .page :global(.settings-card fieldset) {
+    border: 0;
+    padding: 0;
+    margin-bottom: 24px;
+  }
+  .page :global(.history-month) {
+    margin-top: 32px;
+    font-size: 19px;
+  }
+  .page :global(.history-loading) {
+    display: grid;
+    gap: 16px;
+  }
+  @media (max-width: 800px) {
+    .page :global(.dimension-grid),
+    .page :global(.grader-grid) {
+      grid-template-columns: 1fr;
+    }
+    .page :global(.report-highlights) {
+      grid-template-columns: 1fr;
+    }
+    .page :global(.drill-grid) {
+      grid-template-columns: 1fr;
+    }
+  }
+  @media (max-width: 600px) {
+    .page {
+      padding: 0 20px 40px;
+    }
+    .page :global(.history-card) {
+      grid-template-columns: 1fr;
+    }
+    .page :global(.history-meta) {
+      text-align: left;
+    }
+    .page :global(.history-heading) {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .page :global(.settings-card),
+    .page :global(.auth-card) {
+      padding: 20px;
+    }
+  }
+}

@@ -1317,6 +1317,7 @@ export async function registerSessionModule(
         probeUseCounts: voice.probeUseCounts,
         answeredFactKeys: voice.answeredFactKeys,
         authorized: voice.authorized,
+        authorizedBrief: voice.authorizedBrief,
       },
       {
         recordDelivery: async (entry) => {

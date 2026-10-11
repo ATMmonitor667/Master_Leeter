@@ -70,6 +70,14 @@ function make(
   return { classifier, calls };
 }
 
+it("routes problem requests deterministically without depending on a model reply", async () => {
+  const { classifier, calls } = make([new Error("provider unavailable")]);
+  const result = await classifier.classify({ transcript: "what is the problem", finalized: true });
+  expect(result.intent).toBe("EXPLICIT_QUESTION");
+  expect(result.semanticEndProbability).toBe(0.95);
+  expect(calls).toHaveLength(0);
+});
+
 const FINAL = { finalized: true };
 
 describe("GeminiClassifier — happy path", () => {

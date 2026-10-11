@@ -44,6 +44,7 @@
 
 import type { InterviewerTone } from "@master-leeter/contracts";
 import { DEFAULT_INTERVIEWER_VOICE, interviewerPersona } from "./persona.js";
+import { VOICE_FUNCTION_DECLARATIONS } from "./tools.js";
 
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -207,6 +208,8 @@ export function constrainedSetup(
     // audio. This avoids a second microphone consumer and prevents browser
     // caption state from becoming a required input to the interview runtime.
     inputAudioTranscription: {},
+    outputAudioTranscription: {},
+    tools: [{ functionDeclarations: VOICE_FUNCTION_DECLARATIONS }],
     // A 45-minute interview spans several provider connections. Compression
     // bounds accumulated audio context, while the latest provider handle lets a
     // newly minted constrained credential continue the same logical session.

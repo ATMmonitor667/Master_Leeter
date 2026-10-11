@@ -74,6 +74,7 @@ export const ALLOWED_ACTIONS: Record<InterviewState, readonly InterviewAction[]>
   ],
   APPROACH_EXPLORATION: [
     "STAY_SILENT",
+    "DELIVER_BRIEF",
     "ACKNOWLEDGE_BRIEFLY",
     "ANSWER_CLARIFICATION",
     "ASK_PROBE",
@@ -84,6 +85,7 @@ export const ALLOWED_ACTIONS: Record<InterviewState, readonly InterviewAction[]>
   // the candidate out of flow while they are writing code.
   IMPLEMENTATION: [
     "STAY_SILENT",
+    "DELIVER_BRIEF",
     "ANSWER_CLARIFICATION",
     "ASK_PROBE",
     "GIVE_HINT_L1",
@@ -91,6 +93,7 @@ export const ALLOWED_ACTIONS: Record<InterviewState, readonly InterviewAction[]>
   ],
   TEST_AND_DEBUG: [
     "STAY_SILENT",
+    "DELIVER_BRIEF",
     "ACKNOWLEDGE_BRIEFLY",
     "ANSWER_CLARIFICATION",
     "ASK_PROBE",

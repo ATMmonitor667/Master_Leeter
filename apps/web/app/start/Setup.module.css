@@ -1,0 +1,193 @@
+@layer reset, tokens, base, layout, components, utilities;
+@layer components {
+  .page {
+    max-width: 1200px;
+    padding: 0 32px 72px;
+    margin: auto;
+  }
+  .heading {
+    margin: 36px 0;
+  }
+  .heading h1 {
+    margin: 12px 0;
+  }
+  .heading p {
+    color: var(--muted);
+    margin: 0;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 32px;
+    align-items: start;
+  }
+  .steps {
+    list-style: none;
+    display: flex;
+    padding: 0;
+    margin: 0 0 24px;
+    gap: 8px;
+  }
+  .steps li {
+    flex: 1;
+  }
+  .steps button {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    min-height: 48px;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    padding: 8px 16px;
+    font-size: 14px;
+  }
+  .steps button[aria-current] {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .steps span {
+    font-family: var(--mono);
+  }
+  .card {
+    padding: 28px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+  }
+  .card h2 {
+    margin: 0 0 24px;
+  }
+  .fieldset {
+    border: 0;
+    padding: 0;
+    margin: 0 0 24px;
+  }
+  .fieldset legend {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .fieldset > p {
+    color: var(--muted);
+    font-size: 14px;
+    margin: 0 0 20px;
+  }
+  .radios {
+    display: grid;
+    gap: 12px;
+  }
+  .optional {
+    color: var(--muted);
+    font-size: 13px;
+    margin-left: 12px;
+  }
+  .resume {
+    width: 100%;
+    min-height: 200px;
+    margin-top: 10px;
+    resize: vertical;
+    font: 14px/1.65 var(--mono);
+  }
+  .consent {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  .consent input {
+    flex-shrink: 0;
+    margin-top: 4px;
+  }
+  .consent small {
+    display: block;
+    color: var(--muted);
+    margin: 6px 0;
+  }
+  .stepActions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    border-top: 1px solid var(--border);
+    padding-top: 20px;
+  }
+  .summary {
+    position: sticky;
+    top: 24px;
+    padding: 28px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-soft);
+  }
+  .summary h2 {
+    font-size: 24px;
+    margin: 12px 0 24px;
+  }
+  .summary dl {
+    margin: 0 0 28px;
+  }
+  .summary dl div {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 12px 0;
+    font-size: 14px;
+  }
+  .summary dt {
+    color: var(--muted);
+  }
+  .summary dd {
+    margin: 0;
+    text-align: right;
+  }
+  .summary button {
+    width: 100%;
+  }
+  .summary p {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 16px;
+  }
+  .summary a {
+    font-size: 14px;
+    text-decoration: underline;
+  }
+  @media (max-width: 900px) {
+    .layout {
+      grid-template-columns: 1fr;
+    }
+    .summary {
+      position: static;
+    }
+    .summary dl {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 24px;
+    }
+  }
+  @media (max-width: 600px) {
+    .page {
+      padding: 0 20px 40px;
+    }
+    .heading {
+      margin: 24px 0;
+    }
+    .card,
+    .summary {
+      padding: 20px;
+    }
+    .steps {
+      gap: 6px;
+    }
+    .steps button {
+      padding: 8px;
+      font-size: 13px;
+      gap: 6px;
+    }
+    .summary dl {
+      grid-template-columns: 1fr;
+    }
+  }
+}
