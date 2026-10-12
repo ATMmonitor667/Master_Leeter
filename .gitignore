@@ -3,6 +3,10 @@ dist/
 .next/
 out/
 coverage/
+playwright-report/
+test-results/
+.lighthouseci/
+lighthouse-report/
 *.tsbuildinfo
 
 # Secrets — never commit. Only .env.example (placeholders) is tracked.

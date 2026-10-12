@@ -1,26 +1,15 @@
 "use client";
-import { useEffect, useState } from "react";
-import { authClient, authEnabled } from "../lib/auth";
-
+import { useEffect, useState, type ComponentType } from "react";
 export function AccountMenu() {
-  const [email, setEmail] = useState<string | null>(null);
-  const [enabled, setEnabled] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [Content, setContent] = useState<ComponentType | null>(null);
   useEffect(() => {
-    setEnabled(authEnabled());
-    if (!authEnabled()) return;
-    try {
-      const { data } = authClient().auth.onAuthStateChange((_event, session) => setEmail(session?.user.email ?? null));
-      return () => data.subscription.unsubscribe();
-    } catch (cause) { setError((cause as Error).message); }
+    let active = true;
+    void import("./AccountMenuContent").then((module) => {
+      if (active) setContent(() => module.default);
+    });
+    return () => {
+      active = false;
+    };
   }, []);
-  if (!enabled) return null;
-  return <div className="account-menu">
-    {error && <span role="alert">{error}</span>}
-    {email ? <><a className="account-link" href="/history">History</a><a className="account-link" href="/settings">Settings</a><span className="account-email">{email}</span><button className="ghost-button" onClick={async () => {
-      const { error: failure } = await authClient().auth.signOut();
-      if (failure) setError("Could not sign out. Please retry.");
-      else window.location.assign("/");
-    }}>Sign out</button></> : <a className="secondary-button" href="/login">Sign in →</a>}
-  </div>;
+  return Content ? <Content /> : null;
 }

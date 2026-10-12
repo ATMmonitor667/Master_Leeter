@@ -44,6 +44,12 @@ export interface GateDependencies {
    * started, which is the one situation where the interviewer speaks first.
    */
   briefDeliveryCount: number;
+  /**
+   * The opening was authorized but the browser reported none of it played.
+   * Authorization is not delivery, so the opening is re-offered — bounded by
+   * the runtime, and only when nobody is speaking.
+   */
+  openingRedeliveryPending?: boolean;
 }
 
 /**
@@ -86,6 +92,23 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
     };
   }
 
+  // ── 0b. The opening never played ───────────────────────────────────────────
+  // On readiness (no turn), re-offer it once the floor is clear. A candidate
+  // who has not heard the problem cannot do anything else useful, and the
+  // interviewer is the one who owes them the first word.
+  if (
+    deps.openingRedeliveryPending &&
+    !ctx.turn &&
+    !ctx.interviewerCurrentlySpeaking &&
+    !ctx.candidateSpeakingNow
+  ) {
+    return {
+      action: "DELIVER_BRIEF",
+      reason: "opening brief was authorized but never played",
+      decidedByRule: true,
+    };
+  }
+
   // ── 1. Barge-in ────────────────────────────────────────────────────────────
   // The candidate talking over the interviewer is never a cue to talk more.
   // Output audio is cancelled client-side; here we simply yield the floor.
@@ -118,6 +141,17 @@ function decide(ctx: InterviewContext, deps: GateDependencies): GateDecision {
   }
 
   const { turn } = ctx;
+
+  // ── 3a. Still owed the opening ─────────────────────────────────────────────
+  // Whatever a finished turn says — "hello?", "I can't hear you", "what's the
+  // problem?" — the answer is the problem they never heard.
+  if (deps.openingRedeliveryPending) {
+    return {
+      action: "DELIVER_BRIEF",
+      reason: "candidate spoke before the unplayed opening was re-offered",
+      decidedByRule: true,
+    };
+  }
 
   // ── 3b. "Sorry, can you say that again?" ───────────────────────────────────
   // Answered from the reviewed repeat variants rather than by paraphrase, so a

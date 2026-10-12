@@ -1,0 +1,278 @@
+MASTER LEETER: NEXT STEPS FOR AN AUTHENTIC VOICE INTERVIEW
+Prepared: October 11, 2026
+
+PURPOSE
+=======
+Build an interviewer that listens patiently, answers direct questions reliably,
+speaks clearly, handles interruptions, and follows the candidate's reasoning.
+Authenticity requires dependable conversation as well as a pleasant voice.
+
+This is a proposed implementation roadmap, not a record of completed work.
+Work through the priorities below in order. Recheck the current implementation
+before changing it: several foundations already exist and need strengthening.
+
+CURRENT STARTING POINT
+======================
+The existing implementation uses Gemini Live, browser speech detection, an
+application-controlled Response Gate, and cached authored speech where available.
+Recent fixes registered missing voice tools, made the authorized problem brief
+available after stage transitions, improved requests to repeat the problem, and
+repaired parts of microphone capture and interruption handling.
+
+A 15-second watchdog now handles an authorized model response that never starts
+producing audio. It does not establish that a response finishes successfully.
+Two successful live delivery observations started producing audio in about
+2-3 seconds. Those observations are not a representative latency benchmark and
+do not measure when a candidate actually heard the sound.
+
+Keep these product rules throughout:
+- The server authorizes every interviewer utterance. A pause is not permission.
+- Problem facts and hints come from the pinned scenario and disclosure policy.
+- The full problem remains orally delivered; captions are optional accessibility.
+- Evaluation remains separate from the live interviewer.
+- Preserve append-only session history and avoid retaining raw audio by default.
+
+1. MAKE EVERY SPEECH ATTEMPT FINISH HONESTLY -- FIRST PRIORITY
+============================================================
+Candidate benefit: no unexplained silence, missing problem, or cut-off answer
+that the application incorrectly considers delivered.
+
+Implement:
+- Replace the swallowed /voice-ready error with a visible connection status,
+  structured diagnostics, and bounded retry using the same opening identifier.
+- Make readiness and opening delivery idempotent. Reconnecting must not create
+  two introductions or accidentally skip an introduction that never played.
+- Track one lifecycle per utterance:
+  AUTHORIZED -> REQUESTED -> FIRST_AUDIO -> PLAYING -> COMPLETED
+  with terminal outcomes INTERRUPTED, FAILED, and CANCELLED where appropriate.
+  Define valid transitions and handle duplicate or out-of-order events.
+- Distinguish provider generation completion from browser playback completion.
+  Only report successful delivery after validated output drains from playback.
+  This measures application playback, not proof that the listener heard it.
+- Fix cached audio tail failures: a failed read or truncated stream must not
+  become COMPLETED simply because the queued prefix finished playing.
+- Add deadlines and cancellation to tool calls, no-first-audio waits, and
+  mid-stream stalls. Use playback-buffer depth and expected stream state so a
+  normal spoken pause is not mistaken for a network failure.
+- Tag audio work with an utterance identifier and connection generation.
+  Discard late chunks and late tool results from cancelled or replaced turns.
+- If interruption happens before any audio, retry only with valid authorization.
+  After partial playback, use a gate-authorized recovery/repeat flow. Do not
+  silently replay an entire long answer or fabricate where playback stopped.
+- Reconcile interview progression with actual delivery. A brief being selected
+  or authorized is not evidence that its content reached playback completion.
+
+Likely starting files:
+  apps/web/lib/voice-session.ts
+  apps/web/lib/realtime-voice.ts
+  apps/api/src/modules/orchestrator/runtime.ts
+  apps/api/src/modules/realtime/tools.ts
+
+Acceptance:
+Inject readiness failure, tool timeout, empty response, mid-sentence stream loss,
+cached-tail failure, and reconnect. Every attempt ends in a truthful outcome;
+recovery does not duplicate the opening or allow stale audio to speak.
+
+2. MEASURE THE CONVERSATION THE CANDIDATE EXPERIENCES
+====================================================
+Candidate benefit: performance improvements address the actual source of delay.
+
+Implement alongside step 1:
+- Extend the existing latency ledger rather than creating another isolated log.
+- Correlate candidate turn, gate decision, authorization, tool call, audio source,
+  and playback using session/turn/utterance/trace identifiers.
+- Record quiet onset, detected turn end, transcript readiness, gate decision,
+  authorization, tool duration, first audio received, first sample played,
+  interruptions, buffer underruns, reconnects, and terminal outcomes.
+- Use monotonic clocks for local durations. Do not subtract unsynchronized
+  browser and server timestamps as if they shared one clock.
+- Separate intentional thinking silence, missed questions, provider failures,
+  network delays, and playback failures in diagnostic reports.
+- Report p50 and p95 separately for cached and generated speech. Include failed
+  turns and sample counts; reporting only successful turns hides the worst cases.
+
+Likely starting files:
+  apps/web/lib/latency-ledger.ts
+  apps/api/src/eval/voice-latency.ts
+
+Acceptance:
+For each silent or slow turn, a trace explains where it stopped or waited.
+Measure both end-of-candidate-turn to audible playback and authorization to
+audible playback; the latter alone hides endpointing and gate delay.
+
+3. ANSWER QUESTIONS PROMPTLY WHILE RESPECTING THINKING TIME
+==========================================================
+Candidate benefit: asking "Can values be negative?" gets an answer, while
+"Maybe I could use a map..." does not trigger an unwanted interruption.
+
+Implement:
+- Strengthen turn classification for direct questions, incomplete thoughts,
+  self-corrections, requests for hints, and explicit requests to wait.
+- Combine acoustic speech boundaries with semantic completeness. Keep response
+  permission in the gate rather than letting speech detection trigger replies.
+- Reuse deterministic handling for obvious requests. Semantic classification
+  should resolve ambiguity, not add a model round trip to every simple request.
+- Reevaluate held questions when final transcripts or speech-stop events arrive,
+  regardless of event order. Cancel pending replies if the candidate continues.
+- For a clear question, select an authorized answer, request clarification, or
+  explain that the scenario does not specify the requested fact. Record why
+  policy intentionally declines a request instead of treating it as lost input.
+- Start from the current 500 ms manual-VAD silence setting. Do not restore the
+  older 350 ms suggestion merely to improve a latency number. Tune against real
+  speech and the selected provider's current endpointing requirements.
+
+Acceptance:
+Test pauses inside sentences, five rapid clarifications, ASR corrections,
+"give me a moment," and questions asked during implementation. Verify relevant
+questions receive responses and ordinary thinking pauses remain quiet.
+
+4. MAKE INTERRUPTIONS FEEL NATURAL
+=================================
+Candidate benefit: the candidate can say "Wait, repeat the constraint" without
+fighting the audio, and a cough does not cancel the problem statement.
+
+Implement:
+- Keep listening during interviewer playback with appropriate echo cancellation.
+- Refine the existing provisional ducking and confirmed interruption behavior.
+  Cancel queued playback, generation where supported, and associated tool work
+  after a confirmed interruption; preserve the candidate's interrupting speech.
+- Distinguish sustained speech or an explicit stop from coughs, keyboard noise,
+  speaker echo, and short acknowledgements such as "okay."
+- Restore volume smoothly after a false interruption without skipping content.
+- Track what was actually played. For long authored briefs, sentence boundaries
+  can support a safe reviewed repeat from a known point; do not infer unheard
+  content from the provider's complete output transcript.
+
+Acceptance:
+Test headphones and laptop speakers, quiet and noisy rooms, explicit stop,
+short acknowledgements, and interruption after generation ends but playback
+continues. Measure confirmed-interruption to local output silence.
+
+5. REDUCE WAITING WITHOUT SACRIFICING RESPONSE CONTROL
+=====================================================
+Candidate benefit: familiar, predictable responses begin quickly and play smoothly.
+
+Implement:
+- Verify existing prerendering and cache hits for the opening, reviewed repeats,
+  canonical clarifications, and eligible authored probes.
+- Key cached speech by scenario version, exact wording, voice, model/render
+  configuration, and audio format so old or mismatched content cannot leak in.
+- Prewarm likely authorized content before it is needed; preparation must never
+  itself disclose a fact or authorize playback.
+- For exact authored wording, use a validated speech path that avoids a
+  redundant model -> tool -> model exchange where the architecture permits it.
+- Stream validated audio promptly with a small, measured jitter buffer. Avoid
+  waiting for a whole response, but do not trade lower startup delay for gaps.
+- Keep observer updates and evaluation off the speech critical path.
+
+Acceptance:
+Compare cache hits, misses, and generation with identical scenarios and equipment.
+Track underruns and completion integrity as well as first-audio latency.
+
+6. MAKE THE VOICE CLEAR AND THE DELIVERY BELIEVABLE
+=================================================
+Candidate benefit: it sounds like a calm technical interviewer rather than a
+script reader rushing through unfamiliar symbols.
+
+Implement:
+- Add a short microphone/output check before entering the interview.
+- Handle device changes, suspended AudioContext, browser audio permissions,
+  clipping, resampling, and output-format mismatches with actionable status.
+- Use one consistent voice and volume across cached and generated speech.
+- Review pronunciation of variable names, arrays, examples, and Big-O notation.
+  Author spoken wording explicitly when symbols would sound confusing.
+- Use natural sentence pauses and concise answers; allow full problem delivery
+  to exceed the usual short-response limit.
+- Offer a speaking-speed preference and repeat/slow-down controls. Validate that
+  any speed adjustment preserves intelligibility and technical meaning.
+- Avoid automatic filler phrases on every delay. Show a quiet processing or
+  reconnecting indicator; spoken status messages still require gate permission.
+
+Acceptance:
+Have listeners rate clarity, pacing, technical pronunciation, and consistency
+without knowing whether an utterance was cached or generated.
+
+7. MAKE THE INTERVIEWER FOLLOW THE CANDIDATE'S REASONING
+======================================================
+Candidate benefit: follow-ups relate to what the candidate actually said and
+wrote, while preserving realistic interview difficulty.
+
+Implement:
+- Maintain compact structured memory of the approach, assumptions, complexity
+  claims, answered clarifications, hints used, and unresolved questions.
+- Attach code revision and freshness to observations. Never comment confidently
+  on code that has changed since the observer inspected it.
+- Ask one relevant question at a time and wait for an answer.
+- Select probes from the scenario's approved triggers and disclosure rules.
+  Example: "What happens if two values have the same frequency?" only when
+  that issue is relevant and the probe is permitted.
+- Make stage transitions conversational: explain the next activity briefly,
+  then actually perform it. Derive task counts and timing from the session plan.
+- Use neutral acknowledgements sparingly; do not praise every statement, reveal
+  solutions unprompted, or turn implementation silence into unsolicited tutoring.
+- Keep the live wrap-up factual. Deliver scoring through the separate evaluator.
+
+Acceptance:
+Run candidate trajectories for thinking aloud, changing approach, getting stuck,
+requesting hints, and solving quickly. An experienced interviewer should judge
+the follow-ups relevant, the difficulty consistent, and the silence appropriate.
+
+8. VALIDATE WITH REAL CONVERSATIONS, THEN BENCHMARK ALTERNATIVES
+==============================================================
+Build a repeatable evaluation set covering:
+  opening and repeat; clarification; incomplete sentence; long thinking pause;
+  interruption; background noise; stale code; tool timeout; cached-tail loss;
+  provider stall; reconnect; complete 30-minute interview.
+
+Use deterministic fault tests for lifecycle and policy correctness, plus real
+microphone sessions across browsers, devices, accents, and speaking styles.
+Use consented recordings only when needed, with limited retention. Human review
+matters: transcript word coverage cannot prove natural or complete spoken output.
+
+Proposed initial goals -- product targets, not measured guarantees:
+- Zero unexplained silence or falsely successful deliveries in the fault suite.
+- Zero unauthorized facts or solution leakage in the policy regression suite.
+- Fewer than one material unwanted interruption per 30-minute human mock.
+- Cached authorization to audible playback: p95 below 500 ms on the reference
+  setup, if measurement demonstrates this is achievable without audio gaps.
+- Dynamic clear-question end to audible reply: initially target p50 below 1.5 s
+  and p95 below 3 s; exclude intentional thinking waits explicitly, not silently.
+- Confirmed interruption to output silence: initially target p95 below 200 ms
+  on the reference setup; measure speech-detection delay separately.
+- Seek average human ratings of at least 4/5 for clarity, turn-taking, and
+  interviewer relevance. Report sample size and distribution, not just a mean.
+
+If the repaired path still misses requirements, compare supported model versions
+and alternative realtime providers using the same policy, scenarios, devices,
+and metrics. Check lifecycle/tool semantics when changing models. Evaluate WebRTC
+or a voice framework only against a measured transport or orchestration problem;
+neither a provider swap nor a framework automatically fixes delivery correctness.
+
+SUGGESTED IMPLEMENTATION PACKAGES
+=================================
+A. Truthful delivery lifecycle, readiness retry, tool deadlines, stall recovery,
+   and their fault tests. Add the trace points needed to verify these changes.
+B. Turn completion, question handling, interruption behavior, and event-order tests.
+C. Cache verification, playback smoothing, audio setup, and spoken-content polish.
+D. Candidate-state relevance, realistic follow-ups, and human interview evaluation.
+E. Provider/transport comparison only if the measured results justify it.
+
+After each package, run affected tests and typechecks, perform the relevant live
+checks, record results and limitations, and keep configuration rollback possible.
+Do not treat passing text-only tests as proof that the voice experience is fixed.
+
+REFERENCES AND SCOPE
+====================
+This plan builds on the observed failures and fixes recorded in:
+  docs/VOICE_RELIABILITY.md
+  CLAUDE.md
+and the supplied static review:
+  Master_Leeter_Voice_Interview_Recommendations_Updated (1).pdf
+
+Provider references checked October 11, 2026:
+  https://ai.google.dev/gemini-api/docs/live-api/capabilities
+  https://ai.google.dev/gemini-api/docs/live-api/best-practices
+
+The recommendations and numerical goals above are proposed engineering choices.
+They are not claims that these features are all missing or already implemented,
+and they do not establish the behavior of a deployed session without testing it.

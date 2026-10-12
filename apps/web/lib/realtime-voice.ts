@@ -87,7 +87,13 @@ export interface SpeechAuthorization {
    * decision-to-first-audio path from ~1.5 s to ~50 ms. The model is not
    * asked to speak and the tool relay is skipped entirely.
    */
-  audio?: { head: string; rate: number; tailFrom?: number | undefined };
+  audio?: {
+    head: string;
+    rate: number;
+    tailFrom?: number | undefined;
+    /** Full PCM length. The client verifies the tail against it. */
+    totalBytes?: number | undefined;
+  };
 }
 
 /** A tool call from the model, on its way to the server relay. */
@@ -106,13 +112,16 @@ export interface RealtimeVoiceOptions {
   now?: () => number;
   /** Append these to the session event log — they drive M4-2. */
   onSpeechBoundary?: (boundary: SpeechBoundary) => void;
-  /** Model audio, already decoded. The shell schedules playback. */
-  onModelAudio?: (pcm: Int16Array) => void;
+  /**
+   * Model audio, already decoded, tagged with the utterance it was requested
+   * for. The shell schedules playback and drops audio for any other utterance.
+   */
+  onModelAudio?: (pcm: Int16Array, utteranceId: string | null) => void;
   /** Candidate transcription emitted from the same provider audio stream. */
   onInputTranscript?: (transcript: { text: string; final: boolean }) => void;
   /** The candidate spoke over the interviewer. Stop playback immediately. */
   onBargeIn?: () => void;
-  /** Cached audio ducks immediately, then either resumes or stops. */
+  /** Interviewer audio ducks immediately, then either resumes or stops. */
   onBargeInProvisional?: (ducked: boolean) => void;
   onReady?: () => void;
   /** Latest opaque handle for continuing this logical provider session. */
@@ -122,17 +131,32 @@ export interface RealtimeVoiceOptions {
   /** The provider socket closed and a fresh short-lived credential is required. */
   onDisconnected?: () => void;
   onError?: (err: Error) => void;
-  /** The interviewer finished speaking. Closes the server's authorization. */
-  onSpeechComplete?: () => void;
+  /**
+   * The provider finished GENERATING a turn. Not playback completion: queued
+   * audio may still be playing, and `hadAudio: false` means it produced none.
+   */
+  onSpeechComplete?: (info: { utteranceId: string | null; hadAudio: boolean }) => void;
   /**
    * Relays a tool call to the server and returns its result.
    *
    * The client never answers a tool call itself. The five tools read pinned
    * scenario content and check the gate's authorization, and neither of those
-   * may live in a browser the candidate controls.
+   * may live in a browser the candidate controls. The signal aborts when the
+   * deadline passes or the turn it belonged to is cancelled.
    */
-  callTool?: (call: VoiceToolCall) => Promise<Record<string, unknown>>;
+  callTool?: (call: VoiceToolCall, signal?: AbortSignal) => Promise<Record<string, unknown>>;
+  /** Timing of each relayed tool call, for the latency trace. */
+  onToolCall?: (info: { name: string; ms: number; ok: boolean; refusal?: string }) => void;
+  /** Deadline for one relayed tool call. A model left waiting stalls the turn. */
+  toolTimeoutMs?: number;
 }
+
+/** Longest candidate audio held while deciding whether they interrupted. */
+const DEFERRED_PREROLL_SECONDS = 1.5;
+/** Normal manual-VAD look-back before an activity boundary. */
+const PREROLL_SECONDS = 0.16;
+/** Sustained voiced audio that turns a provisional interruption into a real one. */
+const BARGE_CONFIRM_MS = 400;
 
 export class RealtimeVoice {
   private transport: RealtimeTransport | null = null;
@@ -151,10 +175,29 @@ export class RealtimeVoice {
   private readonly preSpeechFrames: Float32Array[] = [];
   private preSpeechSamples = 0;
   private provisionalBargeAtMs: number | null = null;
+  /**
+   * Requested, and the provider has not yet finished generating with audio.
+   * During this window an `activityStart` would cut the provider off, so a
+   * possible interruption is held locally until it is confirmed.
+   */
+  private modelGenerating = false;
+  private modelAudioThisTurn = false;
+  private requestUtteranceId: string | null = null;
+  /**
+   * Bumped whenever the current request is replaced, cancelled or loses its
+   * socket. A tool result that resolves under an older epoch is discarded
+   * rather than handed to a model that is now doing something else.
+   */
+  private speechEpoch = 0;
+  /** SPEECH_START happened but its provider boundary is held pending confirmation. */
+  private deferredActivity = false;
+  private readonly toolAborts = new Set<AbortController>();
+  private readonly toolTimeoutMs: number;
 
   constructor(private readonly opts: RealtimeVoiceOptions) {
     this.vad = opts.vad ?? new Vad();
     this.now = opts.now ?? (() => Date.now());
+    this.toolTimeoutMs = opts.toolTimeoutMs ?? 8_000;
   }
 
   get isReady(): boolean {
@@ -182,6 +225,8 @@ export class RealtimeVoice {
       onClose: () => {
         this.ready = false;
         this.inputActivityOpen = false;
+        this.deferredActivity = false;
+        this.invalidateRequest();
         this.clearPreSpeech();
         this.interviewerSpeaking = this.localPlaybackActive || this.modelPlaybackActive;
         this.acceptingModelAudio = false;
@@ -202,10 +247,12 @@ export class RealtimeVoice {
       // Manual VAD means the provider cannot infer that the last audio frame was
       // the end of the turn. Close it before the socket so a final transcript
       // still has a chance to arrive during an orderly shutdown.
-      this.sendActivity("activityEnd");
+      this.closeInputActivity();
       this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs, ...boundaryProsody(closing) });
     }
 
+    this.invalidateRequest();
+    this.deferredActivity = false;
     this.ready = false;
     this.inputActivityOpen = false;
     this.clearPreSpeech();
@@ -229,7 +276,7 @@ export class RealtimeVoice {
       this.endProvisionalBarge();
       const closing = this.vad.reset(this.now());
       if (closing) {
-        this.sendActivity("activityEnd");
+        this.closeInputActivity();
         this.emitBoundary({ type: "SPEECH_STOPPED", atMs: closing.atMs, ...boundaryProsody(closing) });
       }
     }
@@ -246,6 +293,7 @@ export class RealtimeVoice {
 
     // Manual VAD has no provider-side look-back. Keep only 160 ms locally,
     // then send it AFTER activityStart, so the first consonant is preserved.
+    // While a possible interruption is being confirmed, keep up to 1.5 s.
     if (!this.inputActivityOpen) this.bufferPreSpeech(frame);
 
     const event = this.vad.push(frame, atMs, this.opts.captureRate);
@@ -266,7 +314,8 @@ export class RealtimeVoice {
   }
 
   private bufferPreSpeech(frame: Float32Array): void {
-    const limit = Math.ceil(this.opts.captureRate * 0.16);
+    const seconds = this.deferredActivity ? DEFERRED_PREROLL_SECONDS : PREROLL_SECONDS;
+    const limit = Math.ceil(this.opts.captureRate * seconds);
     const copy = frame.slice(-limit);
     this.preSpeechFrames.push(copy);
     this.preSpeechSamples += copy.length;
@@ -295,10 +344,14 @@ export class RealtimeVoice {
    * that called this unprompted would get a model that asks for a probe and is
    * refused — it cannot invent an interview turn, only waste a round trip.
    */
-  requestSpeech(authorization: SpeechAuthorization): void {
-    if (!this.ready || !this.transport?.connected) return;
+  requestSpeech(authorization: SpeechAuthorization): boolean {
+    if (!this.ready || !this.transport?.connected) return false;
 
+    this.invalidateRequest();
     this.acceptingModelAudio = true;
+    this.modelGenerating = true;
+    this.modelAudioThisTurn = false;
+    this.requestUtteranceId = authorization.utteranceId;
     this.send({
       clientContent: {
         turns: [
@@ -310,19 +363,58 @@ export class RealtimeVoice {
         turnComplete: true,
       },
     });
+    return true;
+  }
+
+  /**
+   * Stop listening for the current request: its audio, its tool calls, its
+   * completion. Called when an utterance ends any way other than naturally,
+   * and harmless after a natural ending. The provider may keep generating for
+   * a moment; whatever it sends is discarded here rather than played.
+   */
+  cancelSpeech(): void {
+    this.invalidateRequest();
+    this.interviewerSpeaking = this.localPlaybackActive || this.modelPlaybackActive;
+    this.afterInterviewerChange();
   }
 
   /** Cached speech is already gate-authorized; this only enables local barge-in. */
   noteLocalPlayback(active: boolean): void {
-    if (!active) this.endProvisionalBarge();
     this.localPlaybackActive = active;
     this.interviewerSpeaking = active || this.modelPlaybackActive;
+    this.afterInterviewerChange();
   }
 
   /** Provider completion can precede audible completion by several seconds. */
   noteModelPlayback(active: boolean): void {
     this.modelPlaybackActive = active;
     this.interviewerSpeaking = active || this.localPlaybackActive;
+    this.afterInterviewerChange();
+  }
+
+  private invalidateRequest(): void {
+    this.speechEpoch += 1;
+    this.acceptingModelAudio = false;
+    this.modelGenerating = false;
+    this.modelAudioThisTurn = false;
+    this.requestUtteranceId = null;
+    for (const controller of this.toolAborts) controller.abort();
+    this.toolAborts.clear();
+  }
+
+  /**
+   * The interviewer may have just gone quiet. A held interruption is then no
+   * longer an interruption — it is the candidate talking, and their provider
+   * boundary opens now so the words are transcribed.
+   */
+  private afterInterviewerChange(): void {
+    if (this.interviewerSpeaking || this.modelGenerating) return;
+    if (this.deferredActivity) {
+      this.deferredActivity = false;
+      if (this.vad.isSpeaking && !this.muted) this.openInputActivity();
+      else this.clearPreSpeech();
+    }
+    this.endProvisionalBarge();
   }
 
   // ── Internals ──────────────────────────────────────────────────────────────
@@ -340,29 +432,49 @@ export class RealtimeVoice {
       // reached the server the interviewer would have talked over the candidate
       // for a round trip. The gate's rule 1 still yields the floor; this stops
       // the audio.
-      if (this.interviewerSpeaking) {
-        if (this.localPlaybackActive) {
-          this.provisionalBargeAtMs = event.atMs;
-          this.opts.onBargeInProvisional?.(true);
-        } else {
-          this.interviewerSpeaking = false;
-          this.acceptingModelAudio = false;
-          this.opts.onBargeIn?.();
+      //
+      // It starts PROVISIONAL for every source: duck, and confirm only on
+      // sustained voice or an explicit "stop". A cough, a keyboard clack or an
+      // "mm-hm" must not cancel the problem statement.
+      if (this.interviewerSpeaking || this.modelGenerating) {
+        this.provisionalBargeAtMs = event.atMs;
+        this.opts.onBargeInProvisional?.(true);
+        if (this.modelGenerating) {
+          // Under manual VAD, activityStart interrupts the provider's
+          // generation. Sending it for a cough would kill the answer, so the
+          // boundary waits for confirmation and the audio is held locally.
+          this.deferredActivity = true;
+          this.emitBoundary({ type: "SPEECH_STARTED", atMs: event.atMs });
+          return;
         }
       }
 
-      this.sendActivity("activityStart");
-      if (this.inputActivityOpen) {
-        for (const frame of this.preSpeechFrames) this.sendAudio(frame);
-      }
-      this.clearPreSpeech();
+      this.openInputActivity();
       this.emitBoundary({ type: "SPEECH_STARTED", atMs: event.atMs });
       return;
     }
 
     this.endProvisionalBarge();
-    this.sendActivity("activityEnd");
+    this.closeInputActivity();
     this.emitBoundary({ type: "SPEECH_STOPPED", atMs: event.atMs, ...boundaryProsody(event) });
+  }
+
+  private openInputActivity(): void {
+    this.sendActivity("activityStart");
+    if (this.inputActivityOpen) {
+      for (const frame of this.preSpeechFrames) this.sendAudio(frame);
+    }
+    this.clearPreSpeech();
+  }
+
+  /** End the provider boundary, unless it was never opened because it was held. */
+  private closeInputActivity(): void {
+    if (this.deferredActivity) {
+      this.deferredActivity = false;
+      this.clearPreSpeech();
+      return;
+    }
+    this.sendActivity("activityEnd");
   }
 
   private resolveProvisionalBarge(frame: Float32Array, atMs: number): void {
@@ -373,7 +485,7 @@ export class RealtimeVoice {
       this.provisionalBargeAtMs = atMs;
       return;
     }
-    if (atMs - start < 400) return;
+    if (atMs - start < BARGE_CONFIRM_MS) return;
     this.confirmBargeIn();
   }
 
@@ -381,7 +493,16 @@ export class RealtimeVoice {
     if (this.provisionalBargeAtMs === null) return;
     this.provisionalBargeAtMs = null;
     this.localPlaybackActive = false;
+    this.modelPlaybackActive = false;
     this.interviewerSpeaking = false;
+    this.invalidateRequest();
+    // The candidate really is talking. Open the boundary that was held and
+    // send what they said while we were deciding, so no words are lost.
+    if (this.deferredActivity) {
+      this.deferredActivity = false;
+      if (this.vad.isSpeaking && !this.muted) this.openInputActivity();
+      else this.clearPreSpeech();
+    }
     this.opts.onBargeIn?.();
   }
 
@@ -423,6 +544,11 @@ export class RealtimeVoice {
       | undefined;
     if (!calls) return;
 
+    // A result is only worth sending to the request that asked for it, on the
+    // socket that asked for it. Anything else is a late answer to a turn that
+    // was cancelled, replaced or reconnected away.
+    const epoch = this.speechEpoch;
+    const transport = this.transport;
     const responses: Array<Record<string, unknown>> = [];
 
     for (const call of calls) {
@@ -430,16 +556,38 @@ export class RealtimeVoice {
       const name = String(call["name"] ?? "");
       const args = (call["args"] ?? {}) as Record<string, unknown>;
 
+      const controller = new AbortController();
+      this.toolAborts.add(controller);
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.toolTimeoutMs);
+      const startedAt = this.now();
+
       let response: Record<string, unknown>;
       try {
-        response = (await this.opts.callTool?.({ id, name, args })) ?? {
+        const relay = this.opts.callTool?.({ id, name, args }, controller.signal);
+        response = (relay ? await untilAborted(relay, controller.signal) : null) ?? {
           ok: false,
           refusal: "NO_RELAY",
         };
       } catch {
-        response = { ok: false, refusal: "RELAY_FAILED" };
+        response = { ok: false, refusal: timedOut ? "TOOL_TIMEOUT" : "RELAY_FAILED" };
+      } finally {
+        clearTimeout(timer);
+        this.toolAborts.delete(controller);
       }
 
+      if (epoch !== this.speechEpoch || transport !== this.transport) return;
+
+      const refusal = typeof response["refusal"] === "string" ? response["refusal"] : undefined;
+      this.opts.onToolCall?.({
+        name,
+        ms: Math.max(0, this.now() - startedAt),
+        ok: response["ok"] !== false,
+        ...(refusal ? { refusal } : {}),
+      });
       responses.push({ id, name, response });
     }
 
@@ -506,13 +654,16 @@ export class RealtimeVoice {
     const audio = extractModelAudio(msg);
     if (audio.length > 0 && this.acceptingModelAudio) {
       this.interviewerSpeaking = true;
-      for (const chunk of audio) this.opts.onModelAudio?.(base64ToPcm16(chunk));
+      this.modelAudioThisTurn = true;
+      for (const chunk of audio) {
+        this.opts.onModelAudio?.(base64ToPcm16(chunk), this.requestUtteranceId);
+      }
     }
 
     const content = serverContent(msg);
     if (content?.["interrupted"] === true && this.acceptingModelAudio && !this.localPlaybackActive) {
       this.interviewerSpeaking = false;
-      this.acceptingModelAudio = false;
+      this.invalidateRequest();
       this.opts.onBargeIn?.();
     }
     const interimTranscript = content?.["interimInputTranscription"] ?? content?.["interim_input_transcription"];
@@ -526,11 +677,39 @@ export class RealtimeVoice {
     if (finalText) this.opts.onInputTranscript?.({ text: finalText, final: true });
 
     if (content?.["turnComplete"] === true || content?.["turn_complete"] === true) {
+      const hadAudio = this.modelAudioThisTurn;
+      const utteranceId = this.requestUtteranceId;
+      // A turn that ends with no audio stays open: the shell gives it a short
+      // grace period and then reports an empty response, rather than this
+      // class deciding that nothing was a delivery.
+      if (hadAudio || !this.modelGenerating) {
+        this.acceptingModelAudio = false;
+        this.modelGenerating = false;
+      }
       this.interviewerSpeaking = this.localPlaybackActive || this.modelPlaybackActive;
-      this.acceptingModelAudio = false;
-      this.opts.onSpeechComplete?.();
+      this.opts.onSpeechComplete?.({ utteranceId, hadAudio });
+      this.afterInterviewerChange();
     }
   }
+}
+
+/** Resolve with the relay, or reject the moment its signal aborts. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("aborted"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
 }
 
 function boundaryProsody(event: VadEvent): Pick<SpeechBoundary, "prosody"> {

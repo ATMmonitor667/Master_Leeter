@@ -772,3 +772,121 @@ describe("determinism", () => {
     expect(first).toEqual(second);
   });
 });
+
+describe("delivery is reconciled with what actually played", () => {
+  const NOTHING_PLAYED = { outcome: "FAILED", reason: "EMPTY_RESPONSE", firstAudio: false } as const;
+
+  it("records every utterance outcome in the log", async () => {
+    const runtime = build();
+    await feed(runtime, "SESSION_STARTED", {}, "start");
+    await runtime.markSpeechFinished({ outcome: "COMPLETED", firstAudio: true, source: "CACHED", playedAudioMs: 24_000 });
+
+    const outcomes = await payloadsOf("UTTERANCE_OUTCOME");
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      utteranceId: "utt-opening",
+      action: "DELIVER_BRIEF",
+      outcome: "COMPLETED",
+      firstAudio: true,
+      playedAudioMs: 24_000,
+    });
+  });
+
+  it("re-offers the opening, verbatim, when none of it played", async () => {
+    const runtime = build();
+    const started = await record("SESSION_STARTED", {}, "start");
+    await runtime.ingest(started);
+    await runtime.markSpeechFinished(NOTHING_PLAYED);
+
+    // Readiness re-dispatches SESSION_STARTED.
+    const { decision, utterance } = await runtime.ingest(started);
+    expect(decision?.action).toBe("DELIVER_BRIEF");
+    expect(utterance?.utteranceId).toBe("utt-opening-r1");
+    // The opening, not a repeat variant of something never heard.
+    expect(utterance?.text).toBe(scenario.oralBrief.openingScript);
+    expect(utterance?.opening).toBe(true);
+
+    // Once it plays, readiness is quiet again.
+    await runtime.markSpeechFinished({ outcome: "COMPLETED", firstAudio: true });
+    expect((await runtime.ingest(started)).decision?.action).toBe("STAY_SILENT");
+  });
+
+  it("never replays an opening that played even partly", async () => {
+    const runtime = build();
+    const started = await record("SESSION_STARTED", {}, "start");
+    await runtime.ingest(started);
+    await runtime.markSpeechFinished({ outcome: "FAILED", reason: "CACHED_TAIL_TRUNCATED", firstAudio: true });
+
+    expect((await runtime.ingest(started)).decision?.action).toBe("STAY_SILENT");
+  });
+
+  it("stops re-offering after a bounded number of attempts", async () => {
+    const runtime = build();
+    const started = await record("SESSION_STARTED", {}, "start");
+    await runtime.ingest(started);
+    await runtime.markSpeechFinished(NOTHING_PLAYED);
+    expect((await runtime.ingest(started)).utterance?.utteranceId).toBe("utt-opening-r1");
+    await runtime.markSpeechFinished(NOTHING_PLAYED);
+    expect((await runtime.ingest(started)).utterance?.utteranceId).toBe("utt-opening-r2");
+    await runtime.markSpeechFinished(NOTHING_PLAYED);
+
+    expect((await runtime.ingest(started)).decision?.action).toBe("STAY_SILENT");
+  });
+
+  it("answers a candidate who speaks first with the opening they never heard", async () => {
+    const runtime = build();
+    await feed(runtime, "SESSION_STARTED", {}, "start");
+    await runtime.markSpeechFinished(NOTHING_PLAYED);
+
+    const { decision, utterance } = await feed(
+      runtime,
+      "SPEECH_FINAL",
+      { transcript: "Hello? Can you hear me?" },
+      "hello",
+    );
+    expect(decision?.action).toBe("DELIVER_BRIEF");
+    expect(utterance?.text).toBe(scenario.oralBrief.openingScript);
+  });
+
+  it("treats an older client's outcome-less completion as heard", async () => {
+    const runtime = build();
+    const started = await record("SESSION_STARTED", {}, "start");
+    await runtime.ingest(started);
+    await runtime.markSpeechFinished();
+
+    expect((await runtime.ingest(started)).decision?.action).toBe("STAY_SILENT");
+  });
+
+  it("closes an authorization no reconnecting client holds, and leaves a live one alone", async () => {
+    const runtime = build();
+    const started = await record("SESSION_STARTED", {}, "start");
+    await runtime.ingest(started);
+
+    // Reconnect mid-brief: the client reports the same utterance. Nothing changes.
+    expect(await runtime.reconcileSpeechOnReady("utt-opening")).toBeNull();
+    expect(runtime.voiceContext().utteranceId).toBe("utt-opening");
+
+    // A reloaded page holds nothing. The stale window closes as CANCELLED...
+    expect(await runtime.reconcileSpeechOnReady(null)).toBe("utt-opening");
+    expect(runtime.voiceContext().utteranceId).toBeNull();
+    expect((await payloadsOf("UTTERANCE_OUTCOME")).at(-1)).toMatchObject({
+      utteranceId: "utt-opening",
+      outcome: "CANCELLED",
+      reason: "CLIENT_LOST_UTTERANCE",
+    });
+
+    // ...and the opening, whose delivery is unknown, is offered again.
+    expect((await runtime.ingest(started)).decision?.action).toBe("DELIVER_BRIEF");
+  });
+
+  it("carries a pending re-offer across a restart", async () => {
+    const original = build();
+    const started = await record("SESSION_STARTED", {}, "start");
+    await original.ingest(started);
+    await original.markSpeechFinished(NOTHING_PLAYED);
+
+    const restored = build();
+    restored.restore(await log.read(SESSION_ID));
+    expect((await restored.ingest(started)).decision?.action).toBe("DELIVER_BRIEF");
+  });
+});

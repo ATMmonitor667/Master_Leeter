@@ -35,7 +35,13 @@
     "product:metrics": "pnpm --filter @master-leeter/api exec tsx scripts/product-metrics.ts",
     "release:preflight": "pnpm --filter @master-leeter/api exec tsx scripts/release-preflight.ts",
     "release:smoke": "node scripts/release-smoke.mjs",
-    "hooks:install": "git config core.hooksPath .githooks"
+    "hooks:install": "git config core.hooksPath .githooks",
+    "tokens": "node scripts/design-tokens.mjs",
+    "tokens:check": "node scripts/design-tokens.mjs --check",
+    "check:ui": "node scripts/check-ui.mjs",
+    "check:ui-budget": "node scripts/check-ui-budget.mjs",
+    "test:ui": "pnpm --filter @master-leeter/web test:ui",
+    "check:performance": "node scripts/collect-lighthouse.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

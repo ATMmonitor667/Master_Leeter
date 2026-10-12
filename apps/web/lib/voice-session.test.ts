@@ -103,16 +103,41 @@ describe("browser voice capture", () => {
       provider.onopen?.();
       provider.onmessage?.({ data: JSON.stringify({ setupComplete: {} }) });
       await vi.advanceTimersByTimeAsync(0);
+      const calls = (suffix: string) =>
+        vi.mocked(apiFetch).mock.calls.filter(([url]) => url.endsWith(suffix));
+      const readyBefore = calls("voice-ready").length;
+
+      // An empty provider turn is not a delivered brief. After a short grace
+      // period it FAILS honestly, the candidate is told, and readiness is
+      // re-posted so the server can re-offer the opening.
       session.speak({ action: "DELIVER_BRIEF", utteranceId: "silent-brief" });
       provider.onmessage?.({ data: JSON.stringify({ serverContent: { turnComplete: true } }) });
       await vi.advanceTimersByTimeAsync(0);
       expect(errors).toHaveLength(0);
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(3_000);
       expect(errors).toHaveLength(1);
-      expect(errors[0]?.message).toContain("didn't return speech");
+      expect(errors[0]?.message).toContain("didn't play");
+      expect(session.currentStatus).toBe("LISTENING");
+      const empty = calls("voice-utterance-complete").at(-1)?.[1]?.body as string;
+      expect(empty).toContain('"outcome":"FAILED"');
+      expect(empty).toContain('"reason":"EMPTY_RESPONSE"');
+      expect(empty).toContain('"firstAudio":false');
+      expect(calls("voice-ready").length).toBe(readyBefore + 1);
+
+      // A duplicate ACTION for a finished utterance cannot replay it.
+      session.speak({ action: "DELIVER_BRIEF", utteranceId: "silent-brief" });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(errors).toHaveLength(1);
+
+      // A provider that never answers at all is broken: fail, then reconnect.
+      session.speak({ action: "DELIVER_BRIEF", utteranceId: "stalled-brief" });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(errors).toHaveLength(2);
+      expect(errors[1]?.message).toContain("Reconnecting voice");
       expect(session.currentStatus).toBe("CONNECTING");
-      const outcomes = vi.mocked(apiFetch).mock.calls.filter(([url]) => url.endsWith("voice-utterance-complete"));
-      expect(outcomes.at(-1)?.[1]?.body).toContain('"outcome":"INTERRUPTED"');
+      const stalled = calls("voice-utterance-complete").at(-1)?.[1]?.body as string;
+      expect(stalled).toContain('"utteranceId":"stalled-brief"');
+      expect(stalled).toContain('"reason":"NO_FIRST_AUDIO"');
     } finally {
       await session.stop();
     }

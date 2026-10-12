@@ -49,3 +49,25 @@ Regression coverage checks the actual HTTP/WebSocket sequence through authorizat
 An earlier live attempt passed the opening but timed out on the repeat. A browser watchdog now surfaces an authorized model turn with no audio after 15 seconds and reconnects; an empty provider turn is no longer reported as successful delivery. Microphone acoustics and cached audio tail failures still require separate live testing.
 
 Restart the API and web dev servers, then establish a fresh voice session to receive the updated constrained credential. Existing provider connections retain their old tool configuration.
+
+## Truthful delivery lifecycle (roadmap package A, October 11)
+
+Implements priority 1 of `VOICE_NEXT_IMPLEMENTATION_ROADMAP.txt` plus the measurement and interruption pieces it depends on.
+
+**One lifecycle per utterance.** `apps/web/lib/utterance-lifecycle.ts` replaces the voice shell's loose booleans with `AUTHORIZED → REQUESTED → FIRST_AUDIO → PLAYING → COMPLETED`, plus terminal `INTERRUPTED`, `FAILED` and `CANCELLED`. COMPLETED requires both an honest source ending (provider `turnComplete` with audio, or a cached stream whose byte count matches `totalBytes`) and local playback draining. Duplicate and late signals are ignored once terminal.
+
+**Deadlines** (`SPEECH_DEADLINES` in `voice-session.ts`): 15 s with no first audio, 3 s grace after an empty provider turn, 5 s mid-stream stall measured only while the playback queue is empty (a spoken pause never empties it), queued audio + 3 s for playback to drain, and 20 s for speech authorized while the provider socket is down. Relayed tool calls have an 8 s deadline and answer `TOOL_TIMEOUT`.
+
+**Honest failures.** A cached tail that errors or arrives short lets the queued prefix finish, then reports FAILED, not COMPLETED. An empty provider turn reports `EMPTY_RESPONSE`. The candidate sees a short notice whenever speech failed or was cut off. Partial playback is never replayed automatically; the notice tells them to ask for a repeat, which goes through the gate.
+
+**Stale audio and tool results.** Model audio carries the utterance id it was requested for, and callbacks check the connection instance. Cancelling, replacing or reconnecting a turn bumps an epoch in `RealtimeVoice`, so late tool results are dropped instead of being sent to the model.
+
+**Readiness and the opening.** `/voice-ready` is retried with backoff (4 attempts) and reports a visible error if it still fails. It now carries `activeUtteranceId`. If the server holds an authorization that the reconnecting client is not playing (for example after a page reload or a lost outcome report), the server closes it as `CANCELLED / CLIENT_LOST_UTTERANCE`. Every outcome is appended to the log as `UTTERANCE_OUTCOME`. If the opening brief ends with no audio played, the runtime sets `openingRedeliveryPending`, which is checkpointed. The gate then re-offers the same reviewed `openingScript` on the next readiness (rule 0b) or the next finished candidate turn (rule 3a), at most twice, under new utterance ids (`utt-opening-r1`, `-r2`). Stage progression is unchanged, so a crashed client still cannot strand a session in oral delivery.
+
+**Interruptions.** Barge-in is now provisional for model speech too: output ducks to 25% and is confirmed only by 400 ms of sustained voice or an explicit word. While the provider is still generating, the `activityStart` boundary is held back, because under manual VAD it would cancel the provider's answer. The candidate's audio is buffered (up to 1.5 s) and sent after the boundary once the interruption is confirmed, or once the interviewer stops. A cough during the brief no longer cancels it. Speech starting before any audio, if confirmed, ends the turn as CANCELLED.
+
+**Ledger.** The latency ledger now opens for every authorized utterance and closes at its terminal outcome. It records `outcome`, `outcomeReason`, underruns, received and played audio, and tool-call time. Failed and interrupted turns are reported instead of dropped. `voiceLatencyReport` adds authorization-to-audible latency by source and outcome counts. End-of-turn response latency still requires a quiet onset, so the opening brief stays out of that distribution.
+
+### Validation and limits
+
+Unit and HTTP tests cover the lifecycle fault matrix, empty provider turns, no-first-audio reconnects, duplicate ACTIONs, held boundaries during coughs, tool timeouts, late tool results, ledger outcomes, opening re-offer (bounded, survives restarts, never after partial playback), and `/voice-ready` reconciliation. No live provider session was run for this change. Thresholds (400 ms confirmation, 5 s stall, 1.5 s buffer) are engineering defaults and need tuning against the live checks above: headphones vs speakers, cough during model and cached speech, explicit "stop", and slow networks. Deferring `activityStart` assumes Gemini Live cancels generation on `activityStart` under manual VAD, which matches the current documented behavior but was not re-verified live. `VoiceSession.diagnostics` holds structured fault records but is not yet attached to the in-page support report.

@@ -12,19 +12,28 @@ const FOCUSABLE = [
 ].join(",");
 
 /** Keeps keyboard focus inside an active modal and restores it on close. */
-export function useDialogFocus<T extends HTMLElement>(active: boolean, onClose: () => void) {
+export function useDialogFocus<T extends HTMLElement>(
+  active: boolean,
+  onClose: () => void,
+) {
   const dialogRef = useRef<T | null>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
   useEffect(() => {
     if (!active) return;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previous =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const dialog = dialogRef.current;
-    const initial = dialog?.querySelector<HTMLElement>("[data-autofocus]") ??
-      dialog?.querySelector<HTMLElement>(FOCUSABLE) ?? dialog;
+    if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
+    const initial =
+      dialog?.querySelector<HTMLElement>("[data-autofocus]") ??
+      dialog?.querySelector<HTMLElement>(FOCUSABLE) ??
+      dialog;
     initial?.focus();
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -34,18 +43,29 @@ export function useDialogFocus<T extends HTMLElement>(active: boolean, onClose: 
         return;
       }
       if (event.key !== "Tab" || !dialog) return;
-      const elements = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)]
-        .filter((element) => element.getClientRects().length > 0);
-      if (elements.length === 0) { event.preventDefault(); dialog.focus(); return; }
+      const elements = [
+        ...dialog.querySelectorAll<HTMLElement>(FOCUSABLE),
+      ].filter((element) => element.getClientRects().length > 0);
+      if (elements.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
       const first = elements[0]!;
       const last = elements[elements.length - 1]!;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.body.style.overflow = overflow;
+      if (dialog instanceof HTMLDialogElement && dialog.open) dialog.close();
       previous?.focus();
     };
   }, [active]);

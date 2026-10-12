@@ -3,8 +3,12 @@ import {
   VoiceLatencyLedger,
   largestStages,
   responseLatencyMs,
+  authorizationLatencyMs,
   type LatencyLedger,
+  type LedgerTerminal,
 } from "./latency-ledger";
+
+const DONE: LedgerTerminal = { outcome: "COMPLETED", underruns: 0, receivedAudioMs: 1_000, playedAudioMs: 1_000 };
 
 function ledgerWithSink() {
   const completed: LatencyLedger[] = [];
@@ -21,6 +25,7 @@ describe("the metric is measured from the quiet onset, not from the decision", (
     ledger.mark("vadEndDetectedMs", 1_350);
     ledger.authorized("utt-1", "ASK_PROBE", "CACHED_AUDIO", 1_500);
     ledger.firstSamplePlayed(1_620);
+    ledger.terminal(DONE, 1_620);
 
     expect(completed).toHaveLength(1);
     // 620ms, which includes the hangover. Hiding the 350 inside the detector
@@ -30,26 +35,60 @@ describe("the metric is measured from the quiet onset, not from the decision", (
 });
 
 describe("what it refuses to measure", () => {
-  it("does not open a ledger for an utterance with no candidate turn in front of it", () => {
-    // DELIVER_BRIEF opens the interview. There is no quiet onset behind it, and
-    // timing it would put a multi-minute "latency" in the distribution.
+  it("reports an utterance with no candidate turn in front of it without inventing a response latency", () => {
+    // DELIVER_BRIEF opens the interview. There is no quiet onset behind it, so
+    // it must not enter the end-of-turn distribution — but authorization to
+    // audible, and its outcome, are still evidence.
     const { ledger, completed } = ledgerWithSink();
 
-    expect(ledger.authorized("utt-brief", "DELIVER_BRIEF", "CACHED_AUDIO", 5_000)).toBe(false);
+    ledger.authorized("utt-brief", "DELIVER_BRIEF", "CACHED_AUDIO", 5_000);
     ledger.firstSamplePlayed(5_100);
+    ledger.terminal(DONE, 30_000);
 
-    expect(completed).toHaveLength(0);
+    expect(completed).toHaveLength(1);
+    expect(responseLatencyMs(completed[0]!)).toBeNull();
+    expect(authorizationLatencyMs(completed[0]!)).toBe(100);
   });
 
-  it("drops an utterance the candidate talked over", () => {
+  it("does not report until the utterance has an outcome", () => {
     const { ledger, completed } = ledgerWithSink();
 
     ledger.mark("quietOnsetMs", 1_000);
     ledger.authorized("utt-1", "ASK_PROBE", "CACHED_AUDIO", 1_400);
-    ledger.abandon();
     ledger.firstSamplePlayed(1_500);
 
     expect(completed).toHaveLength(0);
+  });
+
+  it("reports a failed or interrupted turn with its outcome instead of dropping it", () => {
+    const { ledger, completed } = ledgerWithSink();
+
+    ledger.mark("quietOnsetMs", 1_000);
+    ledger.authorized("utt-1", "ANSWER_CLARIFICATION", "REALTIME_MODEL", 1_400);
+    ledger.terminal({ outcome: "FAILED", reason: "NO_FIRST_AUDIO", underruns: 0, receivedAudioMs: 0, playedAudioMs: 0 }, 16_400);
+
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.outcome).toBe("FAILED");
+    expect(completed[0]?.outcomeReason).toBe("NO_FIRST_AUDIO");
+    // Never heard, so no response latency — but the failure is on the record.
+    expect(responseLatencyMs(completed[0]!)).toBeNull();
+  });
+
+  it("keeps a candidate turn taken during long playback out of the open ledger", () => {
+    const { ledger, completed } = ledgerWithSink();
+
+    ledger.authorized("utt-brief", "DELIVER_BRIEF", "CACHED_AUDIO", 0);
+    ledger.firstSamplePlayed(50);
+    // The candidate finishes a sentence while the brief is still playing.
+    ledger.mark("quietOnsetMs", 8_650);
+    ledger.mark("vadEndDetectedMs", 9_000);
+    ledger.terminal(DONE, 20_000);
+    expect(completed[0]?.vadEndDetectedMs).toBeUndefined();
+
+    ledger.authorized("utt-2", "ASK_PROBE", "CACHED_AUDIO", 21_500);
+    ledger.firstSamplePlayed(21_600);
+    ledger.terminal(DONE, 22_000);
+    expect(completed[1]?.vadEndDetectedMs).toBe(9_000);
   });
 
   it("expires a ledger nobody closed rather than reporting it as very slow", () => {
@@ -61,6 +100,7 @@ describe("what it refuses to measure", () => {
     ledger.mark("quietOnsetMs", 200_000);
     ledger.authorized("utt-2", "ASK_PROBE", "CACHED_AUDIO", 200_400);
     ledger.firstSamplePlayed(200_500);
+    ledger.terminal(DONE, 200_600);
 
     expect(completed).toHaveLength(1);
     expect(completed[0]?.utteranceId).toBe("utt-2");
@@ -75,6 +115,7 @@ describe("marks", () => {
     ledger.mark("quietOnsetMs", 4_000); // the candidate spoke again
     ledger.authorized("utt-1", "ASK_PROBE", "REALTIME_MODEL", 4_500);
     ledger.firstSamplePlayed(4_900);
+    ledger.terminal(DONE, 4_900);
 
     expect(responseLatencyMs(completed[0]!)).toBe(900);
   });
@@ -87,6 +128,7 @@ describe("marks", () => {
     ledger.mark("vadEndDetectedMs", 900); // second report of the same stage
     ledger.authorized("utt-1", "ASK_PROBE", "CACHED_AUDIO", 1_000);
     ledger.firstSamplePlayed(1_100);
+    ledger.terminal(DONE, 1_100);
 
     expect(completed[0]?.vadEndDetectedMs).toBe(400);
   });
@@ -99,6 +141,7 @@ describe("marks", () => {
     ledger.mark("transcriptFinalMs", 900); // later final chunk — this is the one that matters
     ledger.authorized("utt-1", "ASK_PROBE", "CACHED_AUDIO", 1_000);
     ledger.firstSamplePlayed(1_100);
+    ledger.terminal(DONE, 1_100);
 
     expect(completed[0]?.transcriptFinalMs).toBe(900);
   });
@@ -112,6 +155,7 @@ describe("marks", () => {
     ledger.mark("transcriptFinalMs", 900);
     ledger.authorized("utt-1", "ASK_PROBE", "REALTIME_MODEL", 1_000);
     ledger.firstSamplePlayed(1_100);
+    ledger.terminal(DONE, 1_100);
 
     expect(completed[0]?.transcriptChunks).toBe(3);
   });
@@ -123,6 +167,7 @@ describe("marks", () => {
     ledger.authorized("utt-1", "ASK_PROBE", "CACHED_AUDIO", 500);
     ledger.setSource("REALTIME_MODEL"); // the cache missed
     ledger.firstSamplePlayed(2_000);
+    ledger.terminal(DONE, 2_000);
 
     expect(completed[0]?.source).toBe("REALTIME_MODEL");
   });
@@ -138,6 +183,7 @@ describe("marks", () => {
     ledger.mark("transcriptFinalMs", 1_300);
     ledger.authorized("utt-1", "ASK_PROBE", "CACHED_AUDIO", 1_500);
     ledger.firstSamplePlayed(1_600);
+    ledger.terminal(DONE, 1_600);
 
     expect(completed[0]?.transcriptChunks).toBe(1);
   });

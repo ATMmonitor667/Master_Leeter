@@ -88,6 +88,26 @@ export interface Utterance {
   text: string;
   /** Code revision the wording was grounded in, when it refers to code. */
   groundedInRevision?: number;
+  /** The opening brief (first telling or a re-offer of one that never played). */
+  opening?: boolean;
+}
+
+/**
+ * How an authorized utterance ended, as reported by the browser that played it.
+ *
+ * `firstAudio` is the fact that matters for progression: whether any of it
+ * reached playback. Clients from before it existed report only COMPLETED or
+ * INTERRUPTED, both of which imply audio played.
+ */
+export interface SpeechOutcome {
+  outcome: "COMPLETED" | "INTERRUPTED" | "FAILED" | "CANCELLED";
+  reason?: string | undefined;
+  source?: "CACHED" | "MODEL" | undefined;
+  firstAudio?: boolean | undefined;
+  receivedAudioMs?: number | undefined;
+  playedAudioMs?: number | undefined;
+  underruns?: number | undefined;
+  durationMs?: number | undefined;
 }
 
 export interface RuntimeResult {
@@ -176,6 +196,9 @@ const RuntimeCheckpointSchema = z.object({
   answeredFactKeys: z.array(z.string()),
   briefDeliveryCount: z.number().int().nonnegative(),
   observationCount: z.number().int().nonnegative(),
+  // Optional: checkpoints written before delivery outcomes existed lack them.
+  openingRedeliveryPending: z.boolean().optional(),
+  openingRedeliveries: z.number().int().nonnegative().optional(),
 });
 type RuntimeCheckpoint = z.infer<typeof RuntimeCheckpointSchema>;
 
@@ -268,7 +291,7 @@ export class InterviewRuntime {
    * finishes, so a model that calls a tool a second later gets a refusal rather
    * than a second turn.
    */
-  private authorized: { decision: GateDecision; utteranceId: string; text: string } | null = null;
+  private authorized: { decision: GateDecision; utteranceId: string; text: string; opening: boolean } | null = null;
 
   /** Fact keys already answered aloud, so the agent knows what it has said. */
   private readonly answeredFactKeys: string[] = [];
@@ -280,6 +303,18 @@ export class InterviewRuntime {
    * answered from the reviewed variants rather than by paraphrase.
    */
   private briefDeliveryCount = 0;
+
+  /**
+   * The opening brief was authorized but the browser reported that none of it
+   * played — an empty provider turn, a dead socket, a page that reloaded
+   * before audio. Authorization is not delivery: the gate re-offers the
+   * opening (the same reviewed wording) on the next readiness or turn, at
+   * most MAX_OPENING_REDELIVERIES times. A brief that played even partly is
+   * never replayed automatically; the candidate can ask for a repeat.
+   */
+  private openingRedeliveryPending = false;
+  private openingRedeliveries = 0;
+  private static readonly MAX_OPENING_REDELIVERIES = 2;
 
   /** Bounded log of utterance ids issued by this runtime, for latency report validation. */
   private readonly issuedUtteranceIds: string[] = [];
@@ -458,6 +493,8 @@ export class InterviewRuntime {
     this.answeredFactKeys.splice(0, this.answeredFactKeys.length, ...checkpoint.answeredFactKeys);
     this.briefDeliveryCount = checkpoint.briefDeliveryCount;
     this.observationCount = checkpoint.observationCount;
+    this.openingRedeliveryPending = checkpoint.openingRedeliveryPending ?? false;
+    this.openingRedeliveries = checkpoint.openingRedeliveries ?? 0;
   }
 
   private replaceRecord(target: Record<string, number>, source: Record<string, number>): void {
@@ -604,6 +641,8 @@ export class InterviewRuntime {
       answeredFactKeys: [...this.answeredFactKeys],
       briefDeliveryCount: this.briefDeliveryCount,
       observationCount: this.observationCount,
+      openingRedeliveryPending: this.openingRedeliveryPending,
+      openingRedeliveries: this.openingRedeliveries,
     };
   }
 
@@ -929,6 +968,7 @@ export class InterviewRuntime {
       followUpsUsed: this.followUpsUsed,
       solvedOptimally: this.solvedOptimally(),
       briefDeliveryCount: this.briefDeliveryCount,
+      openingRedeliveryPending: this.openingRedeliveryPending,
     });
 
     const initiallyStale = this.staleGroundingReason(decision);
@@ -1020,7 +1060,9 @@ export class InterviewRuntime {
 
     // The window in which the voice agent may fetch words. Opened by the gate,
     // closed by markSpeechFinished — nothing else opens it.
-    this.authorized = utterance ? { decision, utteranceId: utterance.utteranceId, text: utterance.text } : null;
+    this.authorized = utterance
+      ? { decision, utteranceId: utterance.utteranceId, text: utterance.text, opening: utterance.opening === true }
+      : null;
 
     this.lastSpokeAtMs = this.now();
     this.candidateSpeechStarted = false;
@@ -1233,19 +1275,26 @@ export class InterviewRuntime {
       followUpsUsed: this.followUpsUsed,
       solvedOptimally: this.solvedOptimally(),
       briefDeliveryCount: this.briefDeliveryCount,
+      openingRedeliveryPending: this.openingRedeliveryPending,
     });
 
     if (decision.action === "STAY_SILENT") return { decision, utterance: null };
+
+    // A re-offer gets its own turn id: the first authorization's id is spent,
+    // and reusing it would make two different deliveries share one outcome.
+    const turnId = this.openingRedeliveryPending
+      ? `opening-r${this.openingRedeliveries + 1}`
+      : "opening";
 
     await this.append(
       "ACTION_DECIDED",
       "INTERVIEWER",
       { action: decision.action, reason: decision.reason, decidedByRule: decision.decidedByRule },
-      "action:opening",
+      `action:${turnId}`,
     );
 
     const utterance = await this.realize(decision, {
-      turnId: "opening",
+      turnId,
       finalized: true,
       transcript: "",
       semanticEndProbability: 1,
@@ -1254,7 +1303,9 @@ export class InterviewRuntime {
       endedAt: new Date(this.now()).toISOString(),
     });
 
-    this.authorized = utterance ? { decision, utteranceId: utterance.utteranceId, text: utterance.text } : null;
+    this.authorized = utterance
+      ? { decision, utteranceId: utterance.utteranceId, text: utterance.text, opening: utterance.opening === true }
+      : null;
     this.lastSpokeAtMs = this.now();
     if (utterance) this.interviewerCurrentlySpeaking = true;
 
@@ -1300,17 +1351,56 @@ export class InterviewRuntime {
    * matters is that the flag is driven by a signal rather than left permanently
    * false, so the barge-in rule is live the moment audio is.
    */
-  async markSpeechFinished(): Promise<void> {
-    const completedUtteranceId = this.authorized?.utteranceId;
-    const completedAction = this.authorized?.decision.action;
+  async markSpeechFinished(outcome?: SpeechOutcome): Promise<void> {
+    const completed = this.authorized;
+    const completedUtteranceId = completed?.utteranceId;
+    const completedAction = completed?.decision.action;
     this.interviewerCurrentlySpeaking = false;
     // The authorization does not outlive the utterance. A tool call arriving
     // after this is a model trying to take a second turn, and gets refused.
     this.authorized = null;
+
+    if (completed && outcome) {
+      // Evidence, not policy input for the live gate beyond the opening
+      // below: the evaluator and replay need to know what was actually heard.
+      await this.append(
+        "UTTERANCE_OUTCOME",
+        "INTERVIEWER",
+        { utteranceId: completed.utteranceId, action: completed.decision.action, ...definedOnly(outcome) },
+        `utterance-outcome:${completed.utteranceId}`,
+      );
+    }
+
+    if (completed?.opening) {
+      // Older clients report only COMPLETED/INTERRUPTED, both after audio.
+      const heard = !outcome || (outcome.firstAudio ?? (outcome.outcome === "COMPLETED" || outcome.outcome === "INTERRUPTED"));
+      if (heard) {
+        this.openingRedeliveryPending = false;
+      } else if (this.openingRedeliveries < InterviewRuntime.MAX_OPENING_REDELIVERIES) {
+        this.openingRedeliveryPending = true;
+      }
+    }
+
     if (completedAction === "DELIVER_BRIEF" && this.state === "ORAL_PROBLEM_DELIVERY") {
       await this.advanceStages();
     }
     if (completedUtteranceId) await this.persistCheckpoint(`speech-finished:${completedUtteranceId}`);
+  }
+
+  /**
+   * A browser (re)connected and reported which utterance it is playing.
+   *
+   * If the server still holds an authorization that browser is not playing,
+   * no live page holds it: a reload mid-sentence, or an outcome report that
+   * never arrived. Close it as CANCELLED — its delivery is unknown, so it is
+   * not counted as heard — and return its id. A reconnect during playback
+   * reports the same id and changes nothing.
+   */
+  async reconcileSpeechOnReady(activeUtteranceId: string | null): Promise<string | null> {
+    const open = this.authorized;
+    if (!open || open.utteranceId === activeUtteranceId) return null;
+    await this.markSpeechFinished({ outcome: "CANCELLED", reason: "CLIENT_LOST_UTTERANCE", firstAudio: false });
+    return open.utteranceId;
   }
 
   /**
@@ -1416,6 +1506,20 @@ export class InterviewRuntime {
 
       case "DELIVER_BRIEF": {
         const brief = this.deps.scenario.oralBrief;
+        if (this.openingRedeliveryPending) {
+          // The candidate never heard the opening, so they get the opening —
+          // not a repeat variant of something they have no first hearing of.
+          // It does not count as another telling.
+          this.openingRedeliveryPending = false;
+          this.openingRedeliveries += 1;
+          await this.append(
+            "BRIEF_DELIVERED",
+            "INTERVIEWER",
+            { delivery: this.briefDeliveryCount, repeat: false, redelivery: this.openingRedeliveries },
+            `brief:redeliver:${this.openingRedeliveries}`,
+          );
+          return { ...base, text: brief.openingScript, opening: true };
+        }
         // First telling is the opening script; later ones rotate through the
         // REVIEWED variants. Nothing here composes a retelling, because a
         // paraphrase is exactly how a second hearing leaks more than the first.
@@ -1434,7 +1538,7 @@ export class InterviewRuntime {
           `brief:${this.briefDeliveryCount}`,
         );
 
-        return { ...base, text };
+        return { ...base, text, ...(this.briefDeliveryCount === 1 ? { opening: true } : {}) };
       }
 
       case "ACKNOWLEDGE_BRIEFLY":
@@ -1714,4 +1818,9 @@ function stringOf(v: unknown): string | null {
 
 function numberOf(v: unknown): number | null {
   return typeof v === "number" ? v : null;
+}
+
+/** Drop undefined fields so an event payload carries only what was reported. */
+function definedOnly<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 }

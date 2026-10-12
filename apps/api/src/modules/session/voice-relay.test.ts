@@ -315,3 +315,73 @@ describe("the interview actually opens", () => {
     expect(events).toHaveLength(1);
   });
 });
+
+describe("an opening that never played is offered again", () => {
+  const exportTypes = (port: number, id: string) =>
+    fetch(`http://127.0.0.1:${port}/v1/privacy/sessions/${id}/export`)
+      .then((r) => r.json() as Promise<{ events: Array<{ type: string; payload: Record<string, unknown> }> }>)
+      .then((b) => b.events);
+  const post = (url: string, body: unknown) =>
+    fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  /** A live app socket: without one the server closes authorizations at once. */
+  const attach = async (port: number, id: string) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/interview-sessions/${id}/events`);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", () => resolve());
+      socket.once("error", reject);
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    return socket;
+  };
+
+  it("accepts a FAILED outcome and re-offers the brief on readiness", async () => {
+    const { port } = await start();
+    const id = await newSession(port);
+    const api = `http://127.0.0.1:${port}/v1/interview-sessions/${id}`;
+    const socket = await attach(port, id);
+    try {
+
+    await post(`${api}/voice-ready`, { activeUtteranceId: null });
+    const failed = await post(`${api}/voice-utterance-complete`, {
+      utteranceId: "utt-opening", outcome: "FAILED", reason: "EMPTY_RESPONSE", firstAudio: false, source: "MODEL",
+    });
+    expect(failed.status).toBe(200);
+
+    await post(`${api}/voice-ready`, { activeUtteranceId: null });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const events = await exportTypes(port, id);
+    expect(events.filter((e) => e.type === "BRIEF_DELIVERED")).toHaveLength(2);
+    // Interviewer payloads are excluded from the export by design; the
+    // outcome's contents are covered by the runtime tests.
+    expect(events.some((e) => e.type === "UTTERANCE_OUTCOME")).toBe(true);
+    } finally {
+      socket.close();
+    }
+  });
+
+  it("leaves a brief that is still playing alone, and closes one no page holds", async () => {
+    const { port } = await start();
+    const id = await newSession(port);
+    const api = `http://127.0.0.1:${port}/v1/interview-sessions/${id}`;
+    const socket = await attach(port, id);
+    try {
+
+    await post(`${api}/voice-ready`, { activeUtteranceId: null });
+    // Provider reconnect mid-brief: same utterance reported, nothing changes.
+    await post(`${api}/voice-ready`, { activeUtteranceId: "utt-opening" });
+    let events = await exportTypes(port, id);
+    expect(events.filter((e) => e.type === "BRIEF_DELIVERED")).toHaveLength(1);
+
+    // Page reload: nothing held. The stale authorization closes and the
+    // opening is offered again rather than silently assumed heard.
+    await post(`${api}/voice-ready`, { activeUtteranceId: null });
+    await new Promise((r) => setTimeout(r, 100));
+    events = await exportTypes(port, id);
+    expect(events.filter((e) => e.type === "BRIEF_DELIVERED")).toHaveLength(2);
+    expect(events.some((e) => e.type === "UTTERANCE_OUTCOME")).toBe(true);
+    } finally {
+      socket.close();
+    }
+  });
+});

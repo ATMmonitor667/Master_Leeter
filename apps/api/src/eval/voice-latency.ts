@@ -60,6 +60,26 @@ export interface VoiceLatencyReport {
    * count is what tells the two apart.
    */
   unmeasured: number;
+  /**
+   * Authorization received → first audible sample, by source.
+   *
+   * Excludes endpointing and the gate, so it cannot stand in for the
+   * candidate-experienced number above — report both. Includes utterances with
+   * no candidate turn in front of them, such as the opening brief.
+   */
+  authorizationBySource: Record<string, LatencySummary>;
+  /**
+   * How every reported utterance ended, failed ones included. Reporting only
+   * successful turns hides the worst cases.
+   */
+  outcomes: {
+    total: number;
+    byOutcome: Record<string, number>;
+    byReason: Record<string, number>;
+    bySource: Record<string, Record<string, number>>;
+    /** Times local playback drained while audio was still owed. */
+    underruns: number;
+  };
 }
 
 const MARK_ORDER = [
@@ -86,6 +106,10 @@ const MARK_ORDER = [
 export function voiceLatencyReport(events: readonly SessionEvent[]): VoiceLatencyReport {
   const samples: VoiceLatencySample[] = [];
   let unmeasured = 0;
+  const authorization = new Map<string, number[]>();
+  const outcomes: VoiceLatencyReport["outcomes"] = {
+    total: 0, byOutcome: {}, byReason: {}, bySource: {}, underruns: 0,
+  };
 
   for (const event of events) {
     if (event.type !== "VOICE_LATENCY_MEASURED") continue;
@@ -93,6 +117,25 @@ export function voiceLatencyReport(events: readonly SessionEvent[]): VoiceLatenc
     const payload = event.payload as Record<string, unknown>;
     const quietOnsetMs = num(payload["quietOnsetMs"]);
     const firstSamplePlayedMs = num(payload["firstSamplePlayedMs"]);
+    const authorizedMs = num(payload["authorizationReceivedMs"]);
+    const source = payload["source"] === "CACHED_AUDIO" ? "CACHED_AUDIO" : "REALTIME_MODEL";
+
+    if (authorizedMs !== null && firstSamplePlayedMs !== null) {
+      const group = authorization.get(source) ?? [];
+      group.push(firstSamplePlayedMs - authorizedMs);
+      authorization.set(source, group);
+    }
+
+    const outcome = typeof payload["outcome"] === "string" ? payload["outcome"] : null;
+    if (outcome) {
+      outcomes.total += 1;
+      outcomes.byOutcome[outcome] = (outcomes.byOutcome[outcome] ?? 0) + 1;
+      const reason = typeof payload["outcomeReason"] === "string" ? payload["outcomeReason"] : null;
+      if (reason) outcomes.byReason[reason] = (outcomes.byReason[reason] ?? 0) + 1;
+      const perSource = (outcomes.bySource[source] ??= {});
+      perSource[outcome] = (perSource[outcome] ?? 0) + 1;
+      outcomes.underruns += num(payload["underruns"]) ?? 0;
+    }
 
     if (quietOnsetMs === null || firstSamplePlayedMs === null) {
       unmeasured += 1;
@@ -120,6 +163,12 @@ export function voiceLatencyReport(events: readonly SessionEvent[]): VoiceLatenc
     if (summary) bySource[source] = summary;
   }
 
+  const authorizationBySource: Record<string, LatencySummary> = {};
+  for (const [source, values] of authorization) {
+    const summary = summarize(values);
+    if (summary) authorizationBySource[source] = summary;
+  }
+
   return {
     samples,
     overall: summarize(samples.map((s) => s.responseLatencyMs)),
@@ -127,6 +176,8 @@ export function voiceLatencyReport(events: readonly SessionEvent[]): VoiceLatenc
     bySource,
     stageMeansMs: stageMeans(samples),
     unmeasured,
+    authorizationBySource,
+    outcomes,
   };
 }
 

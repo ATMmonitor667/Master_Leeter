@@ -92,6 +92,11 @@ jobs:
       - name: Corruption check
         run: pnpm check:sorted
 
+      - name: UI token drift, contrast and colour ownership
+        run: |
+          pnpm tokens:check
+          pnpm check:ui
+
       - name: Typecheck
         run: pnpm typecheck
 
@@ -123,3 +128,35 @@ jobs:
       # Invariant 2, checked against the shipped artifact rather than intentions.
       - name: Bundle leak check
         run: pnpm check:bundle
+
+      - name: UI bundle budgets
+        run: pnpm check:ui-budget
+
+      - name: Install UI test browser
+        run: pnpm --filter @master-leeter/web exec playwright install --with-deps chromium
+
+      - name: UI accessibility, responsive and keyboard checks
+        run: pnpm test:ui
+
+      - name: Throttled landing and FAQ performance budgets
+        working-directory: apps/web
+        run: |
+          pnpm exec next start --port 3100 &
+          server_pid=$!
+          trap 'kill "$server_pid" || true' EXIT
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:3100/ > /dev/null && break
+            sleep 1
+          done
+          export CHROME_PATH="$(find "$HOME/.cache/ms-playwright" -path '*/chrome-linux64/chrome' -type f | head -1)"
+          pnpm exec lhci autorun
+
+      - name: Upload UI review screenshots and failure traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-review
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+            apps/web/lighthouse-report

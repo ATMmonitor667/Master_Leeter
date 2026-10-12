@@ -1,7 +1,8 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import { useEffect, type CSSProperties } from "react";
 
+import { usePreferences } from "./Preferences";
 export type InterviewerState = "LISTENING" | "WAITING" | "SPEAKING";
 
 const COPY: Record<InterviewerState, { label: string; color: string }> = {
@@ -23,17 +24,25 @@ const COPY: Record<InterviewerState, { label: string; color: string }> = {
  */
 export function InterviewerStatus({ state }: { state: InterviewerState }) {
   const { label, color } = COPY[state];
+  const { announce } = usePreferences();
+  useEffect(() => {
+    announce(`Interviewer ${label}`, 3);
+  }, [label]);
 
   return (
-    <div
-      aria-live="polite"
-      aria-label={`Interviewer ${label}`}
-      className="interviewer-status"
-    >
-      <span className={`interviewer-orb ${state.toLowerCase()}`} style={{ "--state-color": color } as CSSProperties}>
-        <i /><i /><i />
+    <div aria-label={`Interviewer ${label}`} className="interviewer-status">
+      <span
+        className={`interviewer-orb ${state.toLowerCase()}`}
+        style={{ "--state-color": color } as CSSProperties}
+      >
+        <i />
+        <i />
+        <i />
       </span>
-      <span><small>Interviewer</small>{label}</span>
+      <span>
+        <small>Interviewer</small>
+        {label}
+      </span>
     </div>
   );
 }

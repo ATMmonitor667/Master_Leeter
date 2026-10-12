@@ -14,6 +14,12 @@ import { VoiceLatencyLedger, type LatencyLedger } from "./latency-ledger";
 import { Vad } from "./vad";
 import { ProsodicTurnEndPredictor } from "./turn-predictor";
 import { RoomTone } from "./room-tone";
+import { LIVE_OUTPUT_SAMPLE_RATE } from "./audio";
+import {
+  UtteranceLifecycle,
+  type UtteranceReport,
+  type UtteranceSignal,
+} from "./utterance-lifecycle";
 
 /**
  * Browser shell for the voice path (M3-2).
@@ -117,6 +123,42 @@ export class WebAudioSink implements AudioSink {
 export type VoiceStatus =
   "IDLE" | "CONNECTING" | "LISTENING" | "SPEAKING" | "FAILED";
 
+/**
+ * Deadlines for an authorized utterance (roadmap §1).
+ *
+ * Each one is a point after which waiting longer cannot be told apart from the
+ * interviewer having silently decided not to speak — so the utterance ends
+ * with an honest FAILED instead, and the candidate is told.
+ */
+export const SPEECH_DEADLINES = {
+  /** Authorized model speech with no audio. Covers a tool round trip. */
+  noFirstAudioMs: 15_000,
+  /** The provider ended its turn with no audio; allow late frames briefly. */
+  emptyTurnGraceMs: 3_000,
+  /** Playback drained while the source still owed audio. A spoken pause is
+   *  encoded as silent samples, so an empty queue means no data arrived. */
+  midStreamStallMs: 5_000,
+  /** Source complete but playback never drained (suspended output, lost device). */
+  drainSlackMs: 3_000,
+  /** Authorized while the provider socket was down. */
+  providerUnavailableMs: 20_000,
+} as const;
+
+/** A structured, user-safe record of something that went wrong with voice. */
+export interface VoiceDiagnostic {
+  kind:
+    | "READY_FAILED"
+    | "SPEECH_FAILED"
+    | "SPEECH_CUT_OFF"
+    | "OUTCOME_REPORT_FAILED"
+    | "PROVIDER_RECONNECT";
+  atMs: number;
+  utteranceId?: string | undefined;
+  action?: string | undefined;
+  reason?: string | undefined;
+  detail?: string | undefined;
+}
+
 export interface VoiceSessionOptions {
   sessionId: string;
   apiBase: string;
@@ -133,6 +175,8 @@ export interface VoiceSessionOptions {
    * and show which devices are actually live.
    */
   onDeviceChange?: (state: VoiceDeviceState) => void;
+  /** Structured diagnostics; also kept in `diagnostics` for support reports. */
+  onDiagnostic?: (diagnostic: VoiceDiagnostic) => void;
 }
 
 export async function listMicrophones(): Promise<MediaDeviceInfo[]> {
@@ -178,20 +222,31 @@ export class VoiceSession {
   private reconnectAttempts = 0;
   private captureRate = 0;
   private mutedState = false;
-  private providerTurnComplete = false;
   private pendingSpeech: SpeechAuthorization | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private activeDeviceId: string | undefined;
   private recoveringMicrophone = false;
   private activeSinkId: string | undefined;
   private deviceChangeListener: (() => void) | null = null;
-  private speechInFlight = false;
-  private activeUtteranceId: string | null = null;
-  private modelAudioStarted = false;
-  private speechStartTimer: ReturnType<typeof setTimeout> | null = null;
-  private speechSource: "CACHED" | "MODEL" | null = null;
+  /**
+   * The one utterance in flight, from authorization to an honest outcome.
+   * Replaces the old cluster of booleans; see utterance-lifecycle.ts.
+   */
+  private utterance: UtteranceLifecycle | null = null;
+  /** Recently finished ids, so a duplicate ACTION cannot replay a turn. */
+  private readonly finishedUtterances: string[] = [];
+  private speechWatchdog: ReturnType<typeof setTimeout> | null = null;
+  /** Monotonic time the current utterance was requested or authorized. */
+  private speechWaitStartedAt = 0;
+  /** The provider ended the current turn without audio. */
+  private emptyTurnAtMs: number | null = null;
+  /** A source failure that waits for the already-queued prefix to drain. */
+  private pendingFailure: string | null = null;
   private cachedAbort: AbortController | null = null;
-  private cachedStreamComplete = false;
+  /** Ordered outcome reports; /voice-ready waits for them. */
+  private outcomeReports: Promise<void> = Promise.resolve();
+  private readyGeneration = 0;
+  private readonly diagnosticLog: VoiceDiagnostic[] = [];
   private candidateSpeechOpen = false;
   private awaitingFinalTranscript = false;
   private latestInterimTranscript = "";
@@ -216,6 +271,11 @@ export class VoiceSession {
 
   get muted(): boolean {
     return this.mutedState;
+  }
+
+  /** Recent voice diagnostics, newest last. Safe to attach to a support report. */
+  get diagnostics(): readonly VoiceDiagnostic[] {
+    return [...this.diagnosticLog];
   }
 
   async start(): Promise<void> {
@@ -251,11 +311,7 @@ export class VoiceSession {
       this.playback = new PlaybackScheduler({
         sink: new WebAudioSink(this.context, (source) => {
           this.playback?.release(source);
-          this.voice?.noteModelPlayback(
-            this.speechSource === "MODEL" && Boolean(this.playback?.isPlaying),
-          );
-          this.completeSpeechIfDrained();
-          this.completeCachedIfDrained();
+          this.onPlaybackProgress();
         }),
       });
 
@@ -392,56 +448,64 @@ export class VoiceSession {
       // Every tool call goes to the server. The client answers none of them:
       // the tools read pinned scenario content and check the gate's
       // authorization, neither of which may live here.
-      callTool: async (call) => {
+      callTool: async (call, signal) => {
         const res = await apiFetch(
           `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-tool`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ name: call.name, args: call.args }),
+            ...(signal ? { signal } : {}),
           },
         );
 
         if (!res.ok) return { ok: false, refusal: `RELAY_${res.status}` };
         return (await res.json()) as Record<string, unknown>;
       },
-      onModelAudio: (pcm) => {
-        if (this.speechSource !== "MODEL") return;
-        if (pcm.length === 0) return;
-        this.clearSpeechStartTimer();
-        const isFirstChunk = !this.modelAudioStarted;
-        this.modelAudioStarted = true;
-        this.speechInFlight = true;
-        this.providerTurnComplete = false;
+      onToolCall: (info) => {
+        if (this.voice === voice) this.ledger.toolCall(info.ms, info.ok);
+      },
+      onModelAudio: (pcm, utteranceId) => {
+        // Tagged twice: by connection (a replaced socket's late frames) and by
+        // utterance (a cancelled turn's late frames). Either mismatch is audio
+        // nobody authorized to play now.
+        const u = this.utterance;
+        if (this.voice !== voice || !u || u.source !== "MODEL") return;
+        if (utteranceId !== u.utteranceId || pcm.length === 0) return;
+        const isFirstChunk = !u.hasAudio;
+        this.signal({ type: "AUDIO_RECEIVED", seconds: pcm.length / LIVE_OUTPUT_SAMPLE_RATE });
         const startAt = this.playback?.enqueue(pcm);
-        voice.noteModelPlayback(Boolean(this.playback?.isPlaying));
+        if (startAt === null || startAt === undefined) return;
+        this.signal({ type: "PLAYBACK_STARTED" });
+        voice.noteModelPlayback(true);
         this.setStatus("SPEAKING");
         if (isFirstChunk) {
-          // Scheduling lag (~30ms lookahead) is not separated in V0.
-          const now = Date.now();
-          this.ledger.mark("firstAudioByteMs", now);
-          if (startAt !== null && startAt !== undefined)
-            this.ledger.firstSamplePlayed(this.firstSampleWallTime(startAt));
+          this.ledger.mark("firstAudioByteMs", Date.now());
+          this.ledger.firstSamplePlayed(this.firstSampleWallTime(startAt));
         }
       },
-      onSpeechComplete: () => {
-        // A provider can end a turn without returning audio. That is not a
-        // delivered problem; keep the watchdog armed instead of logging success.
-        if (this.speechSource !== "MODEL" || !this.modelAudioStarted) return;
-        this.providerTurnComplete = true;
-        this.completeSpeechIfDrained();
+      onSpeechComplete: ({ utteranceId, hadAudio }) => {
+        const u = this.utterance;
+        if (this.voice !== voice || !u || u.source !== "MODEL") return;
+        if (utteranceId !== u.utteranceId) return;
+        if (hadAudio) {
+          this.signal({ type: "SOURCE_COMPLETE" });
+          return;
+        }
+        // A provider can end a turn without audio. That is not a delivered
+        // answer — but late frames are possible, so give it a short grace
+        // period before reporting EMPTY_RESPONSE.
+        this.emptyTurnAtMs = performance.now();
+        this.armWatchdog();
       },
       onBargeIn: () => {
+        if (this.voice !== voice) return;
         // Immediate and total. Chunks arrive faster than real time, so a
         // barge-in that only stopped future audio would keep talking over the
         // candidate for however much was already scheduled.
-        this.ledger.abandon();
-        this.cachedAbort?.abort();
-        this.cachedAbort = null;
-        this.cachedStreamComplete = false;
+        const unplayedSeconds = this.playback?.queuedSeconds ?? 0;
         this.playback?.stop();
-        this.providerTurnComplete = false;
-        this.reportSpeechOutcome("INTERRUPTED");
+        this.signal({ type: "INTERRUPT", unplayedSeconds });
         this.setStatus("LISTENING");
       },
       onBargeInProvisional: (ducked) => {
@@ -449,22 +513,18 @@ export class VoiceSession {
         else this.playback?.restore();
       },
       onReady: () => {
+        if (this.voice !== voice) return;
         this.reconnectAttempts = 0;
-        if (this.speechSource !== "CACHED") this.setStatus("LISTENING");
-        if (this.pendingSpeech) {
-          this.speechInFlight = true;
-          this.speechSource = "MODEL";
-          this.ledger.mark("speechRequestedMs", Date.now());
-          this.requestModelSpeech(this.pendingSpeech);
-          this.pendingSpeech = null;
+        if (this.utterance?.source !== "CACHED") this.setStatus("LISTENING");
+        const pending = this.pendingSpeech;
+        this.pendingSpeech = null;
+        if (pending && this.utterance?.utteranceId === pending.utteranceId) {
+          this.requestModelSpeech(this.utterance, pending);
         }
         // Opens the interview. Until the model can be spoken through there is
         // nothing to deliver the brief to, so this is the moment — not session
         // creation, which would spend the authorization on silence.
-        void apiFetch(
-          `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-ready`,
-          { method: "POST" },
-        ).catch(() => {});
+        void this.postVoiceReady();
       },
       onResumptionHandle: (handle) => {
         // Reported, not held. The server decides which handle a credential is
@@ -503,8 +563,7 @@ export class VoiceSession {
       onError: (err) => this.scheduleReconnect(err),
     });
     voice.setMuted(this.mutedState);
-    if (this.speechSource === "CACHED" && this.speechInFlight)
-      voice.noteLocalPlayback(true);
+    if (this.utterance?.source === "CACHED") voice.noteLocalPlayback(true);
     this.voice = voice;
     voice.connect();
   }
@@ -513,12 +572,17 @@ export class VoiceSession {
     if (this.stopping || this.reconnectTimer) return;
     if (this.goAwayTimer) clearTimeout(this.goAwayTimer);
     this.goAwayTimer = null;
-    if (this.speechSource !== "CACHED") {
+    // Cached audio does not depend on the provider socket and keeps playing.
+    // Model speech does, and it ends here as a failure rather than pretending
+    // it was interrupted by the candidate.
+    if (this.utterance?.source === "MODEL") {
+      const unplayedSeconds = this.playback?.queuedSeconds ?? 0;
       this.playback?.stop();
-      this.providerTurnComplete = false;
-      if (this.speechInFlight) this.reportSpeechOutcome("INTERRUPTED");
+      this.signal({ type: "FAIL", reason: "PROVIDER_DISCONNECTED", unplayedSeconds });
     }
-    if (this.speechSource !== "CACHED") this.setStatus("CONNECTING");
+    this.pendingSpeech = null;
+    if (this.utterance?.source !== "CACHED") this.setStatus("CONNECTING");
+    this.diagnose({ kind: "PROVIDER_RECONNECT", detail: error.message.slice(0, 200) });
     this.opts.onError?.(error);
     const delay = Math.min(
       30_000,
@@ -541,22 +605,18 @@ export class VoiceSession {
 
     const rotate = () => {
       const remaining = deadline - Date.now();
-      if (
-        this.speechInFlight &&
-        this.speechSource === "MODEL" &&
-        remaining > 3_000
-      ) {
+      if (this.utterance?.source === "MODEL" && remaining > 3_000) {
         this.goAwayTimer = setTimeout(rotate, Math.min(250, remaining - 3_000));
         return;
       }
 
       this.goAwayTimer = null;
-      if (this.speechInFlight && this.speechSource === "MODEL") {
+      if (this.utterance?.source === "MODEL") {
+        const unplayedSeconds = this.playback?.queuedSeconds ?? 0;
         this.playback?.stop();
-        this.providerTurnComplete = false;
-        this.reportSpeechOutcome("INTERRUPTED");
+        this.signal({ type: "FAIL", reason: "PROVIDER_GOAWAY", unplayedSeconds });
       }
-      if (this.speechSource !== "CACHED") this.setStatus("CONNECTING");
+      if (this.utterance?.source !== "CACHED") this.setStatus("CONNECTING");
       void this.connectProvider().catch((err: unknown) => {
         this.scheduleReconnect(
           err instanceof Error ? err : new Error(String(err)),
@@ -569,32 +629,231 @@ export class VoiceSession {
     this.goAwayTimer = setTimeout(rotate, Math.max(0, timeLeftMs - 5_000));
   }
 
-  private completeSpeechIfDrained(): void {
-    if (!this.providerTurnComplete || this.playback?.isPlaying) return;
-    this.providerTurnComplete = false;
-    this.setStatus("LISTENING");
-    this.reportSpeechOutcome("COMPLETED");
+  // ── Utterance lifecycle ────────────────────────────────────────────────────
+
+  /** Feed one signal to the utterance in flight; finish it if that ended it. */
+  private signal(signal: UtteranceSignal): void {
+    const u = this.utterance;
+    if (!u) return;
+    const report = u.apply(signal, performance.now());
+    if (report) this.finishUtterance(u, report);
+    else this.armWatchdog();
   }
 
-  private reportSpeechOutcome(outcome: "COMPLETED" | "INTERRUPTED"): void {
-    if (!this.speechInFlight) return;
-    this.clearSpeechStartTimer();
-    const utteranceId = this.activeUtteranceId;
-    this.speechInFlight = false;
-    this.activeUtteranceId = null;
-    this.speechSource = null;
-    this.modelAudioStarted = false;
+  /** A buffer finished on its own. Drain is half of delivery, never all of it. */
+  private onPlaybackProgress(): void {
+    const playing = Boolean(this.playback?.isPlaying);
+    const u = this.utterance;
+    this.voice?.noteModelPlayback(u?.source === "MODEL" && playing);
+    if (playing || !u) return;
+    if (this.pendingFailure) {
+      this.signal({ type: "FAIL", reason: this.pendingFailure });
+      return;
+    }
+    this.signal({ type: "PLAYBACK_DRAINED" });
+  }
+
+  /**
+   * Re-arm the one deadline that applies to the utterance's current state.
+   *
+   * Uses buffer depth rather than wall time alone: while audio is queued the
+   * candidate is hearing something, so only an EMPTY queue with audio still
+   * owed counts toward a stall. A normal spoken pause never empties the queue.
+   */
+  private armWatchdog(): void {
+    if (this.speechWatchdog) clearTimeout(this.speechWatchdog);
+    this.speechWatchdog = null;
+    const u = this.utterance;
+    if (!u || u.terminal || this.stopping) return;
+
+    const playing = Boolean(this.playback?.isPlaying);
+    const now = performance.now();
+    let delayMs: number;
+    let reason: string;
+
+    if (!u.hasAudio) {
+      if (u.source !== "MODEL") return;
+      if (this.emptyTurnAtMs !== null) {
+        delayMs = this.emptyTurnAtMs + SPEECH_DEADLINES.emptyTurnGraceMs - now;
+        reason = "EMPTY_RESPONSE";
+      } else if (u.phase === "AUTHORIZED") {
+        delayMs = this.speechWaitStartedAt + SPEECH_DEADLINES.providerUnavailableMs - now;
+        reason = "PROVIDER_UNAVAILABLE";
+      } else {
+        delayMs = this.speechWaitStartedAt + SPEECH_DEADLINES.noFirstAudioMs - now;
+        reason = "NO_FIRST_AUDIO";
+      }
+    } else if (!u.isSourceComplete) {
+      if (playing) return;
+      delayMs = SPEECH_DEADLINES.midStreamStallMs;
+      reason = u.source === "MODEL" ? "MID_STREAM_STALL" : "CACHED_TAIL_STALL";
+    } else {
+      if (!playing) return;
+      delayMs = (this.playback?.queuedSeconds ?? 0) * 1000 + SPEECH_DEADLINES.drainSlackMs;
+      reason = "PLAYBACK_STALLED";
+    }
+
+    this.speechWatchdog = setTimeout(() => {
+      this.speechWatchdog = null;
+      if (this.utterance !== u || u.terminal) return;
+      // Re-check: a chunk may have landed between arming and firing.
+      if (reason.endsWith("STALL") && this.playback?.isPlaying) {
+        this.armWatchdog();
+        return;
+      }
+      const unplayedSeconds = this.playback?.queuedSeconds ?? 0;
+      this.playback?.stop();
+      this.signal({ type: "FAIL", reason, unplayedSeconds });
+    }, Math.max(0, delayMs));
+  }
+
+  private clearWatchdog(): void {
+    if (this.speechWatchdog) clearTimeout(this.speechWatchdog);
+    this.speechWatchdog = null;
+  }
+
+  /**
+   * One place an utterance ends, whatever ended it. Releases its resources,
+   * tells the server the truth, and tells the candidate when they missed
+   * something — never silently.
+   */
+  private finishUtterance(u: UtteranceLifecycle, report: UtteranceReport): void {
+    if (this.utterance !== u) return;
+    this.utterance = null;
+    this.clearWatchdog();
+    this.emptyTurnAtMs = null;
+    this.pendingFailure = null;
+    this.cachedAbort?.abort();
+    this.cachedAbort = null;
+    if (this.pendingSpeech?.utteranceId === u.utteranceId) this.pendingSpeech = null;
+    if (report.outcome !== "COMPLETED") this.playback?.stop();
+    this.voice?.cancelSpeech();
     this.voice?.noteLocalPlayback(false);
     this.voice?.noteModelPlayback(false);
-    void apiFetch(
-      `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ outcome, utteranceId }),
-        keepalive: true,
-      },
-    ).catch(() => {});
+    this.finishedUtterances.push(u.utteranceId);
+    if (this.finishedUtterances.length > 32) this.finishedUtterances.shift();
+    if (this.status === "SPEAKING") this.setStatus("LISTENING");
+
+    this.ledger.terminal(report, Date.now());
+    this.reportOutcome(report);
+
+    if (report.outcome !== "FAILED") return;
+    const providerBroken =
+      u.source === "MODEL" &&
+      (report.reason === "NO_FIRST_AUDIO" || report.reason === "MID_STREAM_STALL");
+    if (report.firstAudio) {
+      // Do not replay a long answer on our own, or guess where playback
+      // stopped. The candidate decides; a repeat request is gate-authorized.
+      this.diagnose({ kind: "SPEECH_CUT_OFF", utteranceId: u.utteranceId, action: u.action, reason: report.reason });
+      this.opts.onError?.(new Error(
+        u.action === "DELIVER_BRIEF"
+          ? "The problem statement was cut off. Say \"Can you repeat the problem?\" to hear it again."
+          : "The interviewer's audio was cut off. Ask them to repeat if you missed something.",
+      ));
+    } else {
+      this.diagnose({ kind: "SPEECH_FAILED", utteranceId: u.utteranceId, action: u.action, reason: report.reason });
+      if (!providerBroken) {
+        this.opts.onError?.(new Error(
+          u.action === "DELIVER_BRIEF"
+            ? "The problem didn't play. Trying again…"
+            : "The interviewer's reply didn't come through. Ask again if you need it.",
+        ));
+        // A brief that never played is re-offered by the server on readiness.
+        if (u.action === "DELIVER_BRIEF" && this.voice?.isReady) void this.postVoiceReady();
+      }
+    }
+    if (providerBroken) {
+      this.scheduleReconnect(new Error(
+        u.action === "DELIVER_BRIEF" && !report.firstAudio
+          ? "The problem didn't play. Reconnecting voice to try again…"
+          : "The interviewer's audio stalled. Reconnecting voice…",
+      ));
+    }
+  }
+
+  /**
+   * Tell the server how the utterance ended. Retried, because a lost report
+   * leaves the server's authorization open, and an open authorization reads
+   * to the gate as "interviewer still speaking" — muting every later turn.
+   */
+  private reportOutcome(report: UtteranceReport): void {
+    const body = JSON.stringify({
+      utteranceId: report.utteranceId,
+      outcome: report.outcome,
+      ...(report.reason ? { reason: report.reason } : {}),
+      source: report.source,
+      firstAudio: report.firstAudio,
+      receivedAudioMs: report.receivedAudioMs,
+      playedAudioMs: report.playedAudioMs,
+      underruns: report.underruns,
+      durationMs: report.durationMs,
+    });
+    const url = `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-complete`;
+    this.outcomeReports = this.outcomeReports.then(async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const res = await apiFetch(url, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body,
+            keepalive: true,
+          });
+          // 4xx other than throttling is final: stale or unknown is an answer.
+          if (res.ok || (res.status < 500 && res.status !== 429)) return;
+        } catch {
+          // Network failure: retry below.
+        }
+        await delay(300 * 3 ** attempt);
+      }
+      this.diagnose({ kind: "OUTCOME_REPORT_FAILED", utteranceId: report.utteranceId, reason: report.outcome });
+    });
+  }
+
+  /**
+   * Readiness, retried with backoff and reported honestly. Carries the
+   * utterance this client is actually playing, so the server can tell a
+   * reconnect mid-sentence (leave it alone) from a page that lost the turn
+   * (close it, and re-offer a brief that never played).
+   */
+  private async postVoiceReady(): Promise<void> {
+    const generation = ++this.readyGeneration;
+    // An outcome still in flight must land first, or the server would see an
+    // open authorization this client no longer holds.
+    await this.outcomeReports;
+    const url = `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-ready`;
+    let lastDetail = "";
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (this.stopping || generation !== this.readyGeneration) return;
+      try {
+        const res = await apiFetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            activeUtteranceId: this.utterance?.utteranceId ?? null,
+            attempt,
+          }),
+        });
+        if (res.ok) return;
+        lastDetail = `HTTP ${res.status}`;
+        // Ended or never started: retrying cannot help, and is not a fault.
+        if (res.status === 404 || res.status === 409) return;
+      } catch (err) {
+        lastDetail = err instanceof Error ? err.message.slice(0, 120) : "network";
+      }
+      await delay(500 * 2 ** attempt);
+    }
+    if (this.stopping || generation !== this.readyGeneration) return;
+    this.diagnose({ kind: "READY_FAILED", detail: lastDetail });
+    this.opts.onError?.(new Error(
+      "Couldn't reach the interview server to start the interviewer. Check your connection; voice will try again when it reconnects.",
+    ));
+  }
+
+  private diagnose(entry: Omit<VoiceDiagnostic, "atMs">): void {
+    const diagnostic: VoiceDiagnostic = { ...entry, atMs: Date.now() };
+    this.diagnosticLog.push(diagnostic);
+    if (this.diagnosticLog.length > 50) this.diagnosticLog.shift();
+    this.opts.onDiagnostic?.(diagnostic);
   }
 
   private postLatencyReport(report: LatencyLedger): void {
@@ -624,15 +883,36 @@ export class VoiceSession {
       classifierSource?: string;
     },
   ): void {
+    const id = authorization.utteranceId;
+    // A duplicate ACTION (channel replay, reconnect) must not restart a turn
+    // that is playing or replay one that already ended.
+    if (this.utterance?.utteranceId === id || this.finishedUtterances.includes(id)) return;
+    if (this.utterance) {
+      // The server authorizes one utterance at a time, so a new id means the
+      // old one is over as far as the server is concerned.
+      const unplayedSeconds = this.playback?.queuedSeconds ?? 0;
+      this.playback?.stop();
+      this.signal({ type: "FAIL", reason: "SUPERSEDED", unplayedSeconds });
+    }
+
     const now = Date.now();
-    this.activeUtteranceId = authorization.utteranceId;
-    const opened = this.ledger.authorized(
-      authorization.utteranceId,
+    const u = new UtteranceLifecycle(
+      id,
+      authorization.action,
+      authorization.audio ? "CACHED" : "MODEL",
+      performance.now(),
+    );
+    this.utterance = u;
+    this.speechWaitStartedAt = performance.now();
+    this.emptyTurnAtMs = null;
+    this.pendingFailure = null;
+    this.ledger.authorized(
+      id,
       authorization.action,
       authorization.audio ? "CACHED_AUDIO" : "REALTIME_MODEL",
       now,
     );
-    if (opened && serverTiming) {
+    if (serverTiming) {
       this.ledger.setServerTiming(
         serverTiming.decisionMs,
         serverTiming.classifierMs,
@@ -643,10 +923,10 @@ export class VoiceSession {
     // The first 400 ms ride on ACTION. Schedule them before any await or fetch;
     // this is the latency win that rendering on the server makes possible.
     if (authorization.audio && this.playback && this.context) {
-      let headScheduled = false;
       try {
-        const bytes = base64ToBytes(authorization.audio.head);
-        const rate = authorization.audio.rate;
+        const audio = authorization.audio;
+        const bytes = base64ToBytes(audio.head);
+        const rate = audio.rate;
         if (
           bytes.length === 0 ||
           bytes.length % 2 !== 0 ||
@@ -658,103 +938,125 @@ export class VoiceSession {
         const head = toPcm16(bytes, null).pcm;
         const startAt = this.playback.enqueueAt(head, rate);
         if (startAt === null) throw new Error("empty cached audio head");
-        headScheduled = true;
-        this.speechInFlight = true;
-        this.speechSource = "CACHED";
-        this.cachedStreamComplete = false;
+        this.signal({ type: "AUDIO_RECEIVED", seconds: head.length / rate });
+        this.signal({ type: "PLAYBACK_STARTED" });
         this.voice?.noteLocalPlayback(true);
         this.ledger.mark("firstAudioByteMs", now);
         this.ledger.firstSamplePlayed(this.firstSampleWallTime(startAt));
         this.setStatus("SPEAKING");
-        if (authorization.audio.tailFrom !== undefined) {
-          void this.streamCachedTail(
-            authorization,
-            authorization.audio.tailFrom,
-            rate,
-          );
+        if (audio.tailFrom !== undefined) {
+          void this.streamCachedTail(u, audio.tailFrom, rate, audio.totalBytes);
+        } else if (audio.totalBytes !== undefined && audio.totalBytes !== bytes.length) {
+          // The server said there was more and offered no way to fetch it.
+          this.failAfterDrain(u, "CACHED_HEAD_TRUNCATED");
         } else {
-          this.cachedStreamComplete = true;
-          this.completeCachedIfDrained();
+          this.signal({ type: "SOURCE_COMPLETE" });
         }
         return;
       } catch {
-        if (headScheduled) {
-          // Once any audio started, a model fallback would repeat the sentence.
-          this.cachedStreamComplete = true;
-          this.completeCachedIfDrained();
-          return;
-        }
+        // Nothing played yet, so the model can say it instead without
+        // repeating a word. Past the first sample this would be a repeat.
+        if (this.utterance !== u || !u.switchSource("MODEL")) return;
         this.ledger.setSource("REALTIME_MODEL");
       }
     } else if (authorization.audio) {
+      u.switchSource("MODEL");
       this.ledger.setSource("REALTIME_MODEL");
     }
 
-    this.speechSource = "MODEL";
     if (this.voice?.isReady) {
-      this.speechInFlight = true;
-      this.ledger.mark("speechRequestedMs", now);
-      this.requestModelSpeech(authorization);
+      this.requestModelSpeech(u, authorization);
       return;
     }
+    // Held for the next provider handshake, under a deadline of its own.
     this.pendingSpeech = authorization;
+    this.armWatchdog();
   }
 
-  private clearSpeechStartTimer(): void {
-    if (this.speechStartTimer) clearTimeout(this.speechStartTimer);
-    this.speechStartTimer = null;
+  private requestModelSpeech(u: UtteranceLifecycle, authorization: SpeechAuthorization): void {
+    if (this.utterance !== u || u.terminal) return;
+    if (!this.voice?.requestSpeech(authorization)) {
+      this.pendingSpeech = authorization;
+      this.armWatchdog();
+      return;
+    }
+    this.speechWaitStartedAt = performance.now();
+    this.ledger.mark("speechRequestedMs", Date.now());
+    this.signal({ type: "REQUESTED" });
   }
 
-  private requestModelSpeech(authorization: SpeechAuthorization): void {
-    this.clearSpeechStartTimer();
-    this.speechStartTimer = setTimeout(() => {
-      this.speechStartTimer = null;
-      if (this.stopping || this.modelAudioStarted || this.activeUtteranceId !== authorization.utteranceId) return;
-      this.ledger.abandon();
-      this.scheduleReconnect(new Error(
-        "The interviewer didn't return speech. Voice is reconnecting; please ask to hear the problem again.",
-      ));
-    }, 15_000);
-    this.voice?.requestSpeech(authorization);
+  /** End after the already-queued prefix plays, as a failure — never a success. */
+  private failAfterDrain(u: UtteranceLifecycle, reason: string): void {
+    if (this.utterance !== u || u.terminal) return;
+    if (this.playback?.isPlaying) {
+      this.pendingFailure = reason;
+      return;
+    }
+    this.signal({ type: "FAIL", reason });
   }
 
+  /**
+   * The rest of a pre-rendered utterance.
+   *
+   * Verified, not trusted: the stream must deliver exactly the bytes the
+   * server said it would. A tail that dies or comes up short is a FAILED
+   * utterance once its prefix finishes — not a COMPLETED one because the
+   * queue happened to drain.
+   */
   private async streamCachedTail(
-    authorization: SpeechAuthorization,
+    u: UtteranceLifecycle,
     fromByte: number,
     rate: number,
+    totalBytes: number | undefined,
   ): Promise<void> {
     const controller = new AbortController();
     this.cachedAbort = controller;
     let carry: number | null = null;
+    let received = 0;
+    let reason = "CACHED_TAIL_FAILED";
     try {
       const query = new URLSearchParams({
-        utteranceId: authorization.utteranceId,
+        utteranceId: u.utteranceId,
         fromByte: String(fromByte),
       });
+      this.ledger.mark("audioFetchStartedMs", Date.now());
       const response = await apiFetch(
         `${this.opts.apiBase}/v1/interview-sessions/${this.opts.sessionId}/voice-utterance-audio?${query}`,
         { signal: controller.signal },
       );
       if (!response.ok || !response.body)
         throw new Error(`cached audio HTTP ${response.status}`);
+      const headerTotal = Number(response.headers.get("x-utterance-total-bytes"));
+      const total = totalBytes ?? (Number.isFinite(headerTotal) && headerTotal > 0 ? headerTotal : undefined);
       const reader = response.body.getReader();
       while (true) {
         const next = await reader.read();
         if (next.done) break;
-        if (controller.signal.aborted || this.speechSource !== "CACHED") return;
+        if (controller.signal.aborted || this.utterance !== u) return;
+        received += next.value.length;
         const decoded = toPcm16(next.value, carry);
         carry = decoded.remainder;
-        if (decoded.pcm.length > 0) this.playback?.enqueueAt(decoded.pcm, rate);
+        if (decoded.pcm.length === 0) continue;
+        this.signal({ type: "AUDIO_RECEIVED", seconds: decoded.pcm.length / rate });
+        if (this.playback?.enqueueAt(decoded.pcm, rate) !== null) {
+          this.signal({ type: "PLAYBACK_STARTED" });
+          this.voice?.noteLocalPlayback(true);
+        }
       }
+      if (this.utterance !== u) return;
+      if (carry !== null || (total !== undefined && fromByte + received !== total)) {
+        reason = "CACHED_TAIL_TRUNCATED";
+        throw new Error("cached audio tail truncated");
+      }
+      this.signal({ type: "SOURCE_COMPLETE" });
     } catch {
-      // Once the head played, restarting the sentence through the model would
-      // repeat it. End the short utterance after the queued audio drains.
+      // Aborted by us means the utterance already ended for another reason.
+      if (controller.signal.aborted || this.utterance !== u) return;
+      // Once the head played, restarting through the model would repeat it.
+      // Let the queued prefix finish, then report the failure honestly.
+      this.failAfterDrain(u, reason);
     } finally {
       if (this.cachedAbort === controller) this.cachedAbort = null;
-      if (!controller.signal.aborted && this.speechSource === "CACHED") {
-        this.cachedStreamComplete = true;
-        this.completeCachedIfDrained();
-      }
     }
   }
 
@@ -780,17 +1082,6 @@ export class VoiceSession {
     this.transcriptWaiters.clear();
   }
 
-  private completeCachedIfDrained(): void {
-    if (
-      this.speechSource !== "CACHED" ||
-      !this.cachedStreamComplete ||
-      this.playback?.isPlaying
-    )
-      return;
-    this.cachedStreamComplete = false;
-    this.setStatus("LISTENING");
-    this.reportSpeechOutcome("COMPLETED");
-  }
 
   private firstSampleWallTime(startAt: number): number {
     const context = this.context;
@@ -846,15 +1137,13 @@ export class VoiceSession {
 
   async stop(): Promise<void> {
     this.stopping = true;
-    this.clearSpeechStartTimer();
+    this.readyGeneration += 1;
+    this.clearWatchdog();
     if (this.finalTranscriptTimer) clearTimeout(this.finalTranscriptTimer);
     this.finalTranscriptTimer = null;
     this.finalTranscriptChunks.length = 0;
     this.roomTone?.stop();
     this.roomTone = null;
-    this.cachedAbort?.abort();
-    this.cachedAbort = null;
-    this.cachedStreamComplete = false;
     if (this.deviceChangeListener) {
       navigator.mediaDevices?.removeEventListener(
         "devicechange",
@@ -867,7 +1156,7 @@ export class VoiceSession {
     if (this.goAwayTimer) clearTimeout(this.goAwayTimer);
     this.goAwayTimer = null;
     this.playback?.stop();
-    if (this.speechInFlight) this.reportSpeechOutcome("INTERRUPTED");
+    this.signal({ type: "CANCEL", reason: "SESSION_STOPPED" });
     this.voice?.disconnect();
     this.worklet?.disconnect();
     this.captureGain?.disconnect();
@@ -1166,6 +1455,10 @@ export class VoiceSession {
     this.setStatus("FAILED");
     this.opts.onError?.(err);
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Live frames arrive as Blob in browsers and string in some environments. */

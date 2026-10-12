@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ getSession: vi.fn(), refreshSession: vi.fn(), createClient: vi.fn() }));
+const mocks = vi.hoisted(() => ({ getSession: vi.fn(), refreshSession: vi.fn(), signOut: vi.fn(), createClient: vi.fn() }));
 vi.mock("@supabase/supabase-js", () => ({ createClient: mocks.createClient }));
 
 beforeEach(() => {
@@ -8,7 +8,8 @@ beforeEach(() => {
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://example.supabase.co");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_test");
   vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.example.com");
-  mocks.createClient.mockReturnValue({ auth: { getSession: mocks.getSession, refreshSession: mocks.refreshSession } });
+  mocks.createClient.mockReturnValue({ auth: { getSession: mocks.getSession, refreshSession: mocks.refreshSession, signOut: mocks.signOut } });
+  mocks.signOut.mockResolvedValue({ error: null });
   mocks.getSession.mockResolvedValue({ data: { session: { access_token: "first-token" } }, error: null });
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
@@ -38,6 +39,23 @@ describe("authenticated browser API calls", () => {
     const { apiFetch } = await import("./auth");
     await expect(apiFetch("/v1/me")).rejects.toThrow("Please sign in");
     expect(fetcher).toHaveBeenCalledOnce();
+    expect(mocks.signOut).toHaveBeenCalledWith({ scope: "local" });
+  });
+  it("clears a refreshed session still rejected by the API to prevent a login redirect loop", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response("", { status: 401 })); vi.stubGlobal("fetch", fetcher);
+    mocks.refreshSession.mockResolvedValue({ data: { session: { access_token: "still-rejected" } }, error: null });
+    const { apiFetch } = await import("./auth");
+    await expect(apiFetch("/v1/me")).rejects.toThrow("Please sign in");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(mocks.signOut).toHaveBeenCalledOnce();
+    expect(mocks.signOut).toHaveBeenCalledWith({ scope: "local" });
+  });
+  it.each([{ name: "AuthRetryableFetchError" }, { status: 503 }, { status: 429 }])("preserves the session during a temporary refresh failure: %s", async (error) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 401 })));
+    mocks.refreshSession.mockResolvedValue({ data: { session: null }, error });
+    const { apiFetch } = await import("./auth");
+    await expect(apiFetch("/v1/me")).rejects.toThrow("temporarily unavailable");
+    expect(mocks.signOut).not.toHaveBeenCalled();
   });
   it("never sends tokens to another origin or without a session", async () => {
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);

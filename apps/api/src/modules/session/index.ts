@@ -87,6 +87,30 @@ const VoiceResumptionBody = z.object({
   handle: z.string().min(1).max(16_384),
 });
 
+const VoiceReadyBody = z.object({
+  /**
+   * The utterance this client is playing right now, or null. Absent from
+   * older clients, which skips reconciliation.
+   */
+  activeUtteranceId: z.string().min(1).max(200).nullable().optional(),
+  attempt: z.number().int().nonnegative().max(20).optional(),
+});
+
+/** How an authorized utterance ended, as reported by the browser that played it. */
+const SpeechOutcomeBody = z.object({
+  // Optional only for clients already connected during a rolling deploy.
+  utteranceId: z.string().min(1).max(200).optional(),
+  outcome: z.enum(["COMPLETED", "INTERRUPTED", "FAILED", "CANCELLED"]).default("COMPLETED"),
+  reason: z.string().max(64).optional(),
+  source: z.enum(["CACHED", "MODEL"]).optional(),
+  /** Older clients omit this; their COMPLETED/INTERRUPTED imply audio played. */
+  firstAudio: z.boolean().optional(),
+  receivedAudioMs: z.number().int().nonnegative().max(3_600_000).optional(),
+  playedAudioMs: z.number().int().nonnegative().max(3_600_000).optional(),
+  underruns: z.number().int().nonnegative().max(10_000).optional(),
+  durationMs: z.number().int().nonnegative().max(3_600_000).optional(),
+});
+
 const RunBody = z.object({
   source: z.string().max(200_000),
   revision: z.number().int().nonnegative(),
@@ -491,7 +515,7 @@ export async function registerSessionModule(
         const utteranceText = utterance?.text ?? "";
 
         // P3: look up the cache for the session's tone.
-        let audioAttachment: { head: string; rate: number; tailFrom?: number } | undefined;
+        let audioAttachment: { head: string; rate: number; tailFrom?: number; totalBytes: number } | undefined;
         if (ttsCache && utteranceId && utteranceText.trim() !== "") {
           const tone = (sessionTones.get(sessionId) ?? "NORMAL") as "EXTRA_NICE" | "NORMAL" | "MEAN";
           const cached = ttsCache.get(utteranceText, tone);
@@ -503,7 +527,13 @@ export async function registerSessionModule(
             const headEndAligned = headEnd & ~1;
             const head = cached.pcm.subarray(0, headEndAligned).toString("base64");
             const tailFrom = headEndAligned < cached.pcm.length ? headEndAligned : undefined;
-            audioAttachment = { head, rate: cached.sampleRate, ...(tailFrom !== undefined ? { tailFrom } : {}) };
+            audioAttachment = {
+              head,
+              rate: cached.sampleRate,
+              ...(tailFrom !== undefined ? { tailFrom } : {}),
+              // Lets the client tell a finished tail from a truncated one.
+              totalBytes: cached.pcm.length & ~1,
+            };
 
             // Track the authorized utterance so the GET route can serve the tail.
             authorizedUtterances.set(sessionId, { utteranceId, text: utteranceText, tone });
@@ -1125,6 +1155,8 @@ export async function registerSessionModule(
     const session = await store.get(id);
     if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
     if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
+    const ready = VoiceReadyBody.safeParse(req.body ?? {});
+    if (!ready.success) return reply.code(400).send({ error: "INVALID_BODY" });
 
     // Reconnect or owner takeover may land on a process with a cold cache.
     // Refresh asynchronously; authorization and the brief never wait for TTS.
@@ -1142,8 +1174,23 @@ export async function registerSessionModule(
     const started = (await eventLog.read(id)).find((e) => e.type === "SESSION_STARTED");
     if (!started) return reply.code(409).send({ error: "NO_SESSION_STARTED" });
 
-    // Idempotent by construction: the gate only authorizes the brief while
-    // briefDeliveryCount is 0, so a retried call decides STAY_SILENT.
+    // A client that reports what it is playing lets the server close an
+    // authorization that no live page holds any more — a reload mid-brief, or
+    // an outcome report that never arrived. Left open, it would read to the
+    // gate as the interviewer still speaking and mute every later turn. Older
+    // clients send no body and skip this.
+    if (ready.data.activeUtteranceId !== undefined) {
+      const runtime = await runtimeFor(id);
+      const closed = await runtime?.reconcileSpeechOnReady(ready.data.activeUtteranceId);
+      if (closed) {
+        if (authorizedUtterances.get(id)?.utteranceId === closed) authorizedUtterances.delete(id);
+        app.log.info({ sessionId: id, utteranceId: closed }, "closed utterance no client holds");
+      }
+    }
+
+    // Idempotent by construction: the gate authorizes the opening only while
+    // it has never been delivered (or was authorized and never played), so a
+    // retried call decides STAY_SILENT.
     await dispatch(started, true);
     return reply.send({ ok: true });
   });
@@ -1160,11 +1207,7 @@ export async function registerSessionModule(
     const runtime = runtimes.get(id);
     if (!runtime) return reply.code(409).send({ error: "NO_LIVE_SESSION" });
 
-    const parsed = z.object({
-      // Optional only for clients already connected during a rolling deploy.
-      utteranceId: z.string().min(1).max(200).optional(),
-      outcome: z.enum(["COMPLETED", "INTERRUPTED"]).default("COMPLETED"),
-    }).safeParse(req.body ?? {});
+    const parsed = SpeechOutcomeBody.safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_SPEECH_OUTCOME" });
     const currentUtteranceId = runtime.voiceContext().utteranceId;
     if (!currentUtteranceId ||
@@ -1179,9 +1222,16 @@ export async function registerSessionModule(
       authorizedUtterances.delete(id);
     }
 
-    app.log.info({ sessionId: id, utteranceId: currentUtteranceId, outcome: parsed.data.outcome }, "speech outcome reported");
+    app.log.info({
+      sessionId: id,
+      utteranceId: currentUtteranceId,
+      outcome: parsed.data.outcome,
+      reason: parsed.data.reason,
+      firstAudio: parsed.data.firstAudio,
+    }, "speech outcome reported");
 
-    await runtime.markSpeechFinished();
+    const { utteranceId: _reported, ...outcome } = parsed.data;
+    await runtime.markSpeechFinished(outcome);
     return reply.send({ ok: true });
   });
 
@@ -1229,6 +1279,7 @@ export async function registerSessionModule(
       .code(200)
       .header("content-type", `audio/L16;codec=pcm;rate=${cached.sampleRate}`)
       .header("x-utterance-sample-rate", String(cached.sampleRate))
+      .header("x-utterance-total-bytes", String(cached.pcm.length & ~1))
       .header("cache-control", "no-store")
       .send(tail);
   });
@@ -1237,7 +1288,8 @@ export async function registerSessionModule(
     utteranceId: z.string().min(1),
     action: z.string().min(1),
     source: z.enum(["CACHED_AUDIO", "REALTIME_MODEL"]),
-    quietOnsetMs: z.number().nonnegative(),
+    // Absent for utterances no candidate turn preceded, such as the brief.
+    quietOnsetMs: z.number().nonnegative().optional(),
     vadEndDetectedMs: z.number().nonnegative().optional(),
     activityEndSentMs: z.number().nonnegative().optional(),
     firstInterimTranscriptMs: z.number().nonnegative().optional(),
@@ -1252,6 +1304,15 @@ export async function registerSessionModule(
     classifierMs: z.number().nonnegative().optional(),
     classifierSource: z.string().optional(),
     prosodyPull: z.boolean().optional(),
+    toolMs: z.number().nonnegative().optional(),
+    toolCalls: z.number().int().nonnegative().optional(),
+    toolFailures: z.number().int().nonnegative().optional(),
+    outcome: z.enum(["COMPLETED", "INTERRUPTED", "FAILED", "CANCELLED"]).optional(),
+    outcomeReason: z.string().max(64).optional(),
+    terminalMs: z.number().nonnegative().optional(),
+    underruns: z.number().int().nonnegative().optional(),
+    receivedAudioMs: z.number().int().nonnegative().optional(),
+    playedAudioMs: z.number().int().nonnegative().optional(),
   }).strict();
 
   app.post("/interview-sessions/:id/voice-latency", async (req, reply) => {

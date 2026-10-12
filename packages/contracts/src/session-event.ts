@@ -53,6 +53,14 @@ export const EVENT_TYPES = [
   "PROBE_ASKED",
   "HINT_GIVEN",
   "FOLLOW_UP_PRESENTED",
+  /**
+   * How an authorized utterance actually ended: COMPLETED, INTERRUPTED,
+   * FAILED or CANCELLED, with whether any audio reached playback. Authorizing
+   * speech is not evidence it was heard; this is the record that says what
+   * happened after. Reported by the browser, validated against the open
+   * authorization, server-appended.
+   */
+  "UTTERANCE_OUTCOME",
 
   // ── Code and notes ───────────────────────────────────────────────────────
   "CODE_DELTA",
@@ -259,6 +267,8 @@ export const ServerMessageSchema = z.discriminatedUnion("kind", [
       head: z.string(),
       rate: z.number().int().positive(),
       tailFrom: z.number().int().nonnegative().optional(),
+      /** Full PCM byte length, so the client can detect a truncated tail. */
+      totalBytes: z.number().int().positive().optional(),
     }).optional(),
   }),
   z.object({ kind: z.literal("REPLAY_FROM"), seq: z.number().int().nonnegative() }),

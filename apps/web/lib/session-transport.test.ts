@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
-vi.mock("./auth", () => ({ apiFetch, SignInRequired: class SignInRequired extends Error {} }));
-import { SignInRequired } from "./auth";
+vi.mock("./api-client", () => ({
+  apiFetch,
+  SignInRequired: class SignInRequired extends Error {},
+}));
+import { SignInRequired } from "./api-client";
 import { connectSessionTransport } from "./session-transport";
 
 class FakeSocket {
@@ -13,13 +16,30 @@ class FakeSocket {
   onmessage: ((message: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   send = vi.fn();
-  constructor(readonly url: string) { FakeSocket.created.push(this); }
-  close() { this.readyState = 3; this.onclose?.(); }
+  constructor(readonly url: string) {
+    FakeSocket.created.push(this);
+  }
+  close() {
+    this.readyState = 3;
+    this.onclose?.();
+  }
 }
-const handlers = () => ({ onOpen: vi.fn(), onClose: vi.fn(), onMessage: vi.fn() });
+const handlers = () => ({
+  onOpen: vi.fn(),
+  onClose: vi.fn(),
+  onMessage: vi.fn(),
+});
 const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
-beforeEach(() => { vi.clearAllMocks(); FakeSocket.created = []; vi.stubGlobal("WebSocket", FakeSocket); vi.stubEnv("NEXT_PUBLIC_WS_URL", "wss://api.example.com"); });
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  FakeSocket.created = [];
+  vi.stubGlobal("WebSocket", FakeSocket);
+  vi.stubEnv("NEXT_PUBLIC_WS_URL", "wss://api.example.com");
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe("authenticated editor connections", () => {
   it("stops retrying when sign-in has expired", async () => {
@@ -30,24 +50,36 @@ describe("authenticated editor connections", () => {
     expect(h.onClose).toHaveBeenCalledWith(false);
     expect(FakeSocket.created).toHaveLength(0);
   });
-  it.each([401, 403, 404, 409])("does not retry terminal HTTP %s", async (status) => {
-    apiFetch.mockResolvedValue(new Response(null, { status }));
-    const h = handlers();
-    connectSessionTransport("room", h);
-    await drain();
-    expect(h.onClose).toHaveBeenCalledWith(false);
-  });
+  it.each([401, 403, 404, 409])(
+    "does not retry terminal HTTP %s",
+    async (status) => {
+      apiFetch.mockResolvedValue(new Response(null, { status }));
+      const h = handlers();
+      connectSessionTransport("room", h);
+      await drain();
+      expect(h.onClose).toHaveBeenCalledWith(false);
+    },
+  );
   it("obtains a fresh ticket for every reconnect and exposes readiness to the outbox", async () => {
-    apiFetch.mockImplementation(async () => new Response(JSON.stringify({ ticket: `ticket-${apiFetch.mock.calls.length}` })));
+    apiFetch.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ ticket: `ticket-${apiFetch.mock.calls.length}` }),
+        ),
+    );
     const h = handlers();
     const first = connectSessionTransport("room", h);
     expect(first.connected).toBe(false);
     await drain();
     const socket = FakeSocket.created[0]!;
-    expect(socket.url).toBe("wss://api.example.com/v1/interview-sessions/room/events?ticket=ticket-1");
-    socket.readyState = 1; socket.onopen?.();
+    expect(socket.url).toBe(
+      "wss://api.example.com/v1/interview-sessions/room/events?ticket=ticket-1",
+    );
+    socket.readyState = 1;
+    socket.onopen?.();
     expect(first.connected).toBe(true);
-    first.send("pending code"); expect(socket.send).toHaveBeenCalledWith("pending code");
+    first.send("pending code");
+    expect(socket.send).toHaveBeenCalledWith("pending code");
     first.close();
     const second = connectSessionTransport("room", handlers());
     await drain();
@@ -57,7 +89,11 @@ describe("authenticated editor connections", () => {
   });
   it("does not open a socket if the page unmounts during ticket retrieval", async () => {
     let release!: (value: Response) => void;
-    apiFetch.mockReturnValue(new Promise<Response>((resolve) => { release = resolve; }));
+    apiFetch.mockReturnValue(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      }),
+    );
     const h = handlers();
     const connection = connectSessionTransport("room", h);
     connection.close();
@@ -68,7 +104,8 @@ describe("authenticated editor connections", () => {
   });
   it("reports failed authentication and lets the client retry without opening a socket", async () => {
     apiFetch.mockRejectedValue(new Error("Please sign in to continue."));
-    const h = handlers(); const error = vi.fn();
+    const h = handlers();
+    const error = vi.fn();
     connectSessionTransport("room", h, error);
     await drain();
     expect(error).toHaveBeenCalledWith("Please sign in to continue.");

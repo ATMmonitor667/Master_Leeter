@@ -41,7 +41,8 @@ function build(
   options: {
     vad?: Vad;
     deferSetup?: boolean;
-    callTool?: (call: VoiceToolCall) => Promise<Record<string, unknown>>;
+    callTool?: (call: VoiceToolCall, signal?: AbortSignal) => Promise<Record<string, unknown>>;
+    toolTimeoutMs?: number;
   } = {},
 ): Harness {
   const sent: Array<Record<string, unknown>> = [];
@@ -63,6 +64,7 @@ function build(
     captureRate: 48_000,
     ...(options.vad ? { vad: options.vad } : {}),
     ...(options.callTool ? { callTool: options.callTool } : {}),
+    ...(options.toolTimeoutMs ? { toolTimeoutMs: options.toolTimeoutMs } : {}),
     now: () => t,
     connect: (h) => {
       handlers = h;
@@ -375,7 +377,7 @@ describe("barge-in", () => {
     h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "queued" });
     h.voice.noteModelPlayback(true);
     h.receive({ serverContent: { turnComplete: true } });
-    h.speak(100);
+    h.speak(600);
     expect(h.bargeIns).toBe(1);
     h.receive({ serverContent: { modelTurn: { parts: [{ inlineData: {
       mimeType: "audio/pcm", data: pcm16ToBase64(new Int16Array(160)),
@@ -391,7 +393,7 @@ describe("barge-in", () => {
     h.speak(100);
     expect(h.bargeIns).toBe(0);
   });
-  it("fires the moment the candidate speaks over model audio", () => {
+  it("confirms sustained speech over model audio, but not a cough", () => {
     const h = build();
     // A request must precede model audio — that is what sets acceptingModelAudio.
     h.voice.requestSpeech({ action: "ACKNOWLEDGE_BRIEFLY", utteranceId: "utt-barge-test" });
@@ -402,8 +404,45 @@ describe("barge-in", () => {
     });
 
     expect(h.bargeIns).toBe(0);
-    h.speak(400);
+    h.speak(100);
+    h.quiet(600);
+    expect(h.bargeIns).toBe(0);
+    h.speak(600);
     expect(h.bargeIns).toBe(1);
+  });
+
+  it("holds the provider boundary during generation until an interruption is confirmed", () => {
+    const h = build();
+    h.voice.requestSpeech({ action: "DELIVER_BRIEF", utteranceId: "utt-brief" });
+    const before = h.sent.length;
+
+    // A cough: activityStart would cut the provider off mid-brief, so none is sent.
+    h.speak(100);
+    h.quiet(600);
+    const coughMessages = h.sent.slice(before);
+    expect(coughMessages.some((m) => JSON.stringify(m).includes("activityStart"))).toBe(false);
+    expect(coughMessages.some((m) => JSON.stringify(m).includes("activityEnd"))).toBe(false);
+    expect(coughMessages.some((m) => JSON.stringify(m).includes("audio"))).toBe(false);
+
+    // Sustained speech: confirmed, the boundary opens, and the held audio is
+    // sent after it so the candidate's first words are not lost.
+    const mark = h.sent.length;
+    h.speak(700);
+    expect(h.bargeIns).toBe(1);
+    const after = h.sent.slice(mark).map((m) => JSON.stringify(m));
+    const start = after.findIndex((m) => m.includes("activityStart"));
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(after.slice(start + 1).filter((m) => m.includes("audio")).length).toBeGreaterThan(10);
+  });
+
+  it("drops model audio requested for an utterance that was cancelled", () => {
+    const h = build();
+    h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "utt-old" });
+    h.voice.cancelSpeech();
+    h.receive({ serverContent: { modelTurn: { parts: [{ inlineData: {
+      mimeType: "audio/pcm", data: pcm16ToBase64(new Int16Array(160)),
+    } }] } } });
+    expect(h.audio).toHaveLength(0);
   });
 
   it("does not fire when the interviewer is not speaking", () => {
@@ -551,6 +590,41 @@ describe("tool calls are relayed, never answered here", () => {
     // A model left waiting on a function response stalls, and a stalled turn is
     // indistinguishable from the interviewer choosing to say nothing.
     expect(JSON.stringify(h.sent.find((m) => m["toolResponse"]))).toContain("RELAY_FAILED");
+  });
+
+  it("answers TOOL_TIMEOUT when the relay misses its deadline", async () => {
+    let aborted = false;
+    const h = build({
+      toolTimeoutMs: 20,
+      callTool: (_call, signal) =>
+        new Promise((resolve) => {
+          signal?.addEventListener("abort", () => { aborted = true; });
+          setTimeout(() => resolve({ ok: true }), 1_000);
+        }),
+    });
+
+    h.receive({ toolCall: { functionCalls: [{ id: "c1", name: "get_interview_context", args: {} }] } });
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(aborted).toBe(true);
+    expect(JSON.stringify(h.sent.find((m) => m["toolResponse"]))).toContain("TOOL_TIMEOUT");
+  });
+
+  it("discards a tool result that lands after its turn was cancelled", async () => {
+    let release!: (value: Record<string, unknown>) => void;
+    const h = build({
+      callTool: () => new Promise((resolve) => { release = resolve; }),
+    });
+
+    h.voice.requestSpeech({ action: "ASK_PROBE", utteranceId: "utt-1" });
+    h.receive({ toolCall: { functionCalls: [{ id: "c1", name: "get_probe_wording", args: {} }] } });
+    await new Promise((r) => setTimeout(r, 5));
+    h.voice.cancelSpeech();
+    release({ ok: true, data: { wording: "late" } });
+    await new Promise((r) => setTimeout(r, 5));
+
+    // A late answer to a cancelled turn would let the model speak for it.
+    expect(h.sent.some((m) => m["toolResponse"])).toBe(false);
   });
 
   it("never answers a tool call locally when no relay is wired", async () => {

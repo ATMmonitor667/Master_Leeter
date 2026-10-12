@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { usePreferences } from "./Preferences";
 import { PanelLabel } from "./Notepad";
 
 export interface SpeechCaptionProps {
@@ -18,15 +19,28 @@ export interface SpeechCaptionProps {
  */
 export function SpeechCaption({ active, interim, lines }: SpeechCaptionProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const follow = useRef(true);
+  const last = useRef("");
+  const [behind, setBehind] = useState(false);
+  const { readCaptions, announce } = usePreferences();
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    if (follow.current)
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    else setBehind(true);
   }, [lines, interim]);
+  useEffect(() => {
+    const text = lines.at(-1);
+    if (text && text !== last.current) {
+      last.current = text;
+      if (readCaptions) announce(text);
+    }
+  }, [lines, readCaptions]);
 
   return (
     <div className="panel-shell">
       <div className="caption-header">
-        <PanelLabel>Captions</PanelLabel>
+        <PanelLabel>Your captions</PanelLabel>
         <span className={`caption-state${active ? " listening" : ""}`}>
           {active ? "Listening" : "Paused"}
         </span>
@@ -34,13 +48,21 @@ export function SpeechCaption({ active, interim, lines }: SpeechCaptionProps) {
 
       <div
         ref={scrollRef}
-        aria-live="polite"
-        aria-relevant="additions text"
+        tabIndex={0}
+        aria-label="Your speech captions"
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          follow.current =
+            el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          if (follow.current) setBehind(false);
+        }}
         className="caption-body"
       >
         {lines.length === 0 && !interim && (
-          <p style={{ margin: 0, color: "var(--muted)", fontSize: 12 }}>
-            {active ? "Captions appear here while you speak." : "Start voice to enable candidate captions."}
+          <p style={{ margin: 0, color: "var(--muted)" }}>
+            {active
+              ? "Captions appear here while you speak."
+              : "Start voice to enable candidate captions."}
           </p>
         )}
 
@@ -51,9 +73,25 @@ export function SpeechCaption({ active, interim, lines }: SpeechCaptionProps) {
         ))}
 
         {interim && (
-          <p style={{ margin: 0, color: "var(--muted)", fontStyle: "italic" }}>{interim}</p>
+          <p style={{ margin: 0, color: "var(--muted)", fontStyle: "italic" }}>
+            {interim}
+          </p>
         )}
       </div>
+      {behind && (
+        <button
+          className="ghost-button"
+          onClick={() => {
+            follow.current = true;
+            setBehind(false);
+            scrollRef.current?.scrollTo({
+              top: scrollRef.current.scrollHeight,
+            });
+          }}
+        >
+          Jump to latest captions
+        </button>
+      )}
     </div>
   );
 }

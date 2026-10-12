@@ -39,21 +39,33 @@ export function DimensionCard({
   return (
     <section className="dimension-card">
       <header className="dimension-header">
-        <h3>
-          {DIMENSION_LABELS[dimension.dimension] ?? dimension.dimension}
-        </h3>
+        <h3>{DIMENSION_LABELS[dimension.dimension] ?? dimension.dimension}</h3>
         <div className="dimension-score">
           <span style={{ fontFamily: "var(--mono)", fontSize: 18 }}>
-            {dimension.score.toFixed(1)}
+            {dimension.score.toFixed(1)} / 4 · estimate
           </span>
-          <span style={{ color: "var(--muted)", fontSize: 12 }}>{scoreLabel(dimension.score)}</span>
-          <span style={{ color: TONE_COLOR[confidence.tone], fontSize: 11 }}>· {confidence.text}</span>
+          <span style={{ color: "var(--muted)", fontSize: 12 }}>
+            {scoreLabel(dimension.score)}
+          </span>
+          <span style={{ color: TONE_COLOR[confidence.tone], fontSize: 11 }}>
+            · {confidence.text}
+          </span>
         </div>
       </header>
 
-      <p style={{ color: "var(--muted)", margin: "10px 0 0", lineHeight: 1.55 }}>{dimension.rationale}</p>
+      <p
+        style={{ color: "var(--muted)", margin: "10px 0 0", lineHeight: 1.55 }}
+      >
+        {dimension.rationale}
+      </p>
 
-      <div className="dimension-meter" aria-hidden="true"><span style={{ width: `${Math.max(0, Math.min(100, dimension.score * 20))}%` }} /></div>
+      <div className="dimension-meter" aria-hidden="true">
+        <span
+          style={{
+            width: `${Math.max(0, Math.min(100, dimension.score * 25))}%`,
+          }}
+        />
+      </div>
 
       {dimension.evidence.length > 0 ? (
         <ul className="evidence-list">
@@ -68,7 +80,9 @@ export function DimensionCard({
               <span>
                 <span style={{ color: "var(--muted)" }}>
                   {MOMENT_LABELS[moment.kind] ?? moment.kind}
-                  {moment.codeRevision !== undefined ? ` · rev ${moment.codeRevision}` : ""}
+                  {moment.codeRevision !== undefined
+                    ? ` · rev ${moment.codeRevision}`
+                    : ""}
                   {" — "}
                 </span>
                 {moment.summary}
@@ -77,10 +91,18 @@ export function DimensionCard({
           ))}
         </ul>
       ) : (
-        <p style={{ color: "var(--muted)", fontSize: 12, marginTop: 12, fontStyle: "italic" }}>
+        <p
+          style={{
+            color: "var(--muted)",
+            fontSize: 12,
+            marginTop: 12,
+            fontStyle: "italic",
+          }}
+        >
           {/* Saying so is more honest than an empty section that looks like a
               rendering bug. */}
-          No evidence was captured for this dimension, so the score above is a weak signal.
+          No evidence was captured for this dimension, so the score above is a
+          weak signal.
         </p>
       )}
     </section>

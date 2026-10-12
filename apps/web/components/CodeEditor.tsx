@@ -1,11 +1,24 @@
 "use client";
 
-import Editor, { loader } from "@monaco-editor/react";
+import dynamic from "next/dynamic";
+import { useEffect, useState } from "react";
+import { usePreferences } from "./Preferences";
+import { editorTheme } from "../lib/monaco-theme";
 import { PanelLabel } from "./Notepad";
 
 // The default loader fetches Monaco from a CDN. Interview code must stay on
 // our origin, and the site's CSP intentionally rejects third-party scripts.
-loader.config({ paths: { vs: "/monaco/vs" } });
+const Editor = dynamic(
+  () =>
+    import("@monaco-editor/react").then((module) => {
+      module.loader.config({ paths: { vs: "/monaco/vs" } });
+      return module.default;
+    }),
+  {
+    ssr: false,
+    loading: () => <div className="editor-loading">Loading editor…</div>,
+  },
+);
 
 /**
  * Monaco, with the assistance turned off.
@@ -27,18 +40,58 @@ export function CodeEditor({
   onChange: (text: string) => void;
   saveState?: "saved" | "saving" | "offline";
 }) {
+  const { theme, fontSize, setFontSize } = usePreferences();
+  const [systemDark, setSystemDark] = useState(true);
+  useEffect(() => {
+    const media = matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setSystemDark(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  const dark = theme === "dark" || (theme === "system" && systemDark);
   return (
     <div className="editor-shell">
-      <PanelLabel><span>{language} · solution.py</span><span role="status" aria-live="polite" aria-atomic="true" className={`save-state ${saveState}`}>{saveState === "saved" ? "Saved" : saveState === "offline" ? "Waiting for connection" : "Saving…"}</span></PanelLabel>
+      <PanelLabel>
+        <span>{language} · solution.py</span>
+        <span className="editor-options">
+          <label>
+            Font{" "}
+            <select
+              className="font-select"
+              aria-label="Editor font size"
+              value={fontSize}
+              onChange={(event) => setFontSize(Number(event.target.value))}
+            >
+              {[14, 16, 18].map((size) => (
+                <option key={size} value={size}>
+                  {size}px
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className={`save-state ${saveState}`}>
+            {saveState === "saved"
+              ? "Saved"
+              : saveState === "offline"
+                ? "Waiting for connection"
+                : "Saving…"}
+          </span>
+        </span>
+      </PanelLabel>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Editor
           height="100%"
-          theme="vs-dark"
+          theme={dark ? "ml-dark" : "ml-light"}
+          beforeMount={(monaco) => {
+            monaco.editor.defineTheme("ml-dark", editorTheme(true));
+            monaco.editor.defineTheme("ml-light", editorTheme(false));
+          }}
           language={language}
           value={value}
           onChange={(v) => onChange(v ?? "")}
           options={{
-            fontSize: 13,
+            fontSize,
             fontFamily: "var(--mono)",
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
@@ -54,15 +107,20 @@ export function CodeEditor({
             inlineSuggest: { enabled: false },
             snippetSuggestions: "none",
             codeLens: false,
-            smoothScrolling: true,
-            cursorBlinking: "smooth",
+            smoothScrolling: false,
+            cursorBlinking: "solid",
             padding: { top: 14, bottom: 14 },
             accessibilitySupport: "on",
+            editContext: false,
             ariaLabel: `${language} solution editor`,
             // Hover stays on: reading a docstring is not the same as being told
             // which data structure to use.
           }}
-          loading={<div style={{ padding: 16, color: "var(--muted)" }}>Loading editor…</div>}
+          loading={
+            <div style={{ padding: 16, color: "var(--muted)" }}>
+              Loading editor…
+            </div>
+          }
         />
       </div>
     </div>
