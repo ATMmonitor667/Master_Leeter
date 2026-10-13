@@ -1,0 +1,59 @@
+.page { min-height: 100dvh; padding: 24px; background: var(--bg); color: var(--text); }
+.header { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 24px; }
+.brand { font-weight: 700; font-size: 20px; color: var(--text); text-decoration: none; }
+.badge { display: inline-block; margin-left: 16px; padding: 6px 9px; border-radius: 5px; background: var(--blue-soft); color: var(--blue); font-size: 10px; letter-spacing: .1em; font-weight: 700; }
+.header p { color: var(--muted); font-size: 13px; margin-top: 7px; }
+.actions { display: flex; align-items: center; gap: 18px; }
+.workspace { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(340px, .9fr); gap: 20px; max-width: 1600px; margin: auto; align-items: start; }
+.work, .chat { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; min-width: 0; }
+.workHeading, .chatHeading { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding: 18px 20px; }
+.workHeading h1, .chatHeading h2 { font-size: 16px; margin: 0; }
+.workHeading span, .chatHeading span { font-size: 12px; color: var(--muted); }
+.reasoning { padding: 20px; border-bottom: 1px solid var(--border); }
+.page label { font-weight: 600; font-size: 13px; display: block; margin-bottom: 8px; }
+.reasoning p, .guide p, .runs p { font-size: 13px; line-height: 1.7; color: var(--muted); margin: 0 0 14px; }
+.page textarea { width: 100%; box-sizing: border-box; resize: vertical; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 13px; line-height: 1.6; font: inherit; font-size: 14px; min-height: 110px; }
+.page textarea:focus-visible, .page button:focus-visible, .page summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.reasoning button { margin-top: 12px; }
+.editor { height: 360px; display: flex; flex-direction: column; }
+.editor > div { flex: 1; min-height: 0; }
+.codeActions { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.codeActions span { font-size: 12px; color: var(--muted); }
+.chat { position: sticky; top: 16px; height: calc(100dvh - 135px); min-height: 600px; display: flex; flex-direction: column; }
+.messages { flex: 1; min-height: 180px; overflow-y: auto; padding: 24px 20px; overscroll-behavior: contain; }
+.interviewer, .candidate { padding: 15px 17px; border-radius: 10px; margin-bottom: 20px; overflow-wrap: anywhere; }
+.interviewer { background: var(--bg-soft); margin-right: 18px; }
+.candidate { background: var(--blue-soft); margin-left: 28px; }
+.messages article > span { display: block; font-size: 11px; color: var(--muted-strong); font-weight: 700; margin-bottom: 9px; }
+.messages p { white-space: pre-wrap; font-size: 14px; line-height: 1.75; margin: 0; }
+.messages pre, .runs pre { overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.6; }
+.messages details { margin-top: 10px; }
+.composer { padding: 18px 20px; border-top: 1px solid var(--border); }
+.composer textarea { min-height: 90px; max-height: 240px; }
+.composer > div { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; }
+.composer small { display: block; color: var(--muted); margin-top: 12px; font-size: 11px; }
+.waiting { color: var(--muted); font-size: 13px; padding: 8px; }
+.guide { padding: 26px 20px 36px; }
+.guide h2 { font-size: 17px; margin-bottom: 12px; }
+.runs { padding: 16px 20px; border-top: 1px solid var(--border); }
+.runs summary { cursor: pointer; font-size: 14px; margin-bottom: 12px; }
+.runs button { margin-top: 10px; }
+.runs article { padding: 12px 0; }
+.error, .notice, .confirm { max-width: 1600px; margin: 0 auto 18px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 14px; line-height: 1.6; }
+.error { color: var(--err); }
+.error button, .confirm button, .notice button { margin-left: 12px; }
+.confirm p { margin-bottom: 12px; }
+@media (max-width: 900px) {
+  .page { padding: 16px; }
+  .header { flex-wrap: wrap; }
+  .workspace { grid-template-columns: 1fr; }
+  .chat { position: static; height: auto; min-height: 500px; grid-row: 1; }
+  .messages { max-height: 55dvh; }
+  .badge { margin-left: 10px; }
+}
+@media (max-width: 480px) {
+  .page { padding: 10px; }
+  .actions { flex-wrap: wrap; gap: 10px; }
+  .workHeading, .chatHeading { align-items: flex-start; flex-direction: column; }
+  .codeActions { flex-wrap: wrap; }
+}

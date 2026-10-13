@@ -13,6 +13,8 @@ import { startReportRecovery } from "./modules/report/recovery-worker.js";
 import type { RuntimeOwnership } from "./modules/session/runtime-ownership.js";
 import { loadEnv } from "./env.js";
 import { GeminiClient, geminiApiKeyFromEnv } from "./lib/gemini.js";
+import { registerChatModule } from "./modules/chat/index.js";
+import { GeminiChatInterviewer, type ChatInterviewer } from "./modules/chat/interviewer.js";
 import { classifierFromEnv, GeminiClassifier, type IntentClassifier } from "./modules/orchestrator/index.js";
 import {
   GeminiResumeAnalyzer,
@@ -59,6 +61,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const CONTENT_ROOT = join(here, "../../../content/scenarios");
 
 export interface ServerOptions {
+  chatInterviewer?: ChatInterviewer;
   library: Map<string, LoadedScenario>;
   questionBank?: QuestionBank;
   logger?: boolean;
@@ -289,6 +292,10 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.resumeAnalyzer ? { analyzer: opts.resumeAnalyzer } : {}),
     ...(opts.scenarioRestater ? { restater: opts.scenarioRestater } : {}),
   });
+  void app.register(registerChatModule, {
+    prefix: "/v1", sessions: store, events: eventLog, preparations: preparationStore,
+    ...(opts.chatInterviewer ? { interviewer: opts.chatInterviewer } : {}),
+  });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
   void app.register(registerSupportModule, {
     prefix: "/v1",
@@ -353,6 +360,11 @@ export async function start(): Promise<void> {
   const classifier = classifierFromEnv();
 
   const preparationKey = geminiApiKeyFromEnv();
+  const chatInterviewer = preparationKey ? new GeminiChatInterviewer(new GeminiClient({
+    apiKey: preparationKey,
+    model: process.env["CHAT_INTERVIEW_MODEL"] || process.env["OBSERVER_MODEL"] || "gemini-3.5-flash",
+    requestTimeoutMs: 30_000,
+  })) : undefined;
   const evaluatorModel = process.env["EVALUATOR_MODEL"];
   const evaluator = preparationKey && evaluatorModel ? new IndependentGeminiEvaluator(new GeminiClient({
     apiKey: preparationKey,
@@ -414,6 +426,7 @@ export async function start(): Promise<void> {
       classifier: classifier instanceof GeminiClassifier ? classifier.operationalStatus().circuit : "FALLBACK",
       evaluator: evaluator ? evaluator.operationalStatus().circuit : "FALLBACK",
       runFeedback: runner ? "AVAILABLE_MODEL_ESTIMATE" : "UNAVAILABLE",
+      chat: chatInterviewer ? "AVAILABLE" : "UNAVAILABLE",
       alerts: alertSink ? "WEBHOOK" : "LOG_ONLY",
     }),
     ...(durableStorage ? { readinessChecks: [{ name: "storage", check: durableStorage.storageReadiness }] } : {}),
@@ -426,6 +439,7 @@ export async function start(): Promise<void> {
     ...(ttsTranscriber ? { ttsTranscriber } : {}),
     ...(process.env["TTS_CACHE_DIR"] ? { ttsCacheDir: process.env["TTS_CACHE_DIR"] } : {}),
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
+    ...(chatInterviewer ? { chatInterviewer } : {}),
     ...(scenarioRestater ? { scenarioRestater } : {}),
     ...(evaluator ? { evaluator } : {}),
     ...(alertSink ? { alertSink } : {}),

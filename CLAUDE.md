@@ -29,8 +29,9 @@ These break the product if violated. Treat any change touching them as needing e
 
 1. **Application-controlled response creation.** Turn detection ≠ permission to speak.
    All speech goes through the Response Gate.
-2. **The full problem statement is never rendered as text.** Oral delivery only.
-   Captions are an accessibility feature, not the default reading path.
+2. **Voice sessions deliver the problem orally.** Captions are optional.
+   Explicit CHAT sessions render the authorized problem and conversation as text
+   (user-authorized format added October 12, 2026); no microphone is required.
 3. **Clarifications come from canonical scenario facts, never model invention.** The
    clarification tool returns a fact or `NOT_ANSWERABLE`.
 4. **Sessions pin an immutable scenario version.** Never mutate a scenario version that a

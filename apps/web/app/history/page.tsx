@@ -8,6 +8,7 @@ import { AccountMenu } from "../../components/AccountMenu";
 import { apiFetch, SignInRequired } from "../../lib/api-client";
 
 interface SessionSummary {
+  format?: "VOICE" | "CHAT";
   sessionId: string;
   mode: "LEARNING" | "MOCK" | "STRICT";
   state: string;
@@ -195,7 +196,7 @@ export default function HistoryPage() {
         >
           {sessions.map((session, index) => {
             const completed = Boolean(session.endedAt);
-            const destination = completed
+            const destination = session.format === "CHAT" ? `/interview/${session.sessionId}/chat` : completed
               ? `/report/${session.sessionId}`
               : `/interview/${session.sessionId}`;
             const month = new Intl.DateTimeFormat(undefined, {
@@ -234,7 +235,7 @@ export default function HistoryPage() {
                   <div className="history-meta">
                     <span>
                       {completed
-                        ? "Report ready or processing"
+                        ? session.format === "CHAT" ? "Conversation saved" : "Report ready or processing"
                         : `${Math.ceil(session.remainingSeconds / 60)} min remaining`}
                     </span>
                     <span className="meta-mono">
@@ -243,7 +244,7 @@ export default function HistoryPage() {
                   </div>
                   <div className="history-actions">
                     <a className="secondary-button" href={destination}>
-                      {completed ? "View report" : "Resume"} <span>→</span>
+                      {completed ? session.format === "CHAT" ? "View conversation" : "View report" : "Resume"} <span>→</span>
                     </a>
                     <button
                       className="ghost-button"

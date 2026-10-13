@@ -34,11 +34,13 @@ export function CodeEditor({
   language,
   onChange,
   saveState = "saved",
+  readOnly = false,
 }: {
   value: string;
   language: string;
   onChange: (text: string) => void;
-  saveState?: "saved" | "saving" | "offline";
+  saveState?: "saved" | "saving" | "offline" | "draft";
+  readOnly?: boolean;
 }) {
   const { theme, fontSize, setFontSize } = usePreferences();
   const [systemDark, setSystemDark] = useState(true);
@@ -73,7 +75,7 @@ export function CodeEditor({
           <span className={`save-state ${saveState}`}>
             {saveState === "saved"
               ? "Saved"
-              : saveState === "offline"
+              : saveState === "draft" ? "Not submitted" : saveState === "offline"
                 ? "Waiting for connection"
                 : "Saving…"}
           </span>
@@ -91,6 +93,7 @@ export function CodeEditor({
           value={value}
           onChange={(v) => onChange(v ?? "")}
           options={{
+            readOnly,
             fontSize,
             fontFamily: "var(--mono)",
             minimap: { enabled: false },

@@ -17,6 +17,10 @@ export const EVENT_TYPES = [
   // ── Session lifecycle ────────────────────────────────────────────────────
   "SESSION_STARTED",
   "SESSION_ENDED",
+  /** Atomic text submission + interviewer response, with a server turn number. */
+  "CHAT_TURN",
+  /** Confirmed resume facts for a text interview; fully removed by redaction. */
+  "CHAT_CONTEXT",
   "STATE_TRANSITIONED",
   "TIMER_PAUSED",
   "TIMER_RESUMED",

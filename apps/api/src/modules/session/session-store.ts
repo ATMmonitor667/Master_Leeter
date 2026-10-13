@@ -15,6 +15,7 @@ export const DEFAULT_INTERVIEW_SECONDS = 2_700;
  */
 
 export interface InterviewSession {
+  chat?: import("@master-leeter/contracts").ChatSessionConfig;
   id: string;
   userId: string;
   /** Immutable pin. */
@@ -106,6 +107,7 @@ export class InMemorySessionStore implements SessionStore {
 
     const policy = policyFor(req.mode);
     const session: InterviewSession = {
+      ...(req.scenario.chat ? { chat: structuredClone(req.scenario.chat) } : {}),
       id: randomUUID(),
       userId: req.userId,
       scenarioVersionId: req.scenario.version.id,

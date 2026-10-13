@@ -6,6 +6,7 @@ import { SessionNotFoundError, type CreateSessionRequest, type InterviewSession,
 import type { LoadedScenario } from "../scenario/loader.js";
 
 type Row = {
+  scenario_snapshot?: LoadedScenario | null;
   id: string; user_id: string; scenario_version_id: string; scenario_hash: string;
   mode: InterviewSession["mode"]; policy: InterviewSession["policy"];
   state: InterviewState; language: string; trace_id: string;
@@ -17,6 +18,7 @@ type Row = {
 const iso = (value: Date | string) => new Date(value).toISOString();
 function session(row: Row): InterviewSession {
   return {
+    ...(row.scenario_snapshot?.chat ? { chat: row.scenario_snapshot.chat } : {}),
     id: row.id, userId: row.user_id, scenarioVersionId: row.scenario_version_id,
     scenarioHash: row.scenario_hash, mode: row.mode, policy: row.policy,
     state: row.state, language: row.language, interviewerTone: row.interviewer_tone, traceId: row.trace_id,

@@ -1,4 +1,4 @@
-import { InterviewModeSchema, InterviewerToneSchema, type InterviewState, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
+import { InterviewFormatSchema, InterviewModeSchema, InterviewerToneSchema, type InterviewState, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
@@ -70,6 +70,7 @@ export { buildSessionReview, reviewAsTsv, type ReviewEntry } from "./review.js";
 export { handleConnection, registerEventsSocket, type SocketLike } from "./ws.js";
 
 const CreateSessionBody = z.object({
+  format: InterviewFormatSchema.default("VOICE"),
   /** Opaque public ref from GET /scenarios. Internal ids are also accepted. */
   scenarioRef: z.string().min(1).max(200).optional(),
   mode: InterviewModeSchema.default("MOCK"),
@@ -310,6 +311,13 @@ export async function registerSessionModule(
   });
 
   // Until command routing exists, reject commands on a non-owner explicitly.
+  app.addHook("preHandler", async (req, reply) => {
+    const route = req.routeOptions.url ?? "";
+    const id = (req.params as { id?: string }).id;
+    if (!id || !(route.includes("/voice-") || route.endsWith("/realtime-token") ||
+      route.endsWith("/events") || route.endsWith("/voice-resumption"))) return;
+    if ((await store.get(id))?.chat) return reply.code(409).send({ error: "CHAT_SESSION_HAS_NO_VOICE" });
+  });
   // Never return success for a voice command that this process cannot handle.
   if (owners) app.addHook("preHandler", async (req, reply) => {
     const id = (req.params as { id?: string }).id;
@@ -342,7 +350,7 @@ export async function registerSessionModule(
     if (existing) return existing;
 
     const session = await store.get(sessionId);
-    if (!session || session.endedAt) return null;
+    if (!session || session.endedAt || session.chat) return null;
 
     const scenario = await store.pinnedScenario(session.id);
     if (!scenario || scenario.version.id !== session.scenarioVersionId ||
@@ -644,7 +652,7 @@ export async function registerSessionModule(
         opts.library.set(scenario.version.id, pinned ?? scenario);
         const createRequest = {
           userId,
-          scenario,
+          scenario: body.data.format === "CHAT" ? { ...scenario, chat: { focus: "CODING" as const } } : scenario,
           mode: body.data.mode,
           language: body.data.language,
           interviewerTone: body.data.interviewerTone,
@@ -671,7 +679,7 @@ export async function registerSessionModule(
       // P3.5: prewarm the opening script and first repeat variant eagerly, so
       // even the first utterance can be served from cache. The rest of the
       // vocabulary is prewarm on realtime-token mint. Both are not awaited.
-      if (ttsCache) {
+      if (ttsCache && !session.chat) {
         const scenarioForPrewarm = opts.library.get(session.scenarioVersionId);
         if (scenarioForPrewarm) {
           const tone = (session.interviewerTone ?? "NORMAL") as "EXTRA_NICE" | "NORMAL" | "MEAN";
@@ -686,6 +694,7 @@ export async function registerSessionModule(
       // Note what is NOT in this response: no oral brief, no facts, no tests.
       // The problem reaches the candidate through the voice agent or not at all.
       return reply.code(201).send({
+        format: session.chat ? "CHAT" : "VOICE",
         sessionId: session.id,
         state: session.state,
         expectedSeconds: session.expectedSeconds,
@@ -734,6 +743,7 @@ export async function registerSessionModule(
       : null;
     return reply.header("Cache-Control", "no-store").send({
       sessions: page.map((session) => ({
+        format: session.chat ? "CHAT" : "VOICE",
         sessionId: session.id,
         mode: session.mode,
         state: session.state,
@@ -755,6 +765,7 @@ export async function registerSessionModule(
     return reply.send({
       sessionId: session.id,
       state: session.state,
+      format: session.chat ? "CHAT" : "VOICE",
       remainingSeconds: remainingSeconds(session, Date.now()),
       endedAt: session.endedAt,
     });
@@ -805,11 +816,11 @@ export async function registerSessionModule(
           throw new FinalInputsPendingError(expectedClientSeq, durableClientSeq);
         }
       }
-      const session = opts.lifecycle
+      const session = opts.lifecycle && !beforeEnd.chat
         ? await opts.lifecycle.endWithReport(id, rubricId, undefined, expectedClientSeq)
         : await store.end(id);
 
-      if (!opts.lifecycle) {
+      if (!opts.lifecycle || beforeEnd.chat) {
         await eventLog.append({
           sessionId: session.id,
           type: "SESSION_ENDED",
@@ -837,7 +848,7 @@ export async function registerSessionModule(
       authorizedUtterances.delete(session.id);
 
       const scenario = opts.library.get(session.scenarioVersionId);
-      if (opts.evaluationQueue) {
+      if (opts.evaluationQueue && !session.chat) {
         void opts.evaluationQueue.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1")
           .catch((error: unknown) => app.log.error({ sessionId: session.id, errorType: error instanceof Error ? error.name : typeof error }, "report job enqueue failed"));
       }

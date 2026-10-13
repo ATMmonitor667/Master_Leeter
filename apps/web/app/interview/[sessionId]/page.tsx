@@ -53,7 +53,26 @@ const STARTER = `# Write your Python solution here.
 type SupportCategory = "VOICE" | "CONNECTION" | "SAVING" | "REPORT" | "OTHER";
 type SupportState = "IDLE" | "SENDING" | "SENT" | "ERROR";
 
-export default function InterviewPage({
+export default function InterviewEntry({ params }: { params: Promise<{ sessionId: string }> }) {
+  const { sessionId } = use(params);
+  const [voice, setVoice] = useState(false);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let active = true;
+    apiFetch(`/v1/interview-sessions/${sessionId}`).then(async (res) => {
+      if (!res.ok) throw new Error("Unable to load interview");
+      const data = await res.json();
+      if (!active) return;
+      if (data.format === "CHAT") window.location.replace(`/interview/${sessionId}/chat`);
+      else setVoice(true);
+    }).catch(() => { if (active) setError(true); });
+    return () => { active = false; };
+  }, [sessionId]);
+  if (error) return <p role="alert">Unable to load this interview. <button onClick={() => window.location.reload()}>Retry</button></p>;
+  return voice ? <VoiceInterviewPage params={params} /> : <p role="status">Opening your interview…</p>;
+}
+
+function VoiceInterviewPage({
   params,
 }: {
   params: Promise<{ sessionId: string }>;

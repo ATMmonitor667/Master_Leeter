@@ -74,6 +74,8 @@ export default function SetupPage() {
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
   const [mode, setMode] = useState<(typeof MODES)[number]>("MOCK");
   const [tone, setTone] = useState<Tone>("NORMAL");
+  const [format, setFormat] = useState<"VOICE" | "CHAT">("CHAT");
+  const [focus, setFocus] = useState<"CODING" | "RESUME" | "COMBINED">("CODING");
   const [resumeText, setResumeText] = useState("");
   const [consent, setConsent] = useState(false);
   const [preparation, setPreparation] = useState<Preparation | null>(null);
@@ -196,7 +198,7 @@ export default function SetupPage() {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ scenarioRef, mode, language: "python" }),
+          body: JSON.stringify({ scenarioRef, mode, language: "python", format, focus }),
         },
       );
       if (!completed.ok) {
@@ -225,6 +227,11 @@ export default function SetupPage() {
   }
 
   async function startInterview(scenarioRef: string) {
+    if (format === "CHAT" && focus !== "CODING" && (!preparation || !confirmedFacts.size)) {
+      setStep(2);
+      setError("Review your resume and confirm at least one fact before starting a resume interview.");
+      return;
+    }
     if (preparation) {
       await startPrepared(scenarioRef);
       return;
@@ -244,6 +251,7 @@ export default function SetupPage() {
           mode,
           language: "python",
           interviewerTone: tone,
+          format,
         }),
       });
       const result = (await response.json().catch(() => ({}))) as {
@@ -294,6 +302,8 @@ export default function SetupPage() {
       if (MODES.includes(saved.mode)) setMode(saved.mode);
       if (TONES.some((t) => t.id === saved.tone)) setTone(saved.tone);
       if (typeof saved.ref === "string") setSelectedRef(saved.ref);
+      if (saved.format === "VOICE" || saved.format === "CHAT") setFormat(saved.format);
+      if (["CODING", "RESUME", "COMBINED"].includes(saved.focus)) setFocus(saved.focus);
     } catch {}
     setPreferencesLoaded(true);
   }, []);
@@ -302,10 +312,10 @@ export default function SetupPage() {
       try {
         sessionStorage.setItem(
           "ml-setup",
-          JSON.stringify({ mode, tone, ref: selectedRef }),
+          JSON.stringify({ mode, tone, ref: selectedRef, format, focus }),
         );
       } catch {}
-  }, [preferencesLoaded, mode, tone, selectedRef]);
+  }, [preferencesLoaded, mode, tone, selectedRef, format, focus]);
   useEffect(() => {
     stepTitle.current?.focus();
   }, [step]);
@@ -354,11 +364,36 @@ export default function SetupPage() {
               </p>
             )}
             {step === 0 && (
+              <>
+              <fieldset className={styles.fieldset}>
+                <legend>Interview format</legend>
+                <div className={styles.radios}>
+                  {(["CHAT", "VOICE"] as const).map((item) => <RadioCard key={item}
+                    name="format" title={item === "CHAT" ? "Chat interviewer" : "Voice interviewer"}
+                    description={item === "CHAT" ? "Read, ask questions, and submit your thoughts. No microphone needed." : "Speak with the interviewer and think aloud."}
+                    checked={format === item} disabled={starting || preparation?.status === "READY"}
+                    onChange={() => { setFormat(item); sessionKey.current = null; }} />)}
+                </div>
+              </fieldset>
+              {format === "CHAT" && <fieldset className={styles.fieldset}>
+                <legend>What would you like to practice?</legend>
+                <div className={styles.radios}>
+                  {([
+                    ["CODING", "Coding", "Discuss a problem, explain your approach, and write code."],
+                    ["RESUME", "Resume", "Questions about your projects, experience, and technical decisions."],
+                    ["COMBINED", "Resume + coding", "Start with your experience, then move to a coding problem."],
+                  ] as const).map(([item, title, description]) => <RadioCard key={item} name="focus"
+                    title={title} description={description} checked={focus === item}
+                    disabled={starting || preparation?.status === "READY"}
+                    onChange={() => { setFocus(item); sessionKey.current = null; }} />)}
+                </div>
+              </fieldset>}
+              {!(format === "CHAT" && focus === "RESUME") &&
               <fieldset className={styles.fieldset}>
                 <legend>Interview session</legend>
                 <p>
-                  Only the level and topics are shown. You’ll hear the problem
-                  in the interview.
+                  {format === "CHAT" ? "Choose the level and topics. Your problem will appear in the interview chat."
+                    : "Only the level and topics are shown. You’ll hear the problem in the interview."}
                 </p>
                 {!loaded && (
                   <div
@@ -408,6 +443,8 @@ export default function SetupPage() {
                   </button>
                 )}
               </fieldset>
+              }
+              </>
             )}
             {step === 1 && (
               <>
@@ -458,11 +495,11 @@ export default function SetupPage() {
               <fieldset className={styles.fieldset}>
                 <legend>
                   Resume context{" "}
-                  <span className={styles.optional}>Optional</span>
+                  <span className={styles.optional}>{format === "CHAT" && focus !== "CODING" ? "Required" : "Optional"}</span>
                 </legend>
                 <p>
-                  You can continue without a resume. If you add one, review the
-                  facts before the interviewer uses them.
+                  {format === "CHAT" && focus !== "CODING" ? "Paste your resume and confirm the facts you'd like to discuss."
+                    : "You can continue without a resume. If you add one, review the facts before the interviewer uses them."}
                 </p>
                 {!preparation ? (
                   <>
@@ -576,6 +613,8 @@ export default function SetupPage() {
           <span className="eyebrow">Your room</span>
           <h2>Ready when you are.</h2>
           <dl>
+            <div><dt>Format</dt><dd>{format === "CHAT" ? "Chat · no microphone" : "Voice"}</dd></div>
+            {format === "CHAT" && <div><dt>Focus</dt><dd>{focus === "COMBINED" ? "Resume + coding" : focus === "RESUME" ? "Resume" : "Coding"}</dd></div>}
             <div>
               <dt>Session</dt>
               <dd>{selected?.level ?? "Choose a session"}</dd>
@@ -612,8 +651,8 @@ export default function SetupPage() {
             <Icon name="arrow" />
           </button>
           <p>
-            Microphone checks come next. Your timer starts after the spoken
-            brief.
+            {format === "CHAT" ? "Your conversation opens next. Submit questions, thoughts, and code at your own pace."
+              : "Microphone checks come next. Your timer starts after the spoken brief."}
           </p>
           <a href="/support">Need help?</a>
         </aside>

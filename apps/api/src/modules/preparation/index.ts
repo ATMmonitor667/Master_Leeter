@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { InterviewModeSchema, InterviewerToneSchema, type InterviewMode } from "@master-leeter/contracts";
+import { ChatFocusSchema, InterviewFormatSchema, InterviewModeSchema, InterviewerToneSchema, type ChatFocus, type InterviewMode } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
@@ -35,6 +35,8 @@ const ConfirmBody = z.object({
 }).strict();
 
 const CompleteBody = z.object({
+  format: InterviewFormatSchema.default("VOICE"),
+  focus: ChatFocusSchema.default("CODING"),
   scenarioRef: z.string().min(1).max(200).optional(),
   mode: InterviewModeSchema.default("MOCK"),
   language: z.string().trim().min(1).max(40).default("python"),
@@ -185,12 +187,16 @@ export async function registerPreparationModule(app: FastifyInstance, opts: Prep
 
 async function completePreparation(
   initial: PreparationRecord,
-  body: { scenarioRef?: string | undefined; mode: InterviewMode; language: string },
+  body: { scenarioRef?: string | undefined; mode: InterviewMode; language: string; format: "VOICE" | "CHAT"; focus: ChatFocus },
   opts: PreparationModuleOptions,
   store: PreparationStore,
   restater: ScenarioRestater,
 ): Promise<PreparationRecord> {
   let record = initial;
+  if (body.format === "CHAT" && body.focus !== "CODING" &&
+    !record.analysis?.facts.some((fact) => record.confirmedFactIds.includes(fact.id))) {
+    throw new Error("CONFIRMED_RESUME_REQUIRED");
+  }
   let scenario: LoadedScenario | null;
   if (record.scenarioVersionId) {
     scenario = await opts.questionBank.get(record.scenarioVersionId);
@@ -225,8 +231,9 @@ async function completePreparation(
   }
   const wording = record.restatement;
   if (!wording) throw new Error("PREPARATION_STATE_CONFLICT");
-  const resumeQuestion = resumeDiscussionQuestion(record);
+  const resumeQuestion = body.format === "VOICE" ? resumeDiscussionQuestion(record) : null;
   const preparedScenario = withRestatement(scenario, wording.openingScript, wording.repeatVariants, resumeQuestion);
+  if (body.format === "CHAT") preparedScenario.chat = { focus: body.focus, preparationId: record.id };
   const request: CreateSessionRequest = {
     userId: record.userId, scenario: preparedScenario, mode: body.mode, language: body.language,
     interviewerTone: record.tone, expectedSeconds: INTERVIEW_SECONDS,
@@ -283,7 +290,7 @@ function preparationId(params: unknown): string | null {
 
 function preparationFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : "PREPARATION_FAILED";
-  return ["NO_ACTIVE_QUESTIONS", "PREPARATION_ALREADY_PINNED", "PINNED_QUESTION_UNAVAILABLE", "PREPARATION_STATE_CONFLICT", "PREPARATION_BUSY"]
+  return ["CONFIRMED_RESUME_REQUIRED", "NO_ACTIVE_QUESTIONS", "PREPARATION_ALREADY_PINNED", "PINNED_QUESTION_UNAVAILABLE", "PREPARATION_STATE_CONFLICT", "PREPARATION_BUSY"]
     .includes(message) ? message : "PREPARATION_FAILED";
 }
 
