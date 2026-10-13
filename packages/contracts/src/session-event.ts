@@ -21,6 +21,8 @@ export const EVENT_TYPES = [
   "CHAT_TURN",
   /** Confirmed resume facts for a text interview; fully removed by redaction. */
   "CHAT_CONTEXT",
+  /** Post-session professor review turn; never read by the live interviewer or grader. */
+  "CHAT_REVIEW_TURN",
   "STATE_TRANSITIONED",
   "TIMER_PAUSED",
   "TIMER_RESUMED",

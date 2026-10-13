@@ -43,6 +43,22 @@
 .error { color: var(--err); }
 .error button, .confirm button, .notice button { margin-left: 12px; }
 .confirm p { margin-bottom: 12px; }
+.ready { max-width: 680px; margin: 40px auto; padding: 32px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+.ready h1 { font-size: 24px; margin: 0 0 14px; }
+.ready p { color: var(--muted); line-height: 1.7; font-size: 14px; margin: 0 0 16px; }
+.ready dl { display: flex; gap: 32px; margin: 0 0 18px; }
+.ready dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+.ready dd { margin: 4px 0 0; font-weight: 600; }
+.status { max-width: 1600px; margin: 0 auto 16px; display: flex; flex-wrap: wrap; gap: 10px 28px; align-items: baseline; font-size: 13px; color: var(--muted); }
+.status strong { color: var(--text); margin-right: 6px; }
+.status details { flex-basis: 100%; }
+.status summary { cursor: pointer; color: var(--text); }
+.status ol { margin: 10px 0 0; padding-left: 20px; line-height: 1.7; }
+.codeActions > div { display: flex; gap: 10px; flex-wrap: wrap; }
+.professor { padding: 15px 17px; border-radius: 10px; margin: 0 18px 20px 0; overflow-wrap: anywhere; background: var(--bg-soft); border-left: 3px solid var(--blue); }
+.divider { text-align: center; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 8px 0 20px; }
+.reviewIntro { font-size: 13px; line-height: 1.7; color: var(--muted); margin: 0 0 12px; }
+.notice a { margin-left: 12px; }
 @media (max-width: 900px) {
   .page { padding: 16px; }
   .header { flex-wrap: wrap; }
@@ -56,4 +72,5 @@
   .actions { flex-wrap: wrap; gap: 10px; }
   .workHeading, .chatHeading { align-items: flex-start; flex-direction: column; }
   .codeActions { flex-wrap: wrap; }
+  .ready { margin: 16px auto; padding: 20px; }
 }

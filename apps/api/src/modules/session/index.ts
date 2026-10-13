@@ -1,4 +1,4 @@
-import { InterviewFormatSchema, InterviewModeSchema, InterviewerToneSchema, type InterviewState, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
+import { InterviewFormatSchema, InterviewMinutesSchema, InterviewModeSchema, InterviewerToneSchema, type InterviewState, type ServerMessage, type SessionEvent } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
@@ -71,6 +71,8 @@ export { handleConnection, registerEventsSocket, type SocketLike } from "./ws.js
 
 const CreateSessionBody = z.object({
   format: InterviewFormatSchema.default("VOICE"),
+  /** Chat only; voice pacing is tuned to the default length. */
+  durationMinutes: InterviewMinutesSchema.optional(),
   /** Opaque public ref from GET /scenarios. Internal ids are also accepted. */
   scenarioRef: z.string().min(1).max(200).optional(),
   mode: InterviewModeSchema.default("MOCK"),
@@ -657,6 +659,7 @@ export async function registerSessionModule(
           language: body.data.language,
           interviewerTone: body.data.interviewerTone,
           idempotencyKey,
+          ...(body.data.format === "CHAT" && body.data.durationMinutes ? { expectedSeconds: body.data.durationMinutes * 60 } : {}),
         };
         session = opts.lifecycle
           ? await opts.lifecycle.createStarted(createRequest)
@@ -816,11 +819,13 @@ export async function registerSessionModule(
           throw new FinalInputsPendingError(expectedClientSeq, durableClientSeq);
         }
       }
-      const session = opts.lifecycle && !beforeEnd.chat
+      // Resume-only chat interviews save a transcript and never get a score.
+      const scored = beforeEnd.chat?.focus !== "RESUME";
+      const session = opts.lifecycle && scored
         ? await opts.lifecycle.endWithReport(id, rubricId, undefined, expectedClientSeq)
         : await store.end(id);
 
-      if (!opts.lifecycle || beforeEnd.chat) {
+      if (!opts.lifecycle || !scored) {
         await eventLog.append({
           sessionId: session.id,
           type: "SESSION_ENDED",
@@ -848,7 +853,7 @@ export async function registerSessionModule(
       authorizedUtterances.delete(session.id);
 
       const scenario = opts.library.get(session.scenarioVersionId);
-      if (opts.evaluationQueue && !session.chat) {
+      if (opts.evaluationQueue && session.chat?.focus !== "RESUME") {
         void opts.evaluationQueue.enqueue(session.id, scenario?.version.rubricId ?? "rubric-coding-v1")
           .catch((error: unknown) => app.log.error({ sessionId: session.id, errorType: error instanceof Error ? error.name : typeof error }, "report job enqueue failed"));
       }
@@ -1457,6 +1462,8 @@ export async function registerSessionModule(
         runId: enqueued.runId,
         revision: body.data.revision,
         inputHash: hashInput(body.data.input),
+        // Lets a chat interview tie run evidence to the exact submitted code.
+        sourceHash: hashInput(body.data.source),
       },
       traceId: session.traceId,
       idempotencyKey: `run-requested:${enqueued.runId}`,

@@ -1,4 +1,4 @@
-import type { ChatInput, ChatSnapshot } from "@master-leeter/contracts";
+import type { ChatInput, ChatReviewInput, ChatSnapshot } from "@master-leeter/contracts";
 import { apiFetch } from "./api-client";
 
 const errors: Record<string, string> = {
@@ -13,13 +13,15 @@ const errors: Record<string, string> = {
   CHAT_NOT_STARTED: "The interview hasn't opened yet. Reload to receive the problem.",
   INVALID_CHAT_PHASE: "That action isn't available at this point in the interview.",
   INVALID_CHAT_INPUT: "That submission is empty or too long. Edit it and try again.",
+  REVIEW_NOT_AVAILABLE: "The review opens after a coding interview ends.",
+  REVIEW_UNAVAILABLE: "The review model is not configured. Ask the administrator to enable it.",
   CONFIRMED_RESUME_REQUIRED: "Resume context is unavailable. Start a new interview with confirmed resume facts.",
 };
 export class ChatRequestError extends Error {
   constructor(readonly code: string) { super(errors[code] ?? "Couldn't load the interview. Please retry."); }
 }
-export async function chatRequest(sessionId: string, action: "read" | "start" | "turn", input?: ChatInput): Promise<ChatSnapshot> {
-  const suffix = action === "start" ? "/start" : action === "turn" ? "/turns" : "";
+export async function chatRequest(sessionId: string, action: "read" | "start" | "turn" | "review", input?: ChatInput | ChatReviewInput): Promise<ChatSnapshot> {
+  const suffix = action === "start" ? "/start" : action === "turn" ? "/turns" : action === "review" ? "/review" : "";
   const response = await apiFetch(`/v1/interview-sessions/${sessionId}/chat${suffix}`, {
     method: action === "read" ? "GET" : "POST",
     ...(input ? { headers: { "content-type": "application/json" }, body: JSON.stringify(input) } : {}),

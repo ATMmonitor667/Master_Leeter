@@ -16,6 +16,9 @@ import { startError } from "../../lib/start-error";
 
 import { Navigation } from "../../components/Shell";
 import { RadioCard, Skeleton } from "../../components/ui/Primitives";
+import type { INTERVIEW_MINUTES as ServerMinutes } from "@master-leeter/contracts";
+/** Mirrors the server's accepted chat interview lengths. */
+const INTERVIEW_MINUTES = [30, 45, 60, 90] as const satisfies typeof ServerMinutes;
 import { Icon } from "../../components/ui/Icon";
 import styles from "./Setup.module.css";
 
@@ -76,6 +79,7 @@ export default function SetupPage() {
   const [tone, setTone] = useState<Tone>("NORMAL");
   const [format, setFormat] = useState<"VOICE" | "CHAT">("CHAT");
   const [focus, setFocus] = useState<"CODING" | "RESUME" | "COMBINED">("CODING");
+  const [minutes, setMinutes] = useState<(typeof INTERVIEW_MINUTES)[number]>(45);
   const [resumeText, setResumeText] = useState("");
   const [consent, setConsent] = useState(false);
   const [preparation, setPreparation] = useState<Preparation | null>(null);
@@ -198,7 +202,8 @@ export default function SetupPage() {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ scenarioRef, mode, language: "python", format, focus }),
+          body: JSON.stringify({ scenarioRef, mode, language: "python", format, focus,
+            ...(format === "CHAT" ? { durationMinutes: minutes } : {}) }),
         },
       );
       if (!completed.ok) {
@@ -252,6 +257,7 @@ export default function SetupPage() {
           language: "python",
           interviewerTone: tone,
           format,
+          ...(format === "CHAT" ? { durationMinutes: minutes } : {}),
         }),
       });
       const result = (await response.json().catch(() => ({}))) as {
@@ -304,6 +310,7 @@ export default function SetupPage() {
       if (typeof saved.ref === "string") setSelectedRef(saved.ref);
       if (saved.format === "VOICE" || saved.format === "CHAT") setFormat(saved.format);
       if (["CODING", "RESUME", "COMBINED"].includes(saved.focus)) setFocus(saved.focus);
+      if (INTERVIEW_MINUTES.includes(saved.minutes)) setMinutes(saved.minutes);
     } catch {}
     setPreferencesLoaded(true);
   }, []);
@@ -312,10 +319,10 @@ export default function SetupPage() {
       try {
         sessionStorage.setItem(
           "ml-setup",
-          JSON.stringify({ mode, tone, ref: selectedRef, format, focus }),
+          JSON.stringify({ mode, tone, ref: selectedRef, format, focus, minutes }),
         );
       } catch {}
-  }, [preferencesLoaded, mode, tone, selectedRef, format, focus]);
+  }, [preferencesLoaded, mode, tone, selectedRef, format, focus, minutes]);
   useEffect(() => {
     stepTitle.current?.focus();
   }, [step]);
@@ -386,6 +393,16 @@ export default function SetupPage() {
                     title={title} description={description} checked={focus === item}
                     disabled={starting || preparation?.status === "READY"}
                     onChange={() => { setFocus(item); sessionKey.current = null; }} />)}
+                </div>
+              </fieldset>}
+              {format === "CHAT" && <fieldset className={styles.fieldset}>
+                <legend>Interview length</legend>
+                <p>The clock starts when you press Start in the interview, not before.</p>
+                <div className={styles.radios}>
+                  {INTERVIEW_MINUTES.map((item) => <RadioCard key={item} name="minutes"
+                    title={`${item} minutes`} description={item <= 30 ? "One focused problem." : item >= 90 ? "Room for several follow-ups." : "Problem plus follow-ups."}
+                    checked={minutes === item} disabled={starting || preparation?.status === "READY"}
+                    onChange={() => { setMinutes(item); sessionKey.current = null; }} />)}
                 </div>
               </fieldset>}
               {!(format === "CHAT" && focus === "RESUME") &&
@@ -614,6 +631,7 @@ export default function SetupPage() {
           <h2>Ready when you are.</h2>
           <dl>
             <div><dt>Format</dt><dd>{format === "CHAT" ? "Chat · no microphone" : "Voice"}</dd></div>
+            {format === "CHAT" && <div><dt>Length</dt><dd>{minutes} min</dd></div>}
             {format === "CHAT" && <div><dt>Focus</dt><dd>{focus === "COMBINED" ? "Resume + coding" : focus === "RESUME" ? "Resume" : "Coding"}</dd></div>}
             <div>
               <dt>Session</dt>

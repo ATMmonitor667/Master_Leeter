@@ -15,6 +15,7 @@ import { loadEnv } from "./env.js";
 import { GeminiClient, geminiApiKeyFromEnv } from "./lib/gemini.js";
 import { registerChatModule } from "./modules/chat/index.js";
 import { GeminiChatInterviewer, type ChatInterviewer } from "./modules/chat/interviewer.js";
+import { GeminiChatProfessor, type ChatProfessor } from "./modules/chat/professor.js";
 import { classifierFromEnv, GeminiClassifier, type IntentClassifier } from "./modules/orchestrator/index.js";
 import {
   GeminiResumeAnalyzer,
@@ -62,6 +63,7 @@ export const CONTENT_ROOT = join(here, "../../../content/scenarios");
 
 export interface ServerOptions {
   chatInterviewer?: ChatInterviewer;
+  chatProfessor?: ChatProfessor;
   library: Map<string, LoadedScenario>;
   questionBank?: QuestionBank;
   logger?: boolean;
@@ -295,6 +297,7 @@ export function buildServer(opts: ServerOptions) {
   void app.register(registerChatModule, {
     prefix: "/v1", sessions: store, events: eventLog, preparations: preparationStore,
     ...(opts.chatInterviewer ? { interviewer: opts.chatInterviewer } : {}),
+    ...(opts.chatProfessor ? { professor: opts.chatProfessor } : {}),
   });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
   void app.register(registerSupportModule, {
@@ -364,6 +367,12 @@ export async function start(): Promise<void> {
     apiKey: preparationKey,
     model: process.env["CHAT_INTERVIEW_MODEL"] || process.env["OBSERVER_MODEL"] || "gemini-3.5-flash",
     requestTimeoutMs: 30_000,
+  })) : undefined;
+  // Post-session teaching may use the stronger evaluator model when configured.
+  const chatProfessor = preparationKey ? new GeminiChatProfessor(new GeminiClient({
+    apiKey: preparationKey,
+    model: process.env["CHAT_REVIEW_MODEL"] || process.env["EVALUATOR_MODEL"] || process.env["CHAT_INTERVIEW_MODEL"] || "gemini-3.5-flash",
+    requestTimeoutMs: 60_000,
   })) : undefined;
   const evaluatorModel = process.env["EVALUATOR_MODEL"];
   const evaluator = preparationKey && evaluatorModel ? new IndependentGeminiEvaluator(new GeminiClient({
@@ -440,6 +449,7 @@ export async function start(): Promise<void> {
     ...(process.env["TTS_CACHE_DIR"] ? { ttsCacheDir: process.env["TTS_CACHE_DIR"] } : {}),
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
     ...(chatInterviewer ? { chatInterviewer } : {}),
+    ...(chatProfessor ? { chatProfessor } : {}),
     ...(scenarioRestater ? { scenarioRestater } : {}),
     ...(evaluator ? { evaluator } : {}),
     ...(alertSink ? { alertSink } : {}),

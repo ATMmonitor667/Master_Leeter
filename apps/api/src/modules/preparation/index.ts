@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { ChatFocusSchema, InterviewFormatSchema, InterviewModeSchema, InterviewerToneSchema, type ChatFocus, type InterviewMode } from "@master-leeter/contracts";
+import { ChatFocusSchema, InterviewFormatSchema, InterviewMinutesSchema, InterviewModeSchema, InterviewerToneSchema, type ChatFocus, type InterviewMode } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
@@ -37,6 +37,7 @@ const ConfirmBody = z.object({
 const CompleteBody = z.object({
   format: InterviewFormatSchema.default("VOICE"),
   focus: ChatFocusSchema.default("CODING"),
+  durationMinutes: InterviewMinutesSchema.optional(),
   scenarioRef: z.string().min(1).max(200).optional(),
   mode: InterviewModeSchema.default("MOCK"),
   language: z.string().trim().min(1).max(40).default("python"),
@@ -187,7 +188,7 @@ export async function registerPreparationModule(app: FastifyInstance, opts: Prep
 
 async function completePreparation(
   initial: PreparationRecord,
-  body: { scenarioRef?: string | undefined; mode: InterviewMode; language: string; format: "VOICE" | "CHAT"; focus: ChatFocus },
+  body: { scenarioRef?: string | undefined; mode: InterviewMode; language: string; format: "VOICE" | "CHAT"; focus: ChatFocus; durationMinutes?: 30 | 45 | 60 | 90 | undefined },
   opts: PreparationModuleOptions,
   store: PreparationStore,
   restater: ScenarioRestater,
@@ -236,7 +237,7 @@ async function completePreparation(
   if (body.format === "CHAT") preparedScenario.chat = { focus: body.focus, preparationId: record.id };
   const request: CreateSessionRequest = {
     userId: record.userId, scenario: preparedScenario, mode: body.mode, language: body.language,
-    interviewerTone: record.tone, expectedSeconds: INTERVIEW_SECONDS,
+    interviewerTone: record.tone, expectedSeconds: body.format === "CHAT" && body.durationMinutes ? body.durationMinutes * 60 : INTERVIEW_SECONDS,
     idempotencyKey: `preparation:${record.id}`,
   };
   const session = await createSession(request, opts);

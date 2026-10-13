@@ -7,6 +7,10 @@ import { redactionFor } from "../privacy/deletion.js";
 import { loadScenarioLibrary, scenarioRef, type LoadedScenario } from "../scenario/loader.js";
 import { InMemoryEventLog } from "../session/event-log.js";
 import { GeminiChatInterviewer, type ChatContext, type ChatInterviewer } from "./interviewer.js";
+import type { ChatProfessor, ReviewContext } from "./professor.js";
+import { hashInput } from "../runner/runner.js";
+import { evaluationView } from "../report/chat-evidence.js";
+import { extractFacts } from "../report/evidence.js";
 
 let library: Map<string, LoadedScenario>;
 beforeAll(async () => { library = await loadScenarioLibrary(CONTENT_ROOT); });
@@ -25,15 +29,17 @@ class ScriptedInterviewer implements ChatInterviewer {
   }
 }
 
-async function fixture(opts: { interviewer?: ChatInterviewer | null; format?: "CHAT" | "VOICE" } = {}) {
+async function fixture(opts: { interviewer?: ChatInterviewer | null; format?: "CHAT" | "VOICE"; professor?: ChatProfessor; durationMinutes?: number } = {}) {
   const interviewer = opts.interviewer === null ? undefined : opts.interviewer ?? new ScriptedInterviewer();
   const eventLog = new InMemoryEventLog();
   const app = buildServer({ library, eventLog, ...(interviewer ? { chatInterviewer: interviewer } : {}),
+    ...(opts.professor ? { chatProfessor: opts.professor } : {}),
     authenticator: { verify: async (token) => ({ userId: token, expiresAt: Date.now() + 3600_000 }) } });
   apps.push(app);
   const headers = (user = "alice") => ({ authorization: `Bearer ${user}`, "idempotency-key": randomUUID() });
   const created = await app.inject({ method: "POST", url: "/v1/interview-sessions", headers: headers(),
-    payload: { format: opts.format ?? "CHAT", scenarioRef: scenarioRef("conveyor-rescan@1") } });
+    payload: { format: opts.format ?? "CHAT", scenarioRef: scenarioRef("conveyor-rescan@1"),
+      ...(opts.durationMinutes ? { durationMinutes: opts.durationMinutes } : {}) } });
   expect(created.statusCode).toBe(201);
   const sessionId = created.json().sessionId as string;
   const base = `/v1/interview-sessions/${sessionId}/chat`;
@@ -201,5 +207,146 @@ describe("chat provider prompt", () => {
     expect(captured).not.toContain("hiddenTests");
     expect(captured).not.toContain("solutionFamilies");
     expect(captured).not.toContain("sorting_loses_order");
+  });
+});
+
+describe("adaptive chat interview", () => {
+  const CODE = "def first_repeat(readings):\n    seen = set()\n";
+  async function recordRun(eventLog: InMemoryEventLog, sessionId: string, source: string, status = "PASSED") {
+    const runId = randomUUID();
+    const base = { sessionId, scenarioVersionId: "conveyor-rescan@1", traceId: "t" };
+    await eventLog.append({ ...base, type: "RUN_REQUESTED", actor: "CANDIDATE", idempotencyKey: `rr:${runId}`,
+      payload: { runId, revision: 1, inputHash: hashInput(""), sourceHash: hashInput(source) } });
+    await eventLog.append({ ...base, type: "RUN_COMPLETED", actor: "SYSTEM", idempotencyKey: `rc:${runId}`,
+      payload: { runId, language: "python", codeRevision: 1, inputHash: hashInput(""), status, exitCode: 0,
+        cpuTimeMs: 1, memoryKb: 1, stdout: "", stderr: "", truncated: false } });
+  }
+
+  it("waits for an explicit Start: the clock and the problem stay closed until then", async () => {
+    const { read, start, turn } = await fixture({ durationMinutes: 30 });
+    const before = (await read()).json() as ChatSnapshot;
+    expect(before.turns).toHaveLength(0);
+    expect(before.expectedSeconds).toBe(1_800);
+    expect(before.remainingSeconds).toBe(1_800);
+    expect((await turn({ turn: 1 })).json().error).toBe("CHAT_NOT_STARTED");
+    expect(((await start()).json() as ChatSnapshot).turns).toHaveLength(1);
+  });
+
+  it("ignores a custom length for voice sessions", async () => {
+    const voice = await fixture({ format: "VOICE", durationMinutes: 90 });
+    const res = await voice.app.inject({ url: `/v1/interview-sessions/${voice.sessionId}`, headers: voice.headers() });
+    expect(res.json().remainingSeconds).not.toBe(5_400);
+  });
+
+  it("presents an authored follow-up only after the submitted code has a passing run", async () => {
+    const { start, turn, eventLog, sessionId, interviewer } = await fixture();
+    await start();
+    const done = async (n: number) => ((await turn({ turn: n, kind: "DONE", text: "" })).json() as ChatSnapshot);
+    expect((await done(1)).turns.at(-1)!.reply).toMatch(/submit your implementation/);
+    await turn({ turn: 2, kind: "CODE", text: "Here is my implementation.", code: CODE });
+    await recordRun(eventLog, sessionId, CODE + "# edited, not submitted\n");
+    await recordRun(eventLog, sessionId, CODE, "RUNTIME_ERROR");
+    expect((await done(3)).turns.at(-1)!.reply).toMatch(/show me the submitted code working/);
+    await recordRun(eventLog, sessionId, CODE);
+    const presented = await done(4);
+    const followUp = scenario().followUps[0]!;
+    expect(presented.turns.at(-1)!.followUpId).toBe(followUp.id);
+    expect(presented.turns.at(-1)!.reply).toBe(followUp.oralDelta);
+    expect(presented.requirements).toEqual([followUp.oralDelta]);
+    // The second authored follow-up is excluded by its own trigger once the first is used.
+    expect((await done(5)).turns.at(-1)!.followUpId).toBeUndefined();
+    // Only the code submission reached the model; every DONE was decided by rule.
+    expect(interviewer.calls.map((c) => c.input.kind)).toEqual(["CODE"]);
+  });
+
+  it("passes presented requirements to the interviewer, never their expected adaptation", async () => {
+    const { start, turn, eventLog, sessionId, interviewer } = await fixture();
+    await start();
+    await turn({ turn: 1, kind: "CODE", text: "Mine", code: CODE });
+    await recordRun(eventLog, sessionId, CODE);
+    await turn({ turn: 2, kind: "DONE", text: "" });
+    await turn({ turn: 3, kind: "THOUGHTS", text: "I would add a deque of timestamps." });
+    expect(interviewer.calls.at(-1)!.requirements).toEqual([scenario().followUps[0]!.oralDelta]);
+  });
+
+  it("opens the professor review only after the interview ends, debrief first", async () => {
+    const seen: ReviewContext[] = [];
+    const professor: ChatProfessor = { review: async (ctx) => { seen.push(ctx); return { reply: ctx.input.kind === "DEBRIEF" ? "Debrief." : "Answer." }; } };
+    const { app, start, turn, read, base, sessionId, headers } = await fixture({ professor });
+    await start();
+    await turn({ turn: 1, kind: "THOUGHTS", text: "Use a set." });
+    const review = (input: { turn: number; kind: string; text?: string }) => app.inject({ method: "POST", url: `${base}/review`,
+      headers: headers(), payload: { requestId: randomUUID(), text: "", ...input } });
+    expect((await review({ turn: 0, kind: "DEBRIEF" })).json().error).toBe("REVIEW_NOT_AVAILABLE");
+    await app.inject({ method: "POST", url: `/v1/interview-sessions/${sessionId}/end`, headers: headers(), payload: {} });
+    expect(((await read()).json() as ChatSnapshot).reviewAvailable).toBe(true);
+    expect((await review({ turn: 0, kind: "QUESTION", text: "Why?" })).json().error).toBe("INVALID_CHAT_PHASE");
+    expect((await review({ turn: 0, kind: "DEBRIEF" })).statusCode).toBe(200);
+    const answered = (await review({ turn: 1, kind: "QUESTION", text: "Where did I go wrong?" })).json() as ChatSnapshot;
+    expect(answered.review.map((t) => t.reply)).toEqual(["Debrief.", "Answer."]);
+    expect(seen[0]!.transcript.map((t) => t.kind)).toEqual(["OPENING", "THOUGHTS"]);
+    expect(answered.turns).toHaveLength(2);
+  });
+
+  it("produces a scorecard for a finished chat coding interview from its turns", async () => {
+    const { app, start, turn, sessionId, headers } = await fixture();
+    await start();
+    await turn({ turn: 1, text: "Is the list sorted?" });
+    await turn({ turn: 2, kind: "HINT", text: "" });
+    await turn({ turn: 3, kind: "CODE", text: "Here is my implementation.", code: CODE });
+    await app.inject({ method: "POST", url: `/v1/interview-sessions/${sessionId}/end`, headers: headers(), payload: {} });
+    await (app as unknown as { evaluationQueue: { drain(): Promise<void> } }).evaluationQueue.drain();
+    const report = await app.inject({ url: `/v1/interview-sessions/${sessionId}/report`, headers: headers() });
+    expect(report.statusCode).toBe(200);
+    const body = JSON.stringify(report.json());
+    expect(body).toContain("ordering");
+    expect(body).not.toContain("CHAT_TURN");
+  });
+
+  it("reports a missing professor model as unavailable", async () => {
+    const { app, start, base, sessionId, headers } = await fixture();
+    await start();
+    await app.inject({ method: "POST", url: `/v1/interview-sessions/${sessionId}/end`, headers: headers(), payload: {} });
+    const res = await app.inject({ method: "POST", url: `${base}/review`, headers: headers(),
+      payload: { requestId: randomUUID(), turn: 0, kind: "DEBRIEF" } });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe("REVIEW_UNAVAILABLE");
+  });
+});
+
+describe("chat evaluation view", () => {
+  const event = (seq: number, type: SessionEvent["type"], payload: Record<string, unknown>): SessionEvent => ({
+    sessionId: "s", seq, occurredAt: new Date(1_000 * seq).toISOString(), type, actor: "SYSTEM",
+    scenarioVersionId: "conveyor-rescan@1", payload, evidenceHash: `h${seq}`, traceId: "t" });
+
+  it("projects coding turns into cited evidence and drops resume, review and redacted content", () => {
+    const events = [
+      event(0, "CHAT_CONTEXT", { facts: [{ claim: "Led a migration" }] }),
+      event(1, "CHAT_TURN", { turn: 0, kind: "OPENING", text: "", reply: "Tell me about the migration.", phase: "RESUME" }),
+      event(2, "CHAT_TURN", { turn: 1, kind: "MESSAGE", text: "I owned the rollout plan.", reply: "Ok.", phase: "RESUME" }),
+      event(3, "CHAT_TURN", { turn: 2, kind: "MESSAGE", text: "Is the list sorted?", reply: "No.", phase: "CODING", factKey: "ordering" }),
+      event(4, "CHAT_TURN", { turn: 3, kind: "HINT", text: "I'd like a hint.", reply: "Think about order.", phase: "CODING", hintLevel: 1 }),
+      event(5, "CHAT_TURN", { turn: 4, kind: "CODE", text: "My implementation", code: "x = 1", reply: "Complexity?", phase: "CODING" }),
+      event(6, "CHAT_TURN", { turn: 5, kind: "DONE", text: "", reply: "New constraint", phase: "CODING", followUpId: "fu-streaming-window" }),
+      event(7, "CHAT_TURN", { redacted: true }),
+      event(8, "CHAT_REVIEW_TURN", { turn: 0, kind: "DEBRIEF", text: "", reply: "Lesson" }),
+    ];
+    const view = evaluationView(events);
+    expect(view.every((e) => !e.type.startsWith("CHAT_"))).toBe(true);
+    expect(JSON.stringify(view)).not.toContain("migration");
+    expect(JSON.stringify(view)).not.toContain("rollout");
+    const speech = view.filter((e) => e.type === "SPEECH_FINAL");
+    expect(speech.map((e) => [e.seq, e.payload["transcript"]])).toEqual([[3, "Is the list sorted?"], [5, "My implementation"]]);
+    expect(speech[1]!.payload["inResponseTo"]).toBe("Think about order.");
+    expect(view.find((e) => e.type === "CODE_DELTA")).toMatchObject({ seq: 5, evidenceHash: "h5", payload: { text: "x = 1" } });
+    const facts = extractFacts(view);
+    expect(facts.clarificationFactKeys).toEqual(["ordering"]);
+    expect(facts.hintsGiven).toEqual([1]);
+    expect(facts.followUpsPresented).toEqual(["fu-streaming-window"]);
+  });
+
+  it("leaves voice sessions untouched", () => {
+    const events = [event(0, "SESSION_STARTED", {}), event(1, "SPEECH_FINAL", { transcript: "hello there friend" })];
+    expect(evaluationView(events)).toBe(events);
   });
 });

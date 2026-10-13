@@ -102,6 +102,7 @@ export function redactEvent(event: SessionEvent): SessionEvent {
 const FULLY_REDACTED: ReadonlySet<EventType> = new Set<EventType>([
   "CHAT_TURN",
   "CHAT_CONTEXT",
+  "CHAT_REVIEW_TURN",
   "SPEECH_FINAL",
   "CLARIFICATION_ANSWERED",
   "PROBE_ASKED",
