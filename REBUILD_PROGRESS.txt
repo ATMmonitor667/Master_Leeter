@@ -1,0 +1,102 @@
+MASTER LEETER -- REBUILD PROGRESS LOG
+=====================================
+Source tasks: LIVE_INTERVIEW_REBUILD_PLAN.txt (behaviour/architecture) and
+              Master_Leeter_Futuristic_3D_Master_Design.txt (visual design).
+Branch: live-interview (cut from feature/adaptive-interviewer @ 219c3bc)
+Safety tag: pre-live-rebuild  (git checkout pre-live-rebuild restores everything)
+Nothing is committed. All work is in the working tree.
+
+!! STATE WHEN THIS SESSION STOPPED (usage limit, 2026-11-14) !!
+The API DOES NOT COMPILE and the web app is UNTOUCHED (still imports the old
+voice code and old contract types, so it does not compile either). The work
+stopped mid-way through rewiring the server. Nothing has been typechecked,
+tested or run since the rewrite began. To get a working app back immediately:
+    git stash -u   (or)   git checkout pre-live-rebuild
+
+DECISIONS TAKEN (the plan's recommended options, section 2)
+  D1 Response Gate retired for voice: YES. Realtime model runs the conversation.
+  D2 Provider: Gemini 3.8 Live. OpenAI A/B NOT done (no OpenAI key in env).
+  D3 Problems: own-words ProblemSpec bank in content/problems + paste-your-own.
+  D4 Production machinery (admission, privacy, support, recovery): frozen.
+  D5 Written problem shown in voice mode: toggle, default on.
+  Where the two txt files conflict (design doc says "no visible problem, no
+  transcript, keep the gate"), the rebuild plan wins on behaviour and the design
+  doc wins on look.
+
+STEP 1 SPIKE RESULTS (measured 2026-11-14, gemini-3.8-live, this machine)
+  a. Automatic server VAD works. Replies arrive on their own.
+  b. Spoken question -> first audio: 454 / 483 / 565 ms after end of speech
+     (3 turns, silenceDurationMs 600, synthetic TTS speech as input; small sample).
+     Text cue (realtimeInput.text) -> first audio: 0.7-1.9 s.
+  c. 9 s of think-aloud muttering: no spoken words, one 0.8 s non-verbal sound.
+  d. clientContent with turnComplete:false injects [CODE] silently; the model
+     then answers questions about that code.
+  e. Resumption works and keeps context WHEN the reconnect is >= ~60 s after the
+     previous connect. A second live connection inside ~1 minute is refused with
+     close 1011 "Resource has been exhausted". The client must retry reconnects
+     with backoff (up to ~70 s) and show "Reconnecting".
+  Wire format confirmed: token minted via POST v1beta/auth_tokens with
+  bidiGenerateContentSetup; browser opens the Constrained WS and sends
+  {setup:{model}}; server sends voiceActivity, serverContent.modelTurn (PCM 24k),
+  inputTranscription / outputTranscription, interrupted, turnComplete,
+  sessionResumptionUpdate.newHandle, goAway.
+  Code runs: Judge0 at JUDGE0_URL (localhost:2358) is NOT running and Docker is
+  down, so runs are model-PREDICTED, labelled as such.
+
+DONE
+  [x] Tag + branch; 9 other txt plans moved into plans/
+  [x] Step 1 spike (above)
+  [x] packages/contracts: new src/interview.ts (problem spec, pinned problem,
+      styles, live events, chat turn, run report, room snapshot, cueText,
+      codeContext); TRANSCRIPT_TURN + CUE event types; removed gate.ts,
+      candidate-state.ts, chat.ts and the WebSocket envelope. Typechecks.
+  [x] content/problems/*.yaml: 5 specs (parts-bin, badge-window,
+      conveyor-rescan, shift-handover, route-cache) with reference solutions.
+      NOT yet verified by running the reference solutions against the tests.
+  [x] apps/api/src/modules/interview/: problem.ts (bank, reskin, V1-V4, paste),
+      prompt.ts, live.ts, pin.ts, transcript.ts, review.ts, routes.ts
+  [x] apps/api/src/modules/runner/index.ts rewritten (Judge0 + predicted runner)
+  [x] lib/gemini.ts: streamText() for streamed chat
+  [x] session/index.ts reduced to storage exports; session/policy.ts added;
+      session-store + pg-session-store carry `live` pin; auth special-case for
+      the old WebSocket events route removed; privacy redacts TRANSCRIPT_TURN
+  [x] report/chat-evidence.ts projects TRANSCRIPT_TURN/CUE for the evaluator
+  [x] preparation/index.ts trimmed to resume analysis + fact confirmation
+  [x] Deleted: modules/orchestrator, realtime, observer, chat, src/eval, src/sim,
+      scenario probes/triggers/clarification/index/question-bank, session
+      channel/ws/client-events/runs/resume/review/lease, old runner files,
+      preparation/restatement.ts, 7 old scripts, and the tests for all of these.
+
+NEXT (in order)
+  [ ] api: rewrite src/index.ts -- it still imports the deleted modules. Wire:
+      loadProblemBank(content/problems), registerInterviewModule (prefix /v1),
+      LiveMinter via liveMinterFromEnv, PreferredRunner(Judge0Runner if
+      JUDGE0_URL healthy, PredictedRunner(GeminiClient JUDGE_MODEL)),
+      reskinClient / chatClient (thinkingBudget 0) / Professor, trimmed
+      registerPreparationModule({store, analyzer}), report/privacy/support as
+      before. Update rate-limit route names (/live replaces /realtime-token).
+  [ ] api: fix remaining compile errors (preparation store/pg-store still have
+      restatement methods that import deleted types; report/index.ts imports
+      scenarioRef from loader; config.ts; storage.ts; scripts/product-metrics,
+      release-preflight; remaining tests such as preparation.test, storage.test,
+      privacy/report tests). Run: pnpm --filter @master-leeter/api typecheck
+  [ ] api: root package.json scripts that point at deleted files (sim, eval,
+      review, voice:probe, voice:prerender, questions:import, eval:test)
+  [ ] api: add `problems:verify` script (run reference solutions vs tests, V5)
+      and focused tests for problem validators, prompt, routes
+  [ ] web: lib/live/{provider,gemini-live,mic,use-live-interview,latency}.ts
+      (reuse lib/audio.ts, playback.ts; capture worklet is in voice-session.ts
+      lines ~39-70 and ~1420-1440 before deleting it)
+  [ ] web: one room at /interview/[sessionId] for voice + chat; one-screen
+      /start (mode, problem or paste, style, length, optional resume, mic check)
+  [ ] web: delete voice-session, realtime-voice, turn-predictor, latency-ledger,
+      utterance-lifecycle, speech-transcriber, room-tone, session-client,
+      session-transport, chat-client, StageProgress, old chat page
+  [ ] design doc: tokens in design/tokens/semantic.json (+ pnpm tokens),
+      InterviewerSignal orb, cockpit restyle, landing Cognition Core
+      (three.js island with static fallback), /dashboard from the history API
+  [ ] docs: rewrite CLAUDE.md and README, update .env.example
+      (LIVE_MODEL=gemini-3.8-live, LIVE_VOICE=Charon replace REALTIME_MODEL /
+      REALTIME_VOICE; TTS_* and CLASSIFIER_*/OBSERVER_* are no longer read)
+  [ ] verify: typecheck, tests, web build, run a voice and a chat interview
+  [ ] OpenAI A/B (plan step 5): needs a paid OpenAI key; not started

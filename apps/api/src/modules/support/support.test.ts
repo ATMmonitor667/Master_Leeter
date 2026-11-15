@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { buildServer, CONTENT_ROOT } from "../../index.js";
-import { loadScenarioLibrary, type LoadedScenario } from "../scenario/loader.js";
+import { buildServer, PROBLEMS_ROOT } from "../../index.js";
+import { loadProblemBank, type BankEntry } from "../interview/problem.js";
 import { InMemorySupportIncidentStore } from "./store.js";
 
-let library: Map<string, LoadedScenario>;
-beforeAll(async () => { library = await loadScenarioLibrary(CONTENT_ROOT); });
+let bank: BankEntry[];
+beforeAll(async () => { bank = await loadProblemBank(PROBLEMS_ROOT); });
 const apps: ReturnType<typeof buildServer>[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 const diagnostics = { connected: true, online: true, visibility: "visible" as const,
@@ -15,7 +15,7 @@ describe("support diagnostics privacy and lifecycle", () => {
   async function fixture() {
     const store = new InMemorySupportIncidentStore();
     const create = vi.spyOn(store, "create");
-    const app = buildServer({ library, supportStore: store,
+    const app = buildServer({ bank, supportStore: store,
       authenticator: { verify: async (token) => ({ userId: token, expiresAt: Date.now() + 3600_000 }) } });
     apps.push(app);
     const headers = (user = "alice") => ({ authorization: `Bearer ${user}`, "idempotency-key": randomUUID() });

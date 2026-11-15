@@ -4,7 +4,6 @@ import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { usePreferences } from "./Preferences";
 import { editorTheme } from "../lib/monaco-theme";
-import { PanelLabel } from "./Notepad";
 
 // The default loader fetches Monaco from a CDN. Interview code must stay on
 // our origin, and the site's CSP intentionally rejects third-party scripts.
@@ -54,7 +53,7 @@ export function CodeEditor({
   const dark = theme === "dark" || (theme === "system" && systemDark);
   return (
     <div className="editor-shell">
-      <PanelLabel>
+      <div className="panel-label">
         <span>{language} · solution.py</span>
         <span className="editor-options">
           <label>
@@ -80,7 +79,7 @@ export function CodeEditor({
                 : "Saving…"}
           </span>
         </span>
-      </PanelLabel>
+      </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Editor
           height="100%"

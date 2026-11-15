@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { InterviewerTone, InterviewMode, InterviewPolicy, InterviewState } from "@master-leeter/contracts";
-import { INITIAL_STATE, policyFor } from "../orchestrator/index.js";
+import { INITIAL_STATE, policyFor } from "./policy.js";
 import type { LoadedScenario } from "../scenario/loader.js";
 
 export const DEFAULT_INTERVIEW_SECONDS = 2_700;
@@ -15,7 +15,10 @@ export const DEFAULT_INTERVIEW_SECONDS = 2_700;
  */
 
 export interface InterviewSession {
-  chat?: import("@master-leeter/contracts").ChatSessionConfig;
+  /** The pinned interview. Absent only on sessions created before the live rebuild. */
+  live?: import("../interview/pin.js").LivePin;
+  /** True for a pre-rebuild text interview. */
+  legacyChat?: boolean;
   id: string;
   userId: string;
   /** Immutable pin. */
@@ -107,7 +110,7 @@ export class InMemorySessionStore implements SessionStore {
 
     const policy = policyFor(req.mode);
     const session: InterviewSession = {
-      ...(req.scenario.chat ? { chat: structuredClone(req.scenario.chat) } : {}),
+      ...(req.scenario.live ? { live: structuredClone(req.scenario.live) } : {}),
       id: randomUUID(),
       userId: req.userId,
       scenarioVersionId: req.scenario.version.id,

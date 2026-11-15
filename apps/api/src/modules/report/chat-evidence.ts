@@ -1,44 +1,40 @@
 import type { SessionEvent } from "@master-leeter/contracts";
 
 /**
- * Evaluation view of a text interview.
+ * Evaluation view of an interview.
  *
- * A CHAT_TURN is one atomic event, but the evaluator's evidence extraction and
- * citation checks are written against the canonical evidence types. This pure
- * projection re-expresses each coding-phase turn as those types *for grading
- * input only*; the durable log is never rewritten. Every projected event keeps
- * the source event's seq and evidenceHash, so a citation still points at a
- * real, verifiable log entry.
+ * The live interview logs what was said as TRANSCRIPT_TURN events and what the
+ * software cued as CUE events. The evaluator's evidence extraction and citation
+ * checks are written against the canonical evidence types, so this pure
+ * projection re-expresses them *for grading input only*; the durable log is
+ * never rewritten. Every projected event keeps the source event's seq and
+ * evidenceHash, so a citation still points at a real log entry.
  *
- * Excluded on purpose: resume-phase turns and resume context (no resume score
- * is produced), the professor review (post-session teaching is not evidence),
- * and redacted turns.
+ * The interviewer's own words are not graded. They are carried on the
+ * candidate's next turn as `inResponseTo`, so an answer can be read in context.
  */
-const CANDIDATE_TEXT_KINDS = new Set(["MESSAGE", "THOUGHTS", "CODE"]);
-const CHAT_ONLY = new Set(["CHAT_TURN", "CHAT_CONTEXT", "CHAT_REVIEW_TURN"]);
-
 export function evaluationView(events: SessionEvent[]): SessionEvent[] {
-  if (!events.some((e) => CHAT_ONLY.has(e.type))) return events;
   const view: SessionEvent[] = [];
-  let previousReply = "";
+  let lastInterviewerLine = "";
   for (const event of events) {
-    if (!CHAT_ONLY.has(event.type)) { view.push(event); continue; }
-    if (event.type !== "CHAT_TURN" || event.payload["redacted"] === true) continue;
-    const p = event.payload;
-    const reply = typeof p["reply"] === "string" ? p["reply"] : "";
-    if (p["phase"] === "CODING") {
-      const derive = (type: SessionEvent["type"], payload: Record<string, unknown>, actor: SessionEvent["actor"]) =>
-        view.push({ ...event, type, actor, payload });
-      const text = typeof p["text"] === "string" ? p["text"] : "";
-      if (CANDIDATE_TEXT_KINDS.has(String(p["kind"])) && text.trim()) {
-        derive("SPEECH_FINAL", { transcript: text, source: "TEXT", submission: p["kind"], inResponseTo: previousReply }, "CANDIDATE");
+    if (event.payload["redacted"] === true) { view.push(event); continue; }
+    if (event.type === "TRANSCRIPT_TURN") {
+      const text = typeof event.payload["text"] === "string" ? event.payload["text"] : "";
+      if (event.payload["speaker"] === "INTERVIEWER") { lastInterviewerLine = text; continue; }
+      if (text.trim()) {
+        view.push({ ...event, type: "SPEECH_FINAL", actor: "CANDIDATE",
+          payload: { transcript: text, source: event.payload["medium"] === "CHAT" ? "TEXT" : "VOICE", inResponseTo: lastInterviewerLine } });
       }
-      if (typeof p["code"] === "string") derive("CODE_DELTA", { revision: p["turn"], text: p["code"], source: "TEXT" }, "CANDIDATE");
-      if (typeof p["factKey"] === "string") derive("CLARIFICATION_ANSWERED", { factKey: p["factKey"] }, "INTERVIEWER");
-      if (typeof p["hintLevel"] === "number") derive("HINT_GIVEN", { level: p["hintLevel"] }, "INTERVIEWER");
-      if (typeof p["followUpId"] === "string") derive("FOLLOW_UP_PRESENTED", { followUpId: p["followUpId"] }, "INTERVIEWER");
+      continue;
     }
-    previousReply = reply;
+    if (event.type === "CUE") {
+      if (event.payload["kind"] === "HINT") {
+        view.push({ ...event, type: "HINT_GIVEN", actor: "INTERVIEWER",
+          payload: { level: typeof event.payload["n"] === "number" ? event.payload["n"] : 1 } });
+      }
+      continue;
+    }
+    view.push(event);
   }
   return view;
 }

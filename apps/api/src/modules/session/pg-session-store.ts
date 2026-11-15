@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { InterviewState } from "@master-leeter/contracts";
-import { INITIAL_STATE, policyFor } from "../orchestrator/index.js";
+import { INITIAL_STATE, policyFor } from "./policy.js";
 import type { QueryClient } from "./pg-event-log.js";
 import { SessionNotFoundError, type CreateSessionRequest, type InterviewSession, type SessionStore } from "./session-store.js";
 import type { LoadedScenario } from "../scenario/loader.js";
@@ -18,7 +18,8 @@ type Row = {
 const iso = (value: Date | string) => new Date(value).toISOString();
 function session(row: Row): InterviewSession {
   return {
-    ...(row.scenario_snapshot?.chat ? { chat: row.scenario_snapshot.chat } : {}),
+    ...(row.scenario_snapshot?.live ? { live: row.scenario_snapshot.live } : {}),
+    ...(row.scenario_snapshot?.chat ? { legacyChat: true } : {}),
     id: row.id, userId: row.user_id, scenarioVersionId: row.scenario_version_id,
     scenarioHash: row.scenario_hash, mode: row.mode, policy: row.policy,
     state: row.state, language: row.language, interviewerTone: row.interviewer_tone, traceId: row.trace_id,

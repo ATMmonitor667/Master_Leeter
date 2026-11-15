@@ -7,6 +7,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { DimensionCard } from "../../../components/DimensionCard";
 import type { IndependentGrade, SessionReport } from "../../../lib/report";
 import { apiFetch } from "../../../lib/api-client";
+import { ReviewPanel } from "../../../components/ReviewPanel";
 
 /**
  * Post-session report (M6-3).
@@ -332,6 +333,7 @@ export default function ReportPage({
           ))}
         </dl>
       </Panel>
+      <ReviewPanel sessionId={sessionId} />
     </Shell>
   );
 }

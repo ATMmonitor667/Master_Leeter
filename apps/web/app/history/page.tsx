@@ -10,7 +10,7 @@ import { apiFetch, SignInRequired } from "../../lib/api-client";
 interface SessionSummary {
   format?: "VOICE" | "CHAT";
   sessionId: string;
-  mode: "LEARNING" | "MOCK" | "STRICT";
+  style?: "SUPPORTIVE" | "NEUTRAL" | "TOUGH" | null;
   state: string;
   createdAt: string;
   startedAt: string | null;
@@ -196,7 +196,7 @@ export default function HistoryPage() {
         >
           {sessions.map((session, index) => {
             const completed = Boolean(session.endedAt);
-            const destination = session.format === "CHAT" ? `/interview/${session.sessionId}/chat` : completed
+            const destination = completed
               ? `/report/${session.sessionId}`
               : `/interview/${session.sessionId}`;
             const month = new Intl.DateTimeFormat(undefined, {
@@ -222,8 +222,8 @@ export default function HistoryPage() {
                       {completed ? "Completed" : "In progress"}
                     </span>
                     <h2>
-                      {session.mode[0] + session.mode.slice(1).toLowerCase()}{" "}
-                      interview
+                      {session.format === "CHAT" ? "Chat" : "Voice"} interview
+                      {session.style ? ` · ${session.style.toLowerCase()}` : ""}
                     </h2>
                     <p>
                       {new Intl.DateTimeFormat(undefined, {

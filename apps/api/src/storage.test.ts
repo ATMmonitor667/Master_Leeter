@@ -22,7 +22,7 @@ describe("durable storage composition", () => {
   it("checks schema without writes and closes with the server exactly once", async () => {
     const { db, close, queries } = fakeDatabase();
     const storage = await createSupabaseStorage("test-only", () => db);
-    const app = buildServer({ library: new Map(), ...storage });
+    const app = buildServer({ bank: [], ...storage });
     await app.ready();
     await app.close();
     await storage.closeStorage();

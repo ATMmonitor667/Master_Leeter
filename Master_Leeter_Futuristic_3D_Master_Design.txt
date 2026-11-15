@@ -1,0 +1,1582 @@
+MASTER LEETER — FUTURISTIC 3D MASTER DESIGN SYSTEM & REBUILD BLUEPRINT
+======================================================================
+Document version: 1.0
+Prepared: November 14, 2026
+Project: https://github.com/ATMmonitor667/Master_Leeter
+Source branch inspected: main (read-only)
+Deliverable type: Complete design and implementation specification (NOT implemented code)
+Concept name: THE NEURAL CHAMBER / SIGNAL & SILENCE
+Intended audience: designer, motion artist, frontend engineer, AI coding assistant
+
+READ THIS FIRST
+---------------
+This document is intended to let someone reconstruct the interface WITHOUT
+having to guess its art direction, UX constraints, motion behavior, component
+states, or where it belongs in Master Leeter's actual source tree.
+
+INSPECTED PROJECT FACTS (as seen in the connected GitHub repository):
+- Master Leeter is a voice-first AI software interview simulator.
+- Tech: Next.js 15, React 19, TypeScript, Monaco; Fastify API; Gemini voice;
+  PostgreSQL / Redis / Supabase infrastructure is documented.
+- Current landing: apps/web/app/page.tsx + Landing.module.css.
+- Current personal session list: apps/web/app/history/page.tsx.
+- No separate /dashboard page was confirmed in the inspected main branch.
+  The 'new dashboard' described here is PROPOSED, not an existing route.
+- Live interview: apps/web/app/interview/[sessionId]/page.tsx,
+  components/CockpitPanels.tsx, components/CodeEditor.tsx,
+  components/InterviewerStatus.tsx, components/VoiceControls.tsx,
+  components/Cockpit.module.css.
+- Voice playback: apps/web/lib/voice-session.ts and lib/playback.ts.
+- Design tokens source of truth: design/tokens/semantic.json;
+  generated CSS: apps/web/app/styles/tokens.css.
+- Existing visual system supports dark/light/system modes, resizable cockpit,
+  mobile tabs, privacy/restore status, and mono/editor accessibility features.
+- Prior UI design spec: UI_REDESIGN_PLAN.txt; implementation checkpoints:
+  docs/UI_REDESIGN_STATUS.md. DO NOT treat older plan text as live code.
+- Product decisions: docs/PRODUCTION_ITERATIONS.md supersedes older launch
+  proposals. Working app implementation still requires live acceptance testing.
+
+MANDATORY PRODUCT RULES — DESIGN MUST NEVER BREAK:
+1. The full interview problem is spoken orally. Do not add visible prompt text.
+2. No talking avatar, face, anthropomorphic character or AI chat transcript.
+3. No constant coaching, glowing distractions, gamified interruptions or hints.
+4. The live AI never grades. No live score, confidence meter or hidden-gate state.
+5. No AI autocomplete or answer suggestions in the codepad.
+6. Do not change the server-owned 45-minute timer or speech-authority gate.
+7. Only actual provider playback should trigger an 'AI speaking' effect.
+8. A barge-in must cancel playback and speaking animation IMMEDIATELY.
+9. The dashboard must only show measured data, with honest unknown/empty states.
+10. Preserve captions, keyboard navigation, reduced motion, contrast, consent,
+    privacy/deletion, and reconnect/pending-save behavior.
+11. No new audio recording or raw waveform retention to implement visuals.
+12. Do not alter engine, session policy, evaluation, or persistence semantics
+    as part of a visual redesign.
+
+VISUAL THESIS
+-------------
+'An intelligent room made of light, glass and code.'
+
+The same product has three INTENTIONAL intensities:
+- LANDING = CINEMATIC. Dramatic, immersive, interactive 3D; emotional first
+  impression; guided narrative and strong CTAs.
+- DASHBOARD = PRECISE. Futuristic software instrument panel: spatial depth,
+  softly luminous cards, intelligent hierarchy, mild optional 3D accent.
+- LIVE INTERVIEW = QUIET. A premium black-box coding environment where the
+  editor dominates; only useful status responds to the interview.
+
+Avoid generic 'cyberpunk dashboard': no rain of green code, full-screen neon,
+spinning holograms behind code, fake terminal diagnostics, blinking red timer,
+or overly translucent glass that destroys legibility. Think sci-fi laboratory,
+not casino or hacker movie. The feeling should be impressive BEFORE an interview
+and almost invisible DURING one.
+
+===============================================================
+01 / RESEARCHED REFERENCES: WHAT TO STUDY AND WHAT TO ADAPT
+===============================================================
+
+REFERENCE A: LUSION — https://lusion.co/
+Visual lesson:
+- Interactive monochrome/blue sculpture floating in a dark studio volume.
+- Strong contrast between quiet editorial typography and moving 3D object.
+- Glossy hard-surface geometry; white diffuse highlights, dark cavities,
+  near-black contact shadows, electric blue materials.
+- Lusion v3 showcase uses an electric-blue motif around #1A2FFB alongside
+  off-white and charcoal; color example is reference, not our exact palette.
+- Important: restrained UI stays readable above complex moving art.
+How to adapt:
+- Hero 'Cognition Core': an abstract suspended glass/metal gyroscope made
+  of four open rings, glowing signal traces and a soft inner luminous volume.
+- Pointer-parallax affects sculpture only; it must never shift CTA positions.
+- On scroll, rings align into one simple outline of an interview room.
+Do not copy Lusion's shape arrangement, logo, original asset or animation.
+Study: https://www.commarts.com/project/36283/lusion
+
+REFERENCE B: IGLOO INC — https://www.igloo.inc/
+Visual lesson:
+- The whole viewport behaves as one cinematic place; tactile textures,
+  volumetric-feeling light, fog and space create scale without many UI colors.
+- Tiny technical annotations are secondary to the sculptural centerpiece.
+- Near-monochrome surfaces emphasize differences in roughness and reflection.
+How to adapt:
+- Design 3D interview chamber as a spatial scene: dark architectural floor,
+  horizon fog, thin concentric traces, one glowing suspended 'AI signal'.
+- Use atmospheric depth sparingly and progressive enhancement for fog.
+- Retain HTML text and DOM controls rather than rendering critical UI in WebGL.
+Study: https://www.awwwards.com/sites/igloo-inc
+
+REFERENCE C: NOOMO LABS — https://labs.noomoagency.com/
+Study: https://noomoagency.com/insights/noomo-labs-immersive-3d-website
+Visual lesson:
+- Translucent overlapping materials, fluid motion, organic silhouette,
+  lighting that produces glasslike volume, user-customizable appearance.
+- The studio's own write-up explains its multiple meshes/materials, glass
+  experiments, and customization knobs; these are documented methods.
+How to adapt:
+- AI presence is a SMALL ABSTRACT SIGNAL ORB, never a face or creature.
+- Refract very subtly during noncritical marketing scenes; while coding,
+  use a plain CSS/SVG disk with low-frequency, state-accurate motion.
+- Limit glass distortions to art, not text, Monaco, or assistive labels.
+
+REFERENCE D: ACTIVE THEORY — https://activetheory.net/
+Visual lesson:
+- Black-on-black environments become legible through deliberate pools of
+  light, restrained particle rings and cinematic camera framing.
+- Movement creates emotional weight; it does not require flashing everything.
+How to adapt:
+- Pin a single 3D moment as the landing's emotional peak.
+- Use 2-3 deliberate reveal beats; not a perpetual scroll amusement ride.
+- Keep the dashboard utilitarian and measured, even if landing is spectacular.
+Study: https://www.awwwards.com/sites/active-theory-v5
+
+REFERENCE E: BRUNO SIMON — https://bruno-simon.com/
+Visual lesson:
+- A real-time scene can make navigation memorable if the controls are clear.
+How to adapt:
+- Borrow playfulness for the landing 'explore demo' moment only.
+- DO NOT turn the high-stakes interview into a game or require 3D navigation.
+Study: https://www.awwwards.com/bruno-simon-portfolio-wins-site-of-the-month-november.html
+
+RESEARCH SYNTHESIS — 5 RULES:
+1. The most advanced visual systems use one unforgettable central object.
+2. Light, material, and camera direction do more than arbitrary neon effects.
+3. Motion is most powerful when tied to user intent and scene storytelling.
+4. 3D and UX must be separable: progressive enhancement is not optional.
+5. A memorable 3D marketing site and a good editor need opposite attention
+   budgets. Give them separate render policies and separate bundles.
+
+REFERENCE DECISION MATRIX:
+- Lusion -> hero sculpture, framing, cursor inertia: ADOPT.
+- Igloo -> environmental depth and atmospheric staging: ADOPT LIGHTLY.
+- Noomo -> layered glass + sound-reactive organic energy: ADAPT AS ABSTRACT ORB.
+- Active Theory -> filmic pacing, particle system: ADOPT LIGHTLY.
+- Bruno Simon -> immersive exploration: LANDING-ONLY, OPTIONAL.
+
+===============================================================
+02 / ART DIRECTION AND THE MASTER VISUAL LANGUAGE
+===============================================================
+
+Working identity: MASTER LEETER / THE NEURAL CHAMBER.
+Brand promise: 'Practice the room, not the puzzle.'
+Emotion sequence: curious -> awed -> confident -> focused -> reflective.
+
+2.1 SHAPE GRAMMAR
+-----------------
+Primary primitives:
+- A single bright 3D 'Cognition Core' made from 3 thin nested elliptical
+  toroidal rings, central blurred pearl/field, and tiny orbital nodes.
+- Ring widths: 0.045-0.09 world units, radius relationships 1.00 / 0.72 / 0.44.
+- Low-poly sphere? NO. Orb is sculptural, not a generic glowing basketball.
+- Outer rings tilt on different axes: 18deg, -27deg, 61deg initial values.
+- Primary panels: 14px radius, not fully pill-shaped.
+- Compact controls: 10px radius; 6px radius for terminal/tool tabs.
+- Main buttons: 12px radius, minimum 44px height desktop, 48px touch.
+- Status chips: 999px radius; small dot + explicit readable state text.
+- Diagram lines: 1px; illuminated emphasis lines 1.5px max.
+- One purposeful angled 'signal cut' MAY appear on marketing dividers.
+- Do not apply chamfers to every card. Angular science-fiction flourishes
+  should be accents, not a wholesale replacement for readable UI.
+
+2.2 MATERIAL GRAMMAR
+--------------------
+Material 1 / OBSIDIAN METAL (hero structural rings):
+  base #131B2E; metalness .72; roughness .25; opacity 1.
+  edge emissive tint #5479FF at .16; soft directional reflections.
+Material 2 / ION GLASS (hero outer lens):
+  base tint #79CFFF; transmission .68; roughness .12; IOR 1.22;
+  thickness .30; transparent material; no expensive full scene refraction
+  where simpler fake Fresnel rim passes visual test.
+Material 3 / PORCELAIN LIGHT (inner form):
+  soft pearlescent #C8DDFB; metalness .08; roughness .42.
+Material 4 / UI MATTE GLASS:
+  opaque or near-opaque surface; NO blur under paragraphs or code;
+  subtle border + top highlight + large shadow instead.
+Material 5 / HAIRLINE CIRCUIT:
+  1px #26334C line at 0.65 alpha; thin, sparse, decorative only.
+
+2.3 LIGHTING
+------------
+- Key area light: upper-left, cool #D7E6FF, intensity relative 1.0.
+- Rim light: rear-right violet #7A6AFF, intensity .6.
+- Cyan fill: front low #4FDBFF, intensity .25.
+- Floor: nearly black, not mirror-like; optional faint ground contact shadow.
+- Add emissive detail to geometry; DO NOT rely on heavy full-screen bloom.
+- Specular highlights: elongated and soft, never hard dazzling hot pixels.
+- Allow shadow direction to explain each object in 3D.
+
+2.4 COLOR PALETTE — PROPOSED TOKENS (NOT COPIED FROM REFERENCES)
+---------------------------------------------------------------
+DARK NEUTRALS:
+  void-950          #070B15    page backdrop / maximum dark
+  night-900         #0B1120    shell background
+  panel-850         #111A2A    core panel
+  panel-800         #162236    raised card
+  panel-hover       #1D2D45    hover panel
+  editor-950        #0A101B    Monaco background
+  line              #29364D    structural border
+  line-bright       #425776    hover/selected structural border
+  text-primary      #F3F7FF    main content
+  text-secondary    #B5C4D9    helper labels
+  text-tertiary     #91A3BD    muted but readable status
+
+ACCENT LIGHT:
+  electric-indigo   #6A7CFF    main brand signature
+  ion-cyan          #4BDFFF    data signal, AI audio light
+  violet            #A37CFF    secondary material hue
+  ice               #D7EBFF    luminous white tint
+  mint              #80E1BC    success/listening
+  amber             #F4C979    reconnecting/warning
+  coral             #FF9D99    destructive/error only
+
+LIGHT MODE (MUST RETAIN):
+  light-bg          #F6F8FC
+  light-panel       #FFFFFF
+  light-raised      #EBF0F8
+  light-line        #BEC9D8
+  light-text        #172137
+  light-muted       #41536D
+  light-strong      #3449B5    hyperlinks/active controls
+  light-cyan        #086B84    strong enough for interface text
+
+PALETTE RATIOS:
+  Dark page: ~82% neutral, 12% blue/indigo structure, 5% cyan signal,
+  <=1% violet/coral/warning. Glow is a rare accent, not a blanket.
+  Light page: <=5% translucent decorative accents; use shadows and borders.
+  No gradient backgrounds behind dense body copy.
+
+STRICT SEMANTIC OWNERSHIP:
+  'AI speaking' = cyan; 'AI listening' = mint; 'waiting/quiet' = neutral;
+  connecting/recovery = amber; action/destructive errors = coral.
+  Meaning also MUST be stated in text/icons, not only color.
+
+COLOR ACCESSIBILITY CONTRACT:
+  - Text >= 4.5:1 for ordinary text, >= 3:1 for large text.
+  - Interactive boundaries/critical icons >= 3:1 against adjacency.
+  - Hexes above are a DESIGN TARGET, not a certified contrast report. Test
+    actual composited colors, gradients and opacity in each theme before ship.
+  - Disabled text can be visually quieter but still explain disabled state.
+  - Avoid small mono text in pure neon cyan; use readable neutral foreground.
+
+2.5 GRADIENT RECIPES (PRECISE CSS STARTING POINTS)
+---------------------------------------------------
+G01 / VOID SKY (landing only):
+  radial-gradient(ellipse 62% 56% at 76% 40%, #21356D99 0%, transparent 68%),
+  radial-gradient(ellipse 40% 45% at 22% 72%, #30205550 0%, transparent 76%),
+  linear-gradient(145deg, #070B15 0%, #0B1223 52%, #07101D 100%).
+G02 / SIGNAL EDGE (selected dashboard/card):
+  linear-gradient(120deg, #6A7CFF 0%, #4BDFFF 46%, #A37CFF 100%).
+  Render ONLY as a 1px border mask/pseudo-element; never fill whole card.
+G03 / OBSIDIAN PANEL:
+  linear-gradient(165deg, #172238 0%, #101928 52%, #0C1423 100%).
+G04 / HERO HEADING HIGHLIGHT:
+  linear-gradient(95deg, #F3F7FF 5%, #B1C7FF 45%, #5DE7FF 100%).
+  Use gradient-text on ONE short phrase at most; rest of text white.
+G05 / AURA HALO:
+  radial-gradient(circle, #4BDFFF40 0%, #5E70FF18 38%, transparent 72%).
+G06 / GLASS SHIMMER:
+  linear-gradient(110deg, transparent 25%, #D7EBFF15 47%, transparent 66%).
+  Sweep ONCE for a premium reveal or deliberate hover, never constantly.
+G07 / SPEAKING RIM:
+  conic-gradient(from 220deg, #4BDFFF, #6A7CFF, #A37CFF, #4BDFFF).
+  Do not spin this continuously in the codepad.
+
+2.6 GLASSMORPHISM, USED CORRECTLY
+--------------------------------
+- Blur: 10-16px max and only on a few overlay sheets or marketing cards.
+- Editorial and code panels should be >=94% opaque.
+- Border: 1px solid rgba(178,204,255,.16).
+- Inset highlight: inset 0 1px 0 rgba(255,255,255,.07).
+- Shadow 1: 0 12px 32px rgba(0,0,0,.22).
+- Shadow 2 for floating 3D mockup: 0 28px 80px rgba(0,0,0,.33).
+- Heavy glass effect only on hero art where no text is behind it.
+- Never blur interactive text, selection, keyboard focus, timers or captions.
+
+2.7 BACKGROUND TEXTURES
+-----------------------
+- Fine grid 40px spacing; 1px lines at 3-5% opacity, fade to nothing near
+  primary copy. Grid should not imply real performance metrics.
+- Optional noise <=2% opacity, embedded tiny asset, static (avoid video).
+- Star particles 0-70 marketing hero only, low brightness and zero near copy.
+- Scanning rings and faint dotted orbit geometry may surround the sculpture.
+- No matrix rain / terminal graffiti / random formulas as interface decoration.
+
+2.8 TYPE SYSTEM
+---------------
+Use existing self-hosted Inter Variable + JetBrains Mono in source layout.
+Optional marketing-only display candidate: Space Grotesk Variable, but evaluate
+license, bundle size, and readability; fallback to Inter is FULLY ACCEPTABLE.
+Type scale desktop:
+  Hero H1     clamp(3.75rem, 6.8vw, 7.25rem), weight 550-650, line-height .98,
+              tracking -.055em; maximum 11-13 characters per line.
+  Page H1     clamp(2.25rem, 3.4vw, 3.5rem), weight 600, line-height 1.06.
+  H2          2.25rem / 1.12 / -.035em.
+  H3          1.25rem / 1.3 / -.025em.
+  Body large  1.125rem / 1.65.
+  Body        1rem / 1.55.
+  Secondary   .875rem / 1.5.
+  Metadata    .8125rem / 1.4, JetBrains Mono where genuinely technical.
+  Timer       1.65rem, JetBrains Mono, tabular numerals.
+  Code        14 / 16 / 18px user-selected size; existing controls preserved.
+- Cap paragraphs at 58-66ch; marketing thesis at 48ch.
+- Avoid 9px futuristic micro-labels. No critical text below 13px.
+- Uppercase mono labels optional, tracking .08em, used <20% of screen text.
+
+2.9 SPACING / LAYOUT / ELEVATION
+--------------------------------
+Base spacing scale (px): 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 120.
+Desktop max content: 1280px / dashboard 1440px / marketing 1360px.
+Grid: 12 columns desktop; 8 tablet; 4 mobile.
+Gutters: 64px wide >=1440; 40px 1100-1439; 24px 768-1099; 16px <=767.
+Breakpoints: 1440, 1200, 1024, 768, 480; use container queries in widgets.
+Cards: radius 14px; important hero viewport 24px; controls 10-12px.
+Depth layers: z0 ambient backdrop, z1 scene, z2 legible content,
+  z10 local overlays, z30 popovers, z50 dialog. Avoid huge z-index values.
+Hover lift: translateY(-2px) max on dashboard card, 180ms, no spring wobble.
+Rule: every canvas/pseudo-effect has pointer-events:none unless explicitly
+  interactive; it may never cover editor or nav hit targets.
+
+===============================================================
+03 / SIGNATURE 3D COMPONENT: THE COGNITION CORE
+===============================================================
+
+3.1 ANATOMY
+-----------
+- Purpose: a symbolic 'thinking chamber', not a person, brain, eye, or bot.
+- 3 open concentric torus/arc elements, with discontinuities at independent
+  azimuths (e.g., 24deg, 196deg, 311deg).
+- Inner faint volume rendered as a low-resolution refractive-looking pearl.
+- 5-9 tiny spherical 'signal nodes' orbit tracks; not random glitter.
+- 2 soft circular wave surfaces represent exchanged speaking turns on the
+  MARKETING page only.
+- Overall model about 3.4 world units wide; centered at x=0, y=0.
+- Perspective camera fov 35, z=9; frame centered with 15% breathing room.
+- Material palette: dark chrome, translucent ice, indigo rim, cyan point light.
+- Silhouette clear when rendered as still image at 320px wide.
+
+3.2 MOTION
+----------
+- Idle: ring yaw moves a TOTAL of 8deg over ~20s, then returns; very slow.
+- Parallax: cursor target normalized [-1,1] => yaw +/-6deg; pitch +/-4deg,
+  interpolate with damping ~0.06/frame-equivalent. On touch no cursor parallax.
+- Hover: if pointer over hero artwork and motion allowed, nearby orbit traces
+  brighten from 12% to 35% opacity over 300ms; no large scale jumps.
+- On scroll section progression: camera moves <=1.2 world units over scene;
+  rings align from three orientations to an orderly plane, signaling clarity.
+- Reduced motion: static still hero, no camera movement, no pointer motion.
+- Losing visibility: animation loop stops while tab hidden.
+
+3.3 SHADER DETAILS (OPTIONAL, ONLY IF BASIC VERSION PASSES)
+------------------------------------------------------------
+- Fresnel rim = pow(1 - dot(normal, viewDirection), 3.0), multiplied by subtle
+  cyan/indigo emission. Clamp emissive response to avoid white clipping.
+- Internal pearl = base cool diffuse + low-amplitude moving noise displacement;
+  noise amplitude <= 0.025 world units, frequency <=0.25 Hz.
+- Emission intensity bounded: not an HDR strobe. No phase-based flashes.
+- Transparent objects sorted; if artifacts occur, replace costly multi-layer
+  transmission with flat tinted transparent shell + Fresnel rim.
+- Color pipeline: renderer sRGB output; consistent tone mapping; test color
+  against CSS tokens. Avoid double gamma correction.
+
+3.4 PERFORMANCE LEVELS
+----------------------
+Tier A / capable desktop: scene + simple lights + limited particles.
+Tier B / less capable mobile: lower geometry segments, DPR cap 1.0, no blur,
+  no transmission, particle count <=20.
+Tier C / WebGL unavailable, prefers-reduced-motion, data-saver, battery
+  constrained or user choice: pre-rendered AVIF/WebP hero still and CSS accent.
+Never punish users with a blank hero when WebGL fails.
+
+3.5 ASSET EXPORT
+----------------
+- Blender source: hero_core.blend (artist-owned original asset).
+- Export optimized hero_core.glb and static hero_core.webp + hero_core.avif.
+- GLB target <=350 KiB gzip/brotli for this geometric composition. Aim lower.
+- Compression optional: Draco/Meshopt only if decoding cost is justified.
+- Small generated environment texture optional, <=150 KiB.
+- No huge photoreal HDRI downloads just to make metal look shiny.
+- Keep art asset resolution independent from browser pixel ratio.
+
+===============================================================
+04 / LANDING PAGE — THE PORTAL INTO THE INTERVIEW ROOM
+===============================================================
+
+Route: /
+Existing source: apps/web/app/page.tsx + app/Landing.module.css.
+Keep page as a SERVER component. Put optional 3D in its own dynamically imported,
+client-only island below a reliable static foreground and poster.
+
+4.1 VISUAL STORYBOARD
+---------------------
+0 / NAVIGATION (always DOM):
+  Left: [ML monogram / Master Leeter].
+  Center desktop: Product | How it works | Sample feedback | FAQ.
+  Right: Sign in (text) / Start interview (filled blue-indigocyan CTA).
+  Height 72px desktop, 64px mobile; max content 1360px.
+  Matte translucent panel only when scrolling; bottom hairline #29364D.
+
+1 / HERO (0-100vh):
+  Left 48%: eyebrow 'VOICE-FIRST TECHNICAL INTERVIEWS', white heading
+  'THE ROOM IS READY.' and accent line 'ARE YOU?' (proposed marketing copy).
+  Under: 'Hear the problem. Think aloud. Write your solution. Get feedback
+  grounded in what actually happened.'
+  Primary CTA: 'Enter practice room' -> /start; secondary 'Explore the flow'
+  scrolls to section 2.
+  Right 52%: cinematic 3D Cognition Core against G01 gradient sky.
+  Thin vertical pillar '01 / SIGNAL' and faint coordinate grid.
+  A tiny honest note 'Best with sound; microphone permission requested only
+  when you start' — no sound auto-start on marketing page.
+  Include a small 'Preview experience' control; optional 3D toggle.
+  Keep a still-image hero for slow/offline devices; no blank SSR frame.
+
+2 / TRANSITION (100-165vh):
+  Scroll drives the inner ring to rotate <=22deg and enter a simple floating
+  outline of the codepad. A center statement appears:
+  'YOU THINK. THE INTERVIEWER LISTENS.'
+  Core changes from dramatic to quiet. Pinned scroll duration <=85vh.
+  Reduced-motion fallback shows two static cards with same narrative.
+
+3 / PRODUCT DEMO (166-260vh):
+  Floating 2.5D codepad preview (READ-ONLY illustrative mockup, never fake
+  an actual session). Set code sample to neutral fictional function.
+  Right visual stack: tiny orbit + 'Listening' status, short timer and
+  notes column. Annotate 3 factual concepts: oral delivery, intentional silence,
+  evidence-backed feedback. Avoid transcript of interviewer prompt.
+  The visual preview may have synthetic 'speaking' sample ONLY if clearly
+  labelled 'Illustration' and not posing as real audio or live recording.
+
+4 / PROCESS (260-350vh):
+  Three numbered chapters, each at least 320px tall:
+    01 Hear the problem / an original spoken brief.
+    02 Think aloud and code / no AI autocomplete.
+    03 Review the evidence / post-session feedback, model estimates labelled.
+  Interactive 3D model becomes an architectural backdrop at low contrast.
+
+5 / EVIDENCE (350-440vh):
+  Use the repo's SYNTHETIC report fragment structure. Distinguish quotes
+  from real interviews; include timestamp and assessment uncertainty.
+  No invented success metrics. Sample report card should be clearly
+  captioned 'Illustrative example, not a real session'.
+
+6 / TRUST / FAQ (440-520vh):
+  Clear disclosure about beta, permissions, privacy, and supported browsers.
+  Show 'Does it execute code?' answer based on active runtime, not ambitious
+  future promises. Do not claim verified production status from local tests.
+
+7 / FINAL CTA:
+  Quiet matte background; Core resolves into a thin stationary ring.
+  Heading 'READY TO PRACTICE THE ROOM?' + Start interview button.
+  Secondary link to privacy and help. No opt-out dark patterns.
+
+4.2 HERO WIREFRAME — 1440px
+---------------------------
++--------------------------------------------------------------------------+
+| [ML] Master Leeter      Product     How it works       [Sign in] [Start] |
++--------------------------------------------------------------------------+
+|                                                                          |
+|  VOICE-FIRST INTERVIEW PRACTICE              * faint geometric orbit     |
+|                                                                          |
+|  THE ROOM                                    .  COGNITION CORE  .         |
+|  IS READY.                      [3D dark chrome glass torus assembly]    |
+|  ARE YOU?                                         *       *               |
+|                                                                          |
+|  Hear. Think. Code. Reflect.                                                 |
+|                                                                          |
+|  [Enter practice room ->]  [See how it works]                           |
+|                                                                          |
+|  Original scenarios / 45 minutes / Feedback after the interview         |
+|                                                                          |
+|              SCROLL TO EXPLORE  v                                          |
++--------------------------------------------------------------------------+
+All 3D positioned behind/outside live DOM; text remains unaffected by load.
+
+4.3 UI MICROINTERACTIONS
+------------------------
+Nav links: line grows from center 0->100%, 180ms.
+CTA: background lightens 6%, shadow expands slightly, arrow moves +3px,
+  160ms cubic-bezier(.2,.8,.2,1).
+Cards: border tint changes to G02, NOT glowing box-shadow everywhere.
+Scroll prompt: small 10px vertical motion for 1 repeat, then stops.
+Section reveal: opacity 0->1 and translateY 18->0px, 450-650ms;
+  stagger 70ms; only once per viewport entry.
+Scroll scene: scrub follows progress without scroll-jacking; never hijack
+  browser wheel, keyboard PageDown, or scrollbar.
+
+4.4 RESPONSIVE
+---------------
+>=1200: two-column hero, model right, H1 ~100px max.
+768-1199: H1 ~72px, model behind/right with dark opacity mask.
+<=767: text first, illustration next, all links accessible; no pinned scene;
+  hero height auto, scene max-height 420px; H1 ~44px.
+<=480: simplify CTA stack, use static hero default on budget-limited devices.
+
+===============================================================
+05 / USER DASHBOARD — THE MISSION CONTROL HOME
+===============================================================
+
+STATUS: PROPOSED NEW /dashboard authenticated route. The verified current
+/historical surface is /history, not an existing dashboard. Keep /history
+available for detailed chronological session records and privacy actions.
+Do not delete or silently relocate the current deletion/export workflow.
+
+5.1 CORE PURPOSE
+----------------
+Show what the candidate CAN DO NEXT, not irrelevant competitive metrics.
+For a returning person: resume a real session, begin a new one, view recently
+finished reports, identify evidence-backed practice priorities if supported.
+The dashboard isn't a social feed, leaderboard, streak casino or judge panel.
+
+5.2 INFORMATION HIERARCHY (EXACT ORDER)
+---------------------------------------
+Left shell/sidebar (desktop 240px fixed, collapsible to 72px):
+   [ML / Master Leeter]
+   Overview                 /dashboard
+   New Interview             /start
+   Interview History         /history
+   Reports                   /history?filter=completed (optional filtered view)
+   Settings                  /settings
+   Support                   /support
+   Bottom: account menu, theme toggle, accessibility preferences.
+Do not introduce broken links; hide proposed filters until implemented.
+
+Top main strip (height 72px):
+  Breadcrumb 'Practice / Overview'; greeting 'Ready for your next round?'
+  Right: [New interview] CTA + account.
+  Avoid personalized name unless actual account data is provided.
+
+SECTION 1 / RESUME OR START:
+  Primary wide panel (columns 1-8):
+    eyebrow 'YOUR NEXT SESSION'. If resumable session exists:
+    'Continue your interview' + mode + actual server remaining time;
+    [Resume session] prominent, link to /interview/[sessionId].
+    If no resumable session: 'Start a new 45-minute interview' + [Configure].
+  Secondary art panel (cols 9-12): small static/optional animated Core,
+    not another competing data card. 3D off by default on dashboard mobile.
+
+SECTION 2 / AT A GLANCE (3 or 4 cards, only real values):
+  'Completed sessions' count computed from fetched session list ONLY if dataset
+   complete or API returns authoritative total; otherwise display 'Showing N'.
+  'Reports ready' = count of confirmed ready reports if API supports it;
+   otherwise label 'Check reports' with no number.
+  'Time practiced' from authoritative elapsed data only; not 45m per record.
+  'Next suggested drill' only if generated from actual post-session report;
+   otherwise: 'Practice insight will appear after your first report.'
+  Avoid a global score, synthetic trend or arbitrary percent ring.
+
+SECTION 3 / RECENT ACTIVITY:
+  3-5 genuine session cards with mode, created date, lifecycle status,
+  and Resume / View report action. Status explicit text.
+  Use existing history list endpoint and preserve pagination in history page.
+  Privacy actions (export/delete) remain on /history for clear context.
+
+SECTION 4 / FOCUS NEXT (optional, only with real evidence):
+  Up to 3 recommended review actions derived from post-interview reports.
+  Example structure: skill label, quote/evidence link, drill description,
+  'Why this?' tooltip. No fabricated ranking.
+  On unavailable data: replace with product walkthrough, not fake suggestions.
+
+SECTION 5 / SMALL UTILITY FOOTER:
+  Microphone readiness shortcut -> /start; keyboard shortcuts; privacy.
+  This must not request microphone permission on dashboard load.
+
+5.3 DASHBOARD WIREFRAME (1440px)
+--------------------------------
++----------------------+------------------------------------------------------+
+| MASTER LEETER        | Practice / Overview                 [New Interview]   |
+|                      +------------------------------------------------------+
+| Overview   *         | Ready for your next round?                           |
+| New Interview        |                                                      |
+| History              | +--------------------------------+ +---------------+ |
+| Reports              | | YOUR NEXT SESSION              | | Quiet 3D      | |
+|                      | | Continue / Configure            | | signal core   | |
+| Settings             | | [Start or Resume ->]            | | small, calm   | |
+| Support              | +--------------------------------+ +---------------+ |
+|                      |                                                      |
+|                      | +-------------+ +-------------+ +----------------+ |
+|                      | | Sessions    | | Reports     | | Next focus     | |
+|                      | | measured    | | real state  | | from evidence  | |
+|                      | +-------------+ +-------------+ +----------------+ |
+|                      |                                                      |
+|                      | Recent practice                        [View all ->] |
+|                      | +----------------------------------------------+     |
+|                      | | Session   Mode   Date   Status       Action |     |
+|                      | | .......   ....   ....   ........     ...... |     |
+|                      | +----------------------------------------------+     |
+|                      |                                                      |
+| Account / Theme      | Evidence-led next steps (optional)                   |
++----------------------+------------------------------------------------------+
+
+5.4 DASHBOARD VISUAL DETAILS
+----------------------------
+- Backdrop: #0B1120 with a static thin radial gradient at top-right.
+- Sidebar: #0A101D, 1px border right #29364D.
+- Main cards: opaque #111A2A; 14px radius; 1px #29364D border.
+- Primary action card: G03 obsidian panel and a 1px indigo/cyan edge at top.
+- Card title 20px Inter medium; secondary data 13-14px mono only when useful.
+- Header H1 42px desktop; max 2-line on small laptop.
+- No animated grid behind data rows; no semitransparent overlay over figures.
+- Hover card lift <=2px; no whole-page perspective tilting.
+- Header/right 3D ornament: 240x240px desktop with static alternative.
+- When session in progress, small teal dot + 'Resume available', never a
+  pulsing urgent badge.
+- Status/metric chart colors consistent with actual meaning.
+- Density comfortable: 24px within cards, 20px grid gap, 32px section gaps.
+
+5.5 DASHBOARD DATA CONTRACT
+---------------------------
+Existing /history session item was inspected with:
+  sessionId, mode, state, createdAt, startedAt, endedAt, expectedSeconds,
+  remainingSeconds. No verified aggregate rating, streak, correct/incorrect
+  count, or analytics endpoint was established by this review.
+
+Version 1 must render with ONLY that data. Future metrics require explicitly
+added, tested API fields and honest labels. Client-derived aggregates from
+paginated subsets must say 'shown sessions' instead of 'all sessions'.
+A value of '0' and an unavailable value are not interchangeable.
+
+5.6 DASHBOARD STATES
+--------------------
+New user: welcome, illustrated empty plate, no fake trend graph.
+In progress: primary card resumes actual session; server time authoritative.
+Completed: show last session with actual report status, no grading claims.
+Report processing: text 'Report processing' and disabled view action if needed.
+Authentication expired: clear sign-in path and safe state, no leaked details.
+Offline: render last fetched history only if explicit locally available data
+  and marked 'may be outdated'; otherwise honest reconnect state.
+Error: inline retry, accessible role/status, not full-screen flicker.
+Reduced motion: all transitions static/instant, useful affordances preserved.
+
+===============================================================
+06 / INTERVIEW COCKPIT — REBUILD THE CODEPAD WITHOUT THE NOISE
+===============================================================
+
+Route: /interview/[sessionId]
+Existing components already implement resizable split, notes, candidate
+captions, keyboard shortcuts, voice controls, save state, and server timer.
+Build on them rather than replacing the data/interaction architecture.
+
+6.1 DESIGN GOAL
+---------------
+'Precision instrument, not videogame HUD.'
+The codepad is 70-85% of visual attention; voice is present but secondary.
+No continuous particles in the editor, no animated background under tokens,
+no flying code, no 3D layer between candidate and text.
+
+6.2 DESKTOP STRUCTURE
+---------------------
+Header H=64px:
+  left  [ML] [connected state]
+  center [short factual interview stage indicator]
+  right [abstract small voice presence] [time remaining] [menu]
+  Keep explicit mute/start/stop controls reachable; may collapse into
+  an accessible control group. Do not bury critical voice controls.
+
+Workspace toolbar H=44px:
+  left [solution.py] [Python] [Saved / Saving / Offline]
+  right [Font size] [Layout: Balanced / Wide / Focus] [Panel toggle].
+  All save labels correspond to actual acknowledgment state.
+
+Primary editor region (default 70%; adjustable 45%-85% existing range):
+  background #0A101B, 1px side border, NO global bloom overlay.
+  Monaco uses generated theme via lib/monaco-theme.ts.
+  Font JetBrains Mono; user-selected 14/16/18px, line-height 1.6 approx.
+  Line number muted, selection indigo blue, caret ice white, syntax restrained.
+  Current hover/docstring behavior preserved; suggestions, snippets, inline
+  AI completion remain DISABLED. No ghost-text suggestions.
+  Save-state icon/text (disk/check, spinner only when saving) at toolbar right.
+  No error squiggles implying AI judged correctness; real syntax diagnostics
+  may remain if they already exist and are not answer suggestions.
+
+Right side (default 30%, min practical >=300px on suitable viewport):
+  Top: NOTEBOOK; editor text area matte #0D1626, no glass text overlay.
+  Bottom: CANDIDATE CAPTIONS; muted accessible text of candidate's speech only.
+  Divider 1px #29364D; draggable 8px track with 24px visible grab indicator.
+  Add a very subtle vertical cyan rail ON THE RIGHT SIDEBAR edge only when
+  authorized interviewer audio actually plays; not editor content area.
+
+Optional bottom utility ribbon (NOT always necessary):
+  only a 1px status line with 'Connected' / 'Saving' / 'Voice on'.
+  Do not create redundant duplicate states across header and footer.
+
+6.3 1440px COCKPIT WIREFRAME
+----------------------------
++-------------------------------------------------------------------------+
+| ML  Connected         Interview stage       Listening   38:24   [•••]    |
++-------------------------------------------------------------------------+
+| solution.py  Python  Saved            Font [16] Layout [Editor wide v] |
++---------------------------------------------+---------------------------+
+|  1  def solve(values):                       | NOTES                     |
+|  2      # Your approach...                  |                           |
+|  3      ...                                 | Personal notes...         |
+|                                             |                           |
+|  MONACO CODEPAD — NO AI HELP                 +---------------------------+
+|                                             | CANDIDATE CAPTIONS        |
+|                                             | 'I will use...'           |
+|                                             |                           |
+|                                             |                           |
++---------------------------------------------+---------------------------+
+Important: no written interviewer prompt; candidate's own captions only.
+
+6.4 DESIGN TREATMENT — EDGES, DEPTH, FOCUS
+-----------------------------------------
+- Editor gets a very subtle 1px top accent line when focused; never a
+  rainbow border. Focus ring around control must not be obscured.
+- Notes panel uses reduced-saturation bluish graphite background.
+- Side panels may have a 4px internal top-notch to suggest modular cockpit.
+- Hover on panel tabs is 140ms border/text-color change, no lift.
+- Collapsed side uses full 100% editor width; state persists as before.
+- Reconnecting strip must dominate any ambient effect, with legible warning.
+- If user changes theme, Monaco theme switches correctly with stored prefs.
+- Empty editor remains deliberately empty, not filled with fake code.
+- Do not add progress bars representing 'interviewer approval' or estimated
+  correctness in the live cockpit.
+
+6.5 MOBILE / NARROW SCREEN
+--------------------------
+The existing route has mobile tabbed Code / Notes / Captions. Preserve this.
+>=1100: resizable split.
+700-1099: single-panel tabs, code default; sidebar easy to access.
+<700: code first, bottom tabs, voice controls with explicit textual state,
+  timer remains visible, no horizontal scroll in shell.
+At 400% zoom: same single-panel pattern; keyboard focus remains visible.
+No decorative canvas mounted in interview on mobile/low-power devices.
+
+6.6 INTERVIEW MODAL AND SAFETY RULES
+-----------------------------------
+- Completing a session keeps a deliberate confirmation dialog.
+- Focus locked to dialog and returns logically on close.
+- Pending saves shown honestly; final code+notes send path unchanged.
+- Failure to reconnect is not disguised with a happy animation.
+- Microphone preflight remains initiated by explicit click, never auto-started.
+- Respect natural output volume and muted-device affordances.
+- 'Mean' voice style setting never changes the UI to angry red or punitive
+  visuals; tone belongs to conversation, not candidate scoring or theming.
+
+===============================================================
+07 / AI SPEAKING EFFECT — DESIGN, SIGNAL PATH & EXACT STATES
+===============================================================
+
+THIS IS THE SIGNATURE PRODUCT MICROINTERACTION.
+The live interface needs a beautiful but controlled indication of real speech.
+Use an ABSTRACT ORB / LIGHT-RING, not a head or avatar.
+
+7.1 COMPONENT NAME / PLACEMENT
+------------------------------
+InterviewerSignal (upgrade or replace visual layer of InterviewerStatus).
+At desktop header: 36x36 visual + 'Interviewer' + textual state.
+At codepad right rail, optional 1-2px cyan emphasis when speaking.
+A 3D version is OPTIONAL and marketing/dashboard-only. The actual interview
+should preferably use a lightweight 2D Canvas/SVG/CSS implementation.
+
+7.2 VISUAL STATES (DETERMINISTIC)
+--------------------------------
+IDLE / VOICE OFF:
+  Flat neutral ring, outer diameter 28px, stroke #91A3BD opacity .7.
+  Label 'Voice off' / 'Start voice'. Zero moving energy.
+CONNECTING:
+  Pale amber segmented ring rotates slowly MAX 1 turn / 2s only while real
+  connection attempt is pending; label 'Connecting'. No fake microphone pulse.
+LISTENING:
+  Stable mint inner dot radius 3px + 1 constant thin mint border;
+  label 'Listening'. There should be NO bouncing bars just because VAD is on.
+WAITING / QUIET:
+  Slate ring with soft center pearl; label 'Waiting'. No motion. This is
+  important: meaningful deliberate silence is an intended experience.
+SPEAKING:
+  Outer ring color changes to cyan, inner segments grow according to real
+  playback amplitude. Label 'Speaking'. ONLY when actual AI audio is audible
+  or scheduled about to begin per reliable audio-clock event.
+MUTED CANDIDATE MIC:
+  Keep AI output state truthful; show separate 'Microphone muted' control.
+  Do not conflate AI speaker status with local microphone status.
+BARGE-IN:
+  As soon as playback scheduler cancels/ducks confirmed interruption,
+  energy collapses to neutral within 40-80ms, label becomes truthful live
+  state; do not allow animation to finish a decorative 400ms flourish.
+FAILED / DISCONNECTED:
+  Ring stationary amber/coral as appropriate with explicit 'Connection lost'
+  or 'Voice unavailable'; offer existing retry path.
+
+7.3 SPEAKING ANIMATION CHOREOGRAPHY
+-----------------------------------
+T=0ms (playback actually starts):
+  Rim shifts mint/neutral -> cyan in 120ms; center visible at 0.65 opacity.
+T=60-180ms:
+  3-5 amplitude bars rise; max heights 5, 9, 14, 9, 5px within 20px circle.
+During real playback:
+  Bars driven by envelope, with smoothing. Soft halo radius varies 12-20px.
+  Only +/-3px amplitude change in border radius, <=1.025x total scale.
+  No screen-wide waves, color explosion, editor shaking, or pulsating timer.
+On natural drain:
+  Falloff 160-240ms to the next truthful state. Stop animation loop.
+On stop/barge-in/disconnect:
+  Abort immediately and clear scheduled animation; no 'speaking' linger.
+
+7.4 SIGNAL SOURCE — CRITICAL ENGINEERING DETAIL
+-----------------------------------------------
+The existing repository already has PlaybackScheduler in lib/playback.ts.
+Its isPlaying flag is derived from scheduled sources and natural drain. It is
+used by voice-session.ts to set VoiceStatus SPEAKING. DO NOT make the orb derive
+speech from microphone VAD, raw transcript text, AI 'thinking', or timer ticks.
+
+Preferred implementation:
+ A. Start with EXISTING voiceStatus SPEAKING boolean for trustworthy visuals.
+ B. Optionally add a LOCAL ephemeral playback-envelope hook in the browser's
+    WebAudio OUTPUT chain (not the microphone input) for genuine audio-reactive
+    amplitude. Signal path example:
+      AI decoded PCM -> scheduled AudioBufferSources -> gain/output mix ->
+      optional AnalyserNode tap -> speakers
+    This exact insertion point must be verified against the voice-session
+    AudioSink graph, including cached speech, speaker switching and ducking.
+ C. Use AnalyserNode.getFloatTimeDomainData or getByteFrequencyData locally.
+    Compute normalized RMS envelope; smooth it; map to bounded visual values.
+ D. The analyzer arrays stay in memory only; never log or store audio data.
+ E. No analyzer available? Use state-based, subtle preset 'speaking' motion,
+    clearly a presence animation, not a fake actual waveform.
+ F. If speech audio is authorized but playback stalls/suspends, the indicator
+    must not pretend sound is being heard. Prefer actual playback lifecycle.
+
+7.5 ENVELOPE MATH (IMPLEMENTATION STARTER)
+------------------------------------------
+Let x[i] be floating time-domain sample in [-1,1].
+  rms = sqrt( sum(x[i]*x[i]) / N )
+  normalized = clamp((rms - noiseFloor)/dynamicRange, 0, 1)
+  target = smoothstep(0.08, 0.70, normalized)
+  displayed = previous + (target - previous) * alpha
+  attack ~60ms; release ~180ms; gain clamp prevents jitter.
+  radius = 12px + 4px * displayed
+  glowOpacity = .08 + .16 * displayed
+  barHeight[j] = baseHeight[j] + envelope*scale[j]
+Rendering ideally 30fps for small orb; stop the RAF when not speaking.
+Analysis FFT ~256-512 is fine; never run large FFT in UI thread.
+Do not promise exact speech-to-syllable alignment from simple RMS.
+
+7.6 OPTIONAL PREMIUM ORB (ONLY IF CHEAP)
+----------------------------------------
+- 36px orb: inner pearl, 1px static ring, low-opacity aura mask, 3 tiny waves.
+- The full 3D torus appears only in the landing mockup. Live UI uses SVG/Canvas.
+- WebGL should not initialize just to show a 36px speaking indicator.
+- Use transform/opacity instead of animating expensive box-shadow blur.
+- Screen reader status announcement from existing Preferences global channel;
+  throttle/coalesce transitions, no continuous stream of amplitude values.
+
+7.7 STATE TRANSITION SPECIFICATION
+----------------------------------
+  IDLE -> CONNECTING: ring amber, controls show connecting.
+  CONNECTING -> LISTENING: no celebratory glow; mint steady.
+  LISTENING -> SPEAKING: cyan bounded energy on output start.
+  SPEAKING -> LISTENING: controlled decay after natural drain.
+  SPEAKING -> interruption: immediate stop; cancel pending frames.
+  ANY -> FAILED: freeze and show error + retry.
+  RECONNECTING: no phantom speaking; preserve code editability.
+  VISIBILITY HIDDEN: stop visual RAF while preserving actual audio behavior.
+  REDUCED MOTION: state labels and static colored ring remain; no pulsing.
+
+7.8 DO NOT IMPLEMENT
+--------------------
+- A wave around the entire screen as the AI speaks.
+- AI mouth, robot avatar, face, head tilt, eyes, or lip sync.
+- Captions of the spoken interview problem as decoration.
+- 'AI thinking...' or decision-state animation not authorized by product.
+- Decorative response delay that blocks or slows audio or interruption.
+- Persistent audio, FFT buffers, webcam access, analytics of speech content.
+
+===============================================================
+08 / MOTION SYSTEM — EVERY DURATION, PHYSICS AND RULE
+===============================================================
+
+MOTION CHARACTER: slow, weighted, premium, intentional. No bounces unless
+feedback conveys actual physical interaction. UI keeps everything quick.
+
+DESIGN TOKENS:
+  instant       0ms
+  micro         120ms
+  quick         180ms
+  normal        260ms
+  reveal        520ms
+  cinematic     900ms
+  slow-idle     16000ms, landing hero only, pause when hidden
+
+EASINGS:
+  out-expo-lite = cubic-bezier(.16,1,.3,1)      major scene reveal
+  out-standard = cubic-bezier(.2,.8,.2,1)       controls/panels
+  in-out-soft  = cubic-bezier(.65,0,.35,1)      symmetrical transition
+  linear       = linear                         audio sampling/scroll scrub
+
+MICROINTERACTION MATRIX:
+  Nav hover:       180ms, line/opacity only.
+  CTA hover:       160ms, shift arrow 3px + brightening.
+  Modal enter:     220ms opacity + translateY 8->0px.
+  Dashboard card:  180ms border + translateY -2px.
+  Dashboard data:  no counting animation by default (avoid invented momentum).
+  Code focus:      120ms border state only.
+  Resizer:         direct response to pointer; NO easing / lag while dragging.
+  Editor tabs:     120ms underline position/opacity.
+  Save ack:        text change, optional 180ms check fade; no distracting toast.
+  Speaking start:  120ms state shift, real amplitude reactive thereafter.
+  Speaking stop:   immediate on interruption; 160-240ms on natural completion.
+  Error/reconnect:  no shaking/strobe; static clear label.
+  Timer tick:      text numeral only, tabular widths, never animate digit flips.
+
+NO LOOPING ANIMATION UNLESS it is a real state indicator or an opted-in
+marketing art element. The interview has no decorative perpetual loop.
+
+SCROLL CONVENTIONS:
+  Use GSAP ScrollTrigger on landing ONLY; pin one section at a time.
+  Avoid scroll hijacking or making body scroll dependent on JS.
+  One cinematic 3D scroll transition and 2-3 DOM reveals are sufficient.
+  Use gsap.matchMedia to isolate desktop/reduced-motion effects and cleanup.
+  On route change/unmount: kill ScrollTriggers and dispose scene resources.
+
+REDUCED MOTION:
+  CSS @media (prefers-reduced-motion: reduce) disables 3D camera moves,
+  parallax, decorative pulsing and long reveals. Essential state changes
+  remain explicit, instantaneous labels.
+  Offer Settings -> Visual effects = Full / Reduced / Off (optional addition).
+  Defaults always respect OS. Manual choice must not override OS minimum
+  accessibility expectation without explicit user action.
+
+===============================================================
+09 / TECHNICAL REBUILD PLAN — MATCH THE ACTUAL REPOSITORY
+===============================================================
+
+9.1 CURRENT FRONTEND CONSTRAINTS
+--------------------------------
+Next.js App Router and React 19. CSS modules + CSS @layer are present.
+Semantic palette is generated from design/tokens/semantic.json.
+Theme: dark, light, system through Preferences context.
+Monaco: self-hosted assets and generated theme; next/dynamic already used.
+Existing codepad behavior and voice controls should not regress.
+
+9.2 RECOMMENDED PACKAGES (VERIFY CURRENT COMPATIBILITY BEFORE INSTALL)
+------------------------------------------------------------------------
+- three                  real-time geometry and materials, landing only.
+- @react-three/fiber     React renderer for Three.js, landing only.
+- @react-three/drei      staged helpers/adaptive DPR as needed.
+- gsap                   landing timeline / ScrollTrigger only.
+Optional: lenis for marketing-only scroll smoothing, but preferably SKIP;
+          native scrolling + GSAP works and is more accessible.
+Optional: motion/Framer Motion for general UI; NOT required when CSS suffices.
+Do not add a heavy component library to reproduce simple panels.
+Pin compatible actual versions after checking Next 15/React 19 and lockfile.
+Never add blanket `use client` to marketing layout, page or global root.
+
+9.3 PROPOSED FILE STRUCTURE
+---------------------------
+Existing files to MODIFY incrementally:
+  design/tokens/semantic.json
+  apps/web/app/styles/tokens.css  [GENERATED; never hand edit]
+  apps/web/app/styles/base.css
+  apps/web/app/Landing.module.css
+  apps/web/app/page.tsx
+  apps/web/app/history/page.tsx [keep historical record accessible]
+  apps/web/components/Cockpit.module.css
+  apps/web/components/CockpitPanels.tsx
+  apps/web/components/CodeEditor.tsx
+  apps/web/components/InterviewerStatus.tsx
+  apps/web/components/VoiceControls.tsx [only layout/accessibility changes]
+  apps/web/app/interview/[sessionId]/page.tsx [wire props, no logic rewrite]
+  apps/web/lib/monaco-theme.ts [update generated/token role, not ad hoc hex]
+  apps/web/components/Preferences.tsx [optional visual-effects setting]
+  apps/web/app/settings/page.tsx [optional setting UI]
+
+New files to ADD (suggested, not yet present):
+  apps/web/app/dashboard/page.tsx
+  apps/web/app/dashboard/Dashboard.module.css
+  apps/web/components/dashboard/PracticeHeroCard.tsx
+  apps/web/components/dashboard/SessionSummaryList.tsx
+  apps/web/components/dashboard/EvidenceDrills.tsx
+  apps/web/components/landing/CognitionCoreIsland.tsx
+  apps/web/components/landing/CognitionCoreScene.tsx
+  apps/web/components/landing/PortalHero.tsx
+  apps/web/components/landing/PortalHero.module.css
+  apps/web/components/signal/InterviewerSignal.tsx
+  apps/web/components/signal/InterviewerSignal.module.css
+  apps/web/lib/signal/usePlaybackEnvelope.ts [optional; AFTER audio review]
+  apps/web/lib/visual-effects.ts
+  apps/web/public/3d/hero_core.glb
+  apps/web/public/3d/hero_core.webp
+  apps/web/public/3d/hero_core.avif
+  apps/web/e2e/futuristic-ui.e2e.ts
+  docs/FUTURISTIC_UI_IMPLEMENTATION.md [optional internal log]
+
+Do not relocate privacy, account, deletion and session state management for
+cosmetic reasons. Keep data ownership and auth checks server-side.
+
+9.4 SCENE IMPLEMENTATION — REACT THREE FIBER PSEUDOCODE
+-------------------------------------------------------
+Pseudo-code sketch (validate APIs against installed versions; not a drop-in):
+
+  // app/page.tsx remains server-rendered
+  // Hero = meaningful text/CTAs and <picture> poster first.
+  // After visibility + capability + motion preference check,
+  // dynamically import an isolated CognitionCoreIsland.
+
+  <Canvas
+    camera={{ position: [0, 0, 9], fov: 35 }}
+    dpr={[1, 1.75]}
+    frameloop="demand"
+    gl={{ antialias: true, alpha: true, powerPreference: 'low-power' }}>
+      <ambientLight intensity={0.45} />
+      <directionalLight position={[-3, 4, 5]} intensity={1.0} />
+      <CoreModel />
+      <AdaptiveDpr />
+  </Canvas>
+
+Note: 'demand' renders only when invalidated. If the model has a permitted
+idle animation, invalidate frames while active, then STOP when at rest.
+Use useFrame only for 3D object transforms, not React setState every frame.
+Share geometries/materials; limit draw calls; avoid giant transparent layers.
+Use a static poster until the first quality frame is ready; keep DOM usable.
+A single lit shader may be more performant than full transmission+postFX.
+
+9.5 DESIGN TOKEN EXPANSION (EXAMPLE STRUCTURE)
+----------------------------------------------
+DO NOT copy a new :root stylesheet over generated tokens. Add appropriate
+semantic token entries to design/tokens/semantic.json, run 'pnpm tokens',
+then review all generated theme variants and Monaco colors.
+
+Example conceptual variables for dark theme:
+  --ml-surface-void:       #070B15;
+  --ml-surface-shell:      #0B1120;
+  --ml-surface-panel:      #111A2A;
+  --ml-surface-raised:     #162236;
+  --ml-surface-editor:     #0A101B;
+  --ml-border-subtle:      #29364D;
+  --ml-border-strong:      #425776;
+  --ml-text-primary:      #F3F7FF;
+  --ml-text-secondary:    #B5C4D9;
+  --ml-brand-primary:     #6A7CFF;
+  --ml-brand-signal:      #4BDFFF;
+  --ml-state-listening:   #80E1BC;
+  --ml-state-warning:     #F4C979;
+  --ml-state-danger:      #FF9D99;
+  --ml-radius-panel:      14px;
+  --ml-radius-control:    10px;
+  --ml-ease-out:          cubic-bezier(.2,.8,.2,1);
+
+These are COLOR and SPACING DESIGN TARGETS, not literal keys guaranteed by
+existing token-generator schema. Preserve existing semantic aliases or update
+mapping/tests together. Never hardcode new colors in random components.
+
+9.6 CSS RECIPES
+---------------
+A / Frost-edge panel, no blur behind text:
+  .precisionCard {
+    position: relative;
+    border: 1px solid var(--ml-border-subtle);
+    border-radius: var(--ml-radius-panel);
+    background: var(--ml-surface-panel);
+    box-shadow: 0 12px 32px rgba(0,0,0,.22),
+                inset 0 1px rgba(255,255,255,.045);
+  }
+
+B / Safe gradient border for one highlighted card:
+  .signalCard::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(120deg,#6A7CFF,#4BDFFF,#A37CFF);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box,
+                  linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  In browser testing, verify mask support and fall back to solid border.
+
+C / Small speaking aura (SVG/CSS visual, never text layer):
+  .signalOrb[data-state='speaking'] .halo {
+    opacity: var(--audio-level, .16);
+    transform: scale(var(--audio-scale, 1));
+    transition: opacity 60ms linear;
+  }
+  .signalOrb[data-state='listening'] .halo { opacity: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    .signalOrb .halo { animation: none !important; transform: none !important; }
+  }
+  The JS output-level envelope is bounded and written as inline custom props,
+  not as hundreds of React state renders per second.
+
+D / Tiny grid backdrop (landing only):
+  background-image:
+    linear-gradient(#94A7C80A 1px, transparent 1px),
+    linear-gradient(90deg, #94A7C80A 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at 60% 40%, black 0, transparent 78%);
+
+E / Monaco match:
+  Editor background #0A101B; gutter #0B1421; selection #263E78;
+  active line #121F32; cursor #D7EBFF; line numbers #7891AC;
+  function names #B5C4FF; strings #9BDAAA; keywords #B59FFF;
+  comments #91A3BD; numbers #F1C48A; warnings only real diagnostics.
+  Check readable syntax colors against dark background at small font size.
+  For light mode derive separate tokens, not CSS filter inversion.
+
+9.7 AUDIO ENVELOPE INTEGRATION OUTLINE
+--------------------------------------
+- Review apps/web/lib/voice-session.ts output AudioContext and AudioSink
+  creation. Identify all audio sources: Gemini streaming + pre-rendered TTS.
+- Tap analysis AFTER the common output gain, BEFORE destination, if feasible.
+- Ensure connection changes/speaker switch preserve signal path.
+- Make visual channel subscribe only to voice status + output-level analyzer.
+- If unavailable or output muted, fall back to status-only visual.
+- Do not alter real-time transport, VAD, barge-in rules, playback scheduling,
+  gate authorization, or timer to drive animations.
+- Stop analysis on natural drain, stop(), dispose, disconnect and unmount.
+- Ensure no audio capture is recreated or requested by status component.
+- Test with synthetic PCM fixtures; ensure no raw data enters logs/analytics.
+
+9.8 DYNAMIC IMPORT / BUNDLE BOUNDARIES
+--------------------------------------
+Marketing route:
+  static HTML -> styles/poster -> requestIdleCallback or intersection signal ->
+  load 3D scene if motion and capacity permit.
+  Never load WebGL libs in layout.tsx, dashboard, /start, or interview bundle.
+
+Dashboard:
+  mostly CSS/HTML, optional lightweight scene loaded after data and after
+  initial interaction; default static fallback is intentional.
+
+Interview:
+  NO Three.js requirement. Monaco remains lazy/self-hosted.
+  Speaking indicator uses SVG/CSS and, only if safe, Web Audio analyzer.
+  No GSAP import into this route for simple state changes.
+
+9.9 STATE & ASSET SEPARATION
+----------------------------
+Separate optional animation system from core product events:
+  Core state       -> connection, playback, timer, saves, stage.
+  Presentation     -> colors, shapes, GPU scene, motion preference.
+
+Presentation may read core state. It may NEVER modify or delay core state.
+No invalid state mapping; failures must appear as failures even with graphics
+unavailable. Abort on React unmount; avoid stale status closures and leaking RAF.
+
+9.10 GIT STRATEGY
+-----------------
+Create a feature branch, e.g. design/neural-chamber, only when implementation
+is explicitly requested. This file does not authorize code writes or merges.
+Commit by surface; no monolithic replacement of the voice system.
+Prefer PRs with screenshots and tested motion alternatives.
+
+===============================================================
+10 / COMPONENT-LEVEL CONSTRUCTION SPEC
+===============================================================
+
+10.1 GlobalShell
+  Existing nav + footer kept semantically. Add consistent active link,
+  40-44px hit area, focus ring. Hide nothing essential behind blur.
+
+10.2 PortalHero
+  DOM heading + CTA, 3D artwork island with poster. Layout 48/52.
+  Intersection observer turns on art only as needed. Background never blocks.
+
+10.3 CognitionCoreIsland
+  Three ring assemblies, 5-9 nodes, staged lights, pointer damping, scene
+  disposal, reduced-motion and WebGL failure poster. Prefers static on mobile.
+
+10.4 DemoInterviewPlate
+  Static semantic demonstration of codepad and interviewer indicator.
+  Entire demo marked illustrative and aria-label suitable. Not interactive
+  unless explicit 'play demo'; never expose actual private problem content.
+
+10.5 DashboardShell
+  Sidebar + main region, fixed max widths, responsive drawer, active route,
+  no page-wide canvas. Keyboard nav, focus restoration.
+
+10.6 PracticeHeroCard
+  Real session data / truthful new-session state, optional 3D miniature.
+  A single action; no surprise auto-resume.
+
+10.7 DashboardStatCard
+  Accepts {label, value?, explanation, status}; unknown renders '—' +
+  explanation, not fake 0. Never animate numbers if data not measured.
+
+10.8 RecentSessionCard
+  Uses session ID, mode, actual state/dates, resume/report action.
+  Avoid displaying sensitive resume facts or private evaluation on dashboard.
+
+10.9 CockpitPanels
+  Retain resizable 45-85% split, separate notes and captions, local setting.
+  Update CSS and minor structure only. Focus/keyboard separator tests mandatory.
+
+10.10 CodeEditor
+  Retain Monaco lazy loader and no-help options. Remap its two themes
+  through token system; save text from state, not simulated animation.
+
+10.11 InterviewerSignal
+  Status domain: IDLE/CONNECTING/LISTENING/WAITING/SPEAKING/FAILED.
+  Keep separate local mic muted state. 36px visual, explicit status text.
+  WebAudio playback analyzer optional. Single accessible announcement channel.
+
+10.12 VoiceControls
+  Preserve actual permission preflight, device switching, mute/stop behavior.
+  Visual refresh does not change handlers or build a competing speech loop.
+
+10.13 Timer
+  Data from existing server-authoritative remainingSeconds. 28px mono
+  tabular nums; no urgent color transitions. Accessible label with restrained
+  announcement cadence, not live region every second.
+
+10.14 Report / EvidenceCard
+  Dark 'lab report' styling with readable sections and quotations.
+  Evidence before estimates, explicit model limitations. No celebratory
+  score bursts or impossible confidence visualization.
+
+10.15 EmptyStatePanel
+  Static hero shape, explanatory sentence, one helpful next action.
+  Consistent for new account, zero reports, offline, missing session.
+
+10.16 Settings / Appearance
+  Dark / Light / System retained. Optional visual effects preference,
+  no link between motion and consent. Keep privacy actions explicit.
+
+===============================================================
+11 / INTERACTIVE STATES & ERROR INVENTORY
+===============================================================
+
+By surface, implement all states with the same token system.
+
+LANDING:
+  server HTML, poster loaded, 3D downloading, 3D ready, WebGL error,
+  slow network, reduced motion, mobile, no JS, authenticated/anonymous nav.
+
+DASHBOARD:
+  loading skeleton, empty first-use, active interview, recent completed,
+  report pending, unknown aggregate, pagination, session unavailable,
+  auth expired, network offline, server error, user deletion initiated.
+
+INTERVIEW:
+  starting voice, permission denied, connecting, listening, waiting,
+  actual AI speaking, muted candidate mic, interruption, device changed,
+  output sink unavailable, reconnecting, offline edits pending, saved,
+  ending confirmation, final save in progress, report pending, ended.
+
+REPORT:
+  generating, ready, partial, unavailable, estimation disclaimer,
+  privacy deletion, export failure.
+
+EACH STATE MUST DEFINE:
+  main label, 1-line helper, icon, color/token, motion behavior,
+  keyboard affordance, accessibility announcement priority, recovery action.
+
+STATE EXAMPLE (VOICE RECONNECTING):
+  text: 'Reconnecting voice...'
+  helper: 'Your code is still editable. Unsaved changes will retry.'
+  color: amber; icon: connection/plug; pulse: none in reduced motion;
+  action: Retry if existing flow allows; no provider-debug details shown.
+
+STATE EXAMPLE (DATA UNAVAILABLE):
+  value: '—'
+  helper: 'Not enough completed sessions to show this.'
+  icon: informational, not exclamation red; no fictitious mini chart.
+
+===============================================================
+12 / ACCESSIBILITY AND INPUT SAFETY CONTRACT
+===============================================================
+
+- WCAG 2.2 AA target. Use genuine semantic DOM headings/nav/main/sections.
+- Single global status announcement channel (existing Preferences system).
+- No more than one simultaneous aria-live announcement per meaningful state.
+- No color-only status; every speaking/listening/error shows text and icon.
+- Text contrast 4.5:1 normal / 3:1 large; interface affordances 3:1.
+- 44px recommended pointer targets; minimum WCAG sizing rules observed.
+- Focus visible on ALL controls and not hidden beneath sticky header/dialog.
+- Test 200% / 400% zoom, portrait tablet, 360px/390px phones, Windows High
+  Contrast and native OS reduced-motion.
+- Reduced-motion static art communicates exactly the same information.
+- Voice preflight remains explicit; no camera/webcam or auto-microphone usage.
+- No audio playing automatically on landing, including ambient loops.
+- Canvas aria-hidden=true if decorative; provide adjacent DOM labels/action.
+- GPU-failure fallback must not consume keyboard focus or trap scrolling.
+- Preserve candidate caption access, tab order, shortcuts and settings.
+- Do not render full interview problems/transcripts to show off UI styling.
+- Ensure report samples never resemble actual user's private evidence.
+- Avoid loud audio-reactive screen flashes; bright transitions capped.
+
+===============================================================
+13 / PERFORMANCE, SECURITY AND RELIABILITY BUDGET
+===============================================================
+
+KNOWN PRIOR LOCAL UI CHECKPOINT (from docs/UI_REDESIGN_STATUS.md):
+  Landing initial JS 108.6 KiB gzip, interview initial JS 129.7 KiB gzip,
+  CSS 8.6 KiB gzip; local lab LCP ~517-831ms on landing in that report.
+Those are historical local tests, not current live production measurements.
+
+DESIRED NEW TARGETS (proposal; validate against real baselines):
+  First visible landing HTML+text+poster available WITHOUT 3D JavaScript.
+  No extra Three.js/GSAP bytes on interview route at all.
+  New dashboard initial JS incremental addition <=45 KiB gzip if feasible.
+  Landing art code split, not in initial critical path; compressed 3D assets
+    <=500 KiB total for baseline scene, tune after visual A/B test.
+  3D desktop target >=50fps on mainstream laptop; >=30fps limited devices.
+  Input/coding interactions must remain crisp under scene transition.
+  LCP <=2.5s at 75th percentile field, INP <=200ms, CLS <=0.1.
+  Lazy art should not move text or buttons; reserve scene aspect ratio.
+  Test page under 4x CPU throttle, low-end integrated graphics and WebGL off.
+
+RUNTIME GUARDS:
+  document.hidden -> stop decorative RAF and rendering loops.
+  ResizeObserver/IntersectionObserver unsubscribed on unmount.
+  context lost -> poster fallback; offer retry only if safe.
+  route transition -> dispose materials, textures, events, audio analyzers.
+  skip marketing scene when reduced motion or save-data is enabled.
+  consider adaptive DPR and instancing rather than more full-screen shaders.
+
+SECURITY/PRIVACY:
+  - Do not weaken CSP to fetch random shaders/models from untrusted CDNs.
+  - Self-host geometry, fonts and static art; audit asset licenses.
+  - Do not embed private interview scripts, prompts or reference tests in
+    client bundle or poster alt text.
+  - Do not log PCM audio, envelope data, code revisions or transcript details
+    in aesthetic telemetry. Anonymous frame-rate aggregates only if already
+    allowed by privacy program.
+  - Avoid extracting user info for decorative personalization.
+  - Keep session APIs authenticated; changes to CSS/route UX cannot bypass it.
+
+===============================================================
+14 / ACCEPTANCE TESTS — DEFINITION OF DONE
+===============================================================
+
+VISUAL QA:
+ [ ] Landing 1440x900 matches storyboard: actual high-quality focal art.
+ [ ] Landing 390x844 still has readable H1, poster and both CTAs.
+ [ ] Dashboard is beautiful WITHOUT WebGL; actual sessions render properly.
+ [ ] Dashboard unknown values are labelled unknown, not 0 or invented.
+ [ ] New /dashboard route authenticated and nav changes intentional.
+ [ ] /history still exposes export, deletion and real pagination.
+ [ ] Editor font 14/16/18; dark/light/system themes stay consistent.
+ [ ] Monaco is NEVER covered by particles, glass blur or animation canvas.
+ [ ] Splitter 45-85 works by pointer and keyboard and persists.
+ [ ] Mobile Code / Notes / Captions tabs work without losing data.
+ [ ] Alerts and connection state legible in light + dark themes.
+
+VOICE QA — MUST PASS WITH REAL PROVIDER AND SIMULATED AUDIO:
+ [ ] AI orb only says SPEAKING when authorized output is genuinely playing.
+ [ ] Candidate microphone speech does not trigger fake AI speech effect.
+ [ ] Sound stop, barge-in and disconnect stop the speaking effect immediately.
+ [ ] Cached authored speech and streamed speech both update orb correctly.
+ [ ] Ducking / resume cause truthful amplitude, no stuck high energy.
+ [ ] Speaker switching does not break audio or visual state.
+ [ ] Visual analytics introduce zero network calls and save zero audio.
+ [ ] Error/reconnect state never looks like AI is happily talking.
+ [ ] Reduced-motion users get labels and static signal, no animation.
+ [ ] No change to response gate or unwanted interruption metrics.
+
+ACCESSIBILITY QA:
+ [ ] axe browser audit all affected routes.
+ [ ] Keyboard-only from landing CTA to completed session flow.
+ [ ] Focus restoration after modal, mobile nav and popovers.
+ [ ] NVDA/Chrome and VoiceOver/Safari manual readout of live state.
+ [ ] 400% zoom, High Contrast Mode and reduced-motion.
+ [ ] Color contrast evaluated after glass compositing for both themes.
+ [ ] Announcements are rate-limited; timer does not spam once per second.
+
+PERFORMANCE QA:
+ [ ] Browser WebGL absent -> poster; no blank or blocked CTA.
+ [ ] WebGL context lost -> clean recovery/fallback.
+ [ ] 3D scene offscreen -> no active draw loop.
+ [ ] `/interview` has no three/gsap runtime chunk dependency.
+ [ ] Code typing measured for lag during AI speaking effect.
+ [ ] bundle budgets checked and adjusted only with explicit justification.
+ [ ] Full route test matrix still passes after token changes.
+
+REPO COMMANDS TO RUN AFTER IMPLEMENTATION (EXISTING SCRIPTS):
+  pnpm tokens
+  pnpm tokens:check
+  pnpm check:ui
+  pnpm typecheck
+  pnpm --filter @master-leeter/web build
+  pnpm check:ui-budget
+  pnpm check:bundle
+  pnpm test:ui
+  pnpm check:performance  [with required server setup]
+Do not claim these were run: this document is a plan only.
+
+===============================================================
+15 / DELIVERY ROADMAP — EXACT BUILD ORDER & REVIEW GATES
+===============================================================
+
+PHASE 00 — BACKUP AND AUDIT
+- Create feature branch; snapshot current main and production divergence.
+- Reinspect root navigation, auth flow, history endpoint, and playback graph.
+- Capture current baseline screenshots and Lighthouse/CPU/typing perf data.
+- Confirm which branch will eventually receive the work; no unapproved merge.
+Acceptance: source matrix + baseline recorded.
+
+PHASE 01 — DESIGN TOKENS AND MONACO
+- Extend semantic token source, adjust generated output and theme variants.
+- New surfaces/text/borders and syntax colors; verify contrast.
+- Update shared components and light-mode typography.
+Acceptance: no color literals outside intended asset/scene code; old routes pass.
+
+PHASE 02 — DASHBOARD FOUNDATION (USABLE FIRST)
+- Implement authenticated /dashboard route with session API-backed data.
+- Preserve /history for chronological records and deletion.
+- Header/side nav, real session CTA, empty/loading/error states.
+- Add the optional art card as static visual at this stage.
+Acceptance: all content accurate without WebGL; keyboard flows pass.
+
+PHASE 03 — CODEPAD REDESIGN
+- Upgrade Cockpit.module.css, CodeEditor and layout affordances.
+- Preserve split/panels/mobile tabs/no-help settings and save behavior.
+- Clarify captions, timer and voice controls.
+Acceptance: typing, autosave, resize, offline/edit-reconnect and a11y pass.
+
+PHASE 04 — AI SIGNAL (STATE FIRST)
+- Replace 28px equalizer-ish orb with new SVG/CSS system.
+- Map state to existing VoiceStatus and interviewer state correctly.
+- Ensure no loop while silent; test start/stop/interruption.
+Acceptance: cannot show speaking during silence or after a barge-in.
+
+PHASE 05 — AI SIGNAL (REAL AUDIO AMPLITUDE, OPTIONAL)
+- Review common output AudioContext graph and cached/streamed paths.
+- Tap local analyzer safely; bound envelope and frames; no recording.
+- Benchmark/verify speaker switching and timing against playback scheduler.
+Acceptance: no extra playback latency and no state lag.
+
+PHASE 06 — LANDING SCENE
+- Art-direct original GLB and static posters; build 3D island and fallback.
+- Add marketing narrative, scroll section reveals, 1 short camera sequence.
+- Defer heavy assets, test iGPU, mobile, reduced motion and CSP.
+Acceptance: content/CTA render before graphics, no CLS, WebGL failure safe.
+
+PHASE 07 — REPORT / SETTINGS VISUAL ALIGNMENT
+- Use shared panel types; preserve evidence order and user deletion details.
+- Add optional effects toggle; never hijack privacy or reporting behaviors.
+Acceptance: all product routes feel consistent in dark/light modes.
+
+PHASE 08 — POLISH & RELEASE READINESS
+- Accessibility passes, real-voice QA, field-lab performance, regressions.
+- Screenshot review for 1440/1024/834/390/360 widths and both themes.
+- PR with clear before/after evidence and rollback notes. Owner approves merge.
+Acceptance: functional reliability at least as good as baseline.
+
+PRIORITY RULE:
+If the app's 3D landing perfection conflicts with live coding performance,
+REMOVE THE 3D COMPLEXITY. Interview quality comes first.
+
+===============================================================
+16 / WHAT AN IMPLEMENTATION AGENT SHOULD DO WITH THIS FILE
+===============================================================
+
+1. Read this entire file plus current CLAUDE.md, README.md,
+   docs/PRODUCTION_ITERATIONS.md and existing UI_REDESIGN_PLAN.txt.
+2. Reinspect branch, components, tokens, CSS and voice output graph: paths and
+   statuses in this spec are based on Nov 14, 2026 inspection, not timeless.
+3. Split work into small PRs matching Phase 01 -> 08, each with screenshots.
+4. Implement semantic tokens first. Refuse hardcoded conflicting colors.
+5. Do not fabricate user data, product metrics, performance results or testing.
+6. Respect oral-only question and no avatar/no live grading invariants.
+7. Prefer simple 2D speaking state first, real output envelope second.
+8. Use WebGL for marketing scene only unless profiling proves a safe exception.
+9. Keep existing functionality and tests; redesign is not rewrite authorization.
+10. After every phase, provide files changed, screenshots, command results,
+    rollback plan, outstanding unknowns and exact manual tests needed.
+
+IMPLEMENTATION PROMPT (COPYABLE):
+------------------------------------------------
+'Use Master_Leeter_Futuristic_3D_Master_Design.txt as the design specification.
+Inspect the current Master_Leeter repository before writing code. Preserve all
+product invariants, including oral-only interview problems, no interviewer
+chat/avatar, no AI autocomplete, deliberate silence, 45-minute server timer,
+privacy and barge-in semantics. Start by implementing Phase 01 (tokens/Monaco)
+and Phase 02 (authenticated dashboard) on a separate feature branch. Use exact
+colors/motion/layout from the spec while maintaining dark/light/system modes.
+Run the available repo checks; show screenshots and changes; do not merge until
+I review. Continue to the codepad, speaking visual, then landing 3D in later
+phases. No fake metrics or fake live AI audio effects.'
+------------------------------------------------
+
+===============================================================
+17 / SOURCES AND TRACEABILITY
+===============================================================
+
+PUBLIC DESIGN STUDY — primary/authoritative where possible:
+[1] Lusion official projects: https://lusion.co/projects/
+[2] Communication Arts Lusion case: https://www.commarts.com/project/36283/lusion
+[3] Lusion v3 award shot: https://www.awwwards.com/sites/lusion-v3
+[4] Igloo Inc award overview: https://www.awwwards.com/sites/igloo-inc
+[5] Igloo Inc live site: https://www.igloo.inc/
+[6] Noomo Labs creator case study:
+    https://noomoagency.com/insights/noomo-labs-immersive-3d-website
+[7] Noomo Labs live: https://labs.noomoagency.com/
+[8] Active Theory live: https://activetheory.net/
+[9] Active Theory v5 award: https://www.awwwards.com/sites/active-theory-v5
+[10] Bruno Simon official: https://bruno-simon.com/
+[11] Bruno Simon award write-up:
+     https://www.awwwards.com/bruno-simon-portfolio-wins-site-of-the-month-november.html
+
+IMPLEMENTATION METHODS — OFFICIAL DOCUMENTATION:
+[12] React Three Fiber scaling performance:
+     https://r3f.docs.pmnd.rs/advanced/scaling-performance
+[13] React Three Fiber pitfalls:
+     https://r3f.docs.pmnd.rs/advanced/pitfalls
+[14] Drei adaptive DPR:
+     https://drei.docs.pmnd.rs/performances/adaptive-dpr
+[15] Three.js renderer / outputColorSpace:
+     https://threejs.org/docs/pages/WebGLRenderer
+[16] Three.js color management:
+     https://threejs.org/manual/pages/color-management.html
+[17] GSAP ScrollTrigger:
+     https://gsap.com/docs/v3/Plugins/ScrollTrigger/
+[18] GSAP matchMedia / reduced motion:
+     https://gsap.com/docs/v3/GSAP/gsap.matchMedia%28%29/
+[19] MDN Web Audio Analyzer:
+     https://developer.mozilla.org/en-US/docs/Web/API/AnalyserNode
+[20] MDN frequency data:
+     https://developer.mozilla.org/en-US/docs/Web/API/AnalyserNode/getByteFrequencyData
+[21] W3C WCAG 2.2:
+     https://www.w3.org/TR/WCAG22/
+[22] Google Web Vitals:
+     https://web.dev/articles/vitals
+[23] Codrops scroll-reactive 3D gallery (conceptual tutorial):
+     https://tympanus.net/codrops/2026/03/09/building-a-scroll-reactive-3d-gallery-with-three-js-velocity-and-mood-based-backgrounds/
+
+PROJECT SOURCES — inspected using connected GitHub access:
+[24] Repo: https://github.com/ATMmonitor667/Master_Leeter
+[25] README: https://github.com/ATMmonitor667/Master_Leeter/blob/main/README.md
+[26] Landing: https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/app/page.tsx
+[27] Landing CSS: https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/app/Landing.module.css
+[28] Session history:
+     https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/app/history/page.tsx
+[29] Live interview page:
+     https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/app/interview/%5BsessionId%5D/page.tsx
+[30] Panels: https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/components/CockpitPanels.tsx
+[31] Editor: https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/components/CodeEditor.tsx
+[32] Voice status:
+     https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/components/InterviewerStatus.tsx
+[33] Voice controls:
+     https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/components/VoiceControls.tsx
+[34] Voice session:
+     https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/lib/voice-session.ts
+[35] Playback scheduler:
+     https://github.com/ATMmonitor667/Master_Leeter/blob/main/apps/web/lib/playback.ts
+[36] Tokens: https://github.com/ATMmonitor667/Master_Leeter/blob/main/design/tokens/semantic.json
+[37] UI plan: https://github.com/ATMmonitor667/Master_Leeter/blob/main/UI_REDESIGN_PLAN.txt
+[38] UI checkpoint:
+     https://github.com/ATMmonitor667/Master_Leeter/blob/main/docs/UI_REDESIGN_STATUS.md
+[39] Production iterations:
+     https://github.com/ATMmonitor667/Master_Leeter/blob/main/docs/PRODUCTION_ITERATIONS.md
+
+RESEARCH HONESTY NOTES:
+- Screenshots and showcased case-study sites may reflect a particular version
+  of each site, not every current page or its underlying proprietary source.
+- Exact background shader algorithms or CSS variables on third-party sites
+  have NOT been reverse-engineered or copied; all Master Leeter parameters
+  above are ORIGINAL PROPOSED design decisions based on visual study.
+- Suggested package/scene APIs and performance targets are requirements for
+  later implementation and testing, not proof of current browser support.
+- GitHub files were read; no repository file was modified or deployed here.
+- Some features are planned in source documents but not verified live. This
+  blueprint deliberately avoids presenting planned functionality as launched.
+
+FINAL DIRECTIVE
+===============
+Build a beautiful, cinematic on-ramp to a calm and trustworthy interview tool.
+The strongest thing the AI can communicate in the actual room is presence
+WITHOUT interruption. Let the lighting be spectacular when the user first
+enters the world; let the codepad be silent, precise and absolutely dependable.
+
+END OF MASTER DESIGN SPECIFICATION

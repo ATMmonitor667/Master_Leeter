@@ -35,8 +35,10 @@ export class ScenarioLoadError extends Error {
 }
 
 export interface LoadedScenario {
-  /** Session-only metadata; never added to the shared scenario library. */
-  chat?: import("@master-leeter/contracts").ChatSessionConfig;
+  /** Session-only: the pinned interview (problem, format, style). */
+  live?: import("../interview/pin.js").LivePin;
+  /** Present only on sessions created before the live rebuild. */
+  chat?: unknown;
   version: InterviewScenarioVersion;
   /** sha256 of the raw file bytes. Pin this alongside the version id. */
   contentHash: string;

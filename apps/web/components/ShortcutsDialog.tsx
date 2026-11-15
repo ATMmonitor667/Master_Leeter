@@ -10,9 +10,9 @@ export default function ShortcutsDialog({ onClose }: { onClose: () => void }) {
           ["t", "Cycle appearance"],
           ["g then h", "Interview history"],
           ["g then s", "Settings"],
-          ["Ctrl / Cmd + /", "Toggle interview side panels"],
-          ["Ctrl / Cmd + 1 / 2 / 3", "Focus code / notes / captions"],
-          ["m", "Mute microphone outside text fields"],
+          ["Ctrl / Cmd + Enter", "Run the tests in the interview room"],
+          ["Ctrl / Cmd + M", "Think quietly: pause the microphone in a voice interview"],
+          ["Enter", "Send a message; Shift + Enter adds a line"],
           ["Escape", "Close a dialog or menu"],
         ].map(([key, text]) => (
           <div key={key}>

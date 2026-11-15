@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { InterviewActionSchema, InterviewStateSchema } from "./interview-state.js";
 
 /**
  * The append-only session event log.
@@ -17,6 +16,10 @@ export const EVENT_TYPES = [
   // ── Session lifecycle ────────────────────────────────────────────────────
   "SESSION_STARTED",
   "SESSION_ENDED",
+  /** One thing either speaker said, in voice or chat: {speaker, text, medium}. */
+  "TRANSCRIPT_TURN",
+  /** A cue the interview software sent the interviewer: {kind, n}. */
+  "CUE",
   /** Atomic text submission + interviewer response, with a server turn number. */
   "CHAT_TURN",
   /** Confirmed resume facts for a text interview; fully removed by redaction. */
@@ -163,121 +166,3 @@ export const SessionEventSchema = z.object({
   traceId: z.string(),
 });
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
-
-/**
- * Event types a CLIENT is allowed to emit.
- *
- * A strict subset of `EVENT_TYPES`, and the narrowing is load-bearing.
- *
- * `EVENT_TYPES` is one flat namespace that mixes two different things: records
- * of what the candidate did, and records of what the system concluded. The
- * envelope below used to accept the whole enum, which meant a browser could
- * append `RUN_COMPLETED`, `MILESTONE`, or `HINT_GIVEN` straight into the
- * append-only log. `actor` is server-assigned so the authorship was never
- * forgeable — but nothing downstream reads `actor`. The evaluator switches on
- * `type` alone, and `InterviewRuntime.ingest` folds a `RUN_COMPLETED` into the
- * observer wherever it came from, firing `BASE_TESTS_PASS`, clearing
- * `stuckScore`, and flipping `solvedOptimally`.
- *
- * With one user on localhost that is not an attacker story. It is an integrity
- * one: invariant 8 makes this log the evidence substrate for scoring and
- * replay, and a client bug that injected a spurious milestone would be
- * permanent, by design. Thresholds tuned against it (M4-5b) would be tuned
- * against noise.
- *
- * So the client may state what it *did* — typed, ran, spoke, interrupted — and
- * nothing about what any of it *meant*. Conclusions are the server's to draw.
- *
- * Adding a type here is a real decision: it must have exactly one server-side
- * consumer, and `client-events.test.ts` fails until that is declared.
- */
-export const CLIENT_EVENT_TYPES = [
-  "CODE_DELTA",
-  "NOTE_DELTA",
-  "RUN_REQUESTED",
-  "SPEECH_STARTED",
-  "SPEECH_STOPPED",
-  "SPEECH_FINAL",
-  "BARGE_IN",
-] as const;
-
-export const ClientEventTypeSchema = z.enum(CLIENT_EVENT_TYPES);
-export type ClientEventType = z.infer<typeof ClientEventTypeSchema>;
-
-/**
- * Types only the server may author.
- *
- * Derived rather than listed, so a new entry in `EVENT_TYPES` is server-only by
- * default. The safe direction: forgetting to classify a new type withholds a
- * capability from the client instead of silently granting one.
- */
-export const SERVER_ONLY_EVENT_TYPES = EVENT_TYPES.filter(
-  (t): t is Exclude<EventType, ClientEventType> =>
-    !(CLIENT_EVENT_TYPES as readonly string[]).includes(t),
-);
-
-/**
- * Client → server envelope.
- *
- * Reconnects WILL replay events. `idempotencyKey` is how the server drops
- * duplicates safely; `clientSeq` is how it detects gaps and requests replay.
- */
-export const ClientEventSchema = z.object({
-  sessionId: z.string().uuid(),
-  clientSeq: z.number().int().nonnegative(),
-  idempotencyKey: z.string().min(1),
-  /** Narrowed on purpose — see CLIENT_EVENT_TYPES. */
-  type: ClientEventTypeSchema,
-  occurredAt: z.string().datetime(),
-  payload: z.record(z.unknown()),
-});
-export type ClientEvent = z.infer<typeof ClientEventSchema>;
-
-/** Server → client. Status only — never the problem statement, never evaluator reasoning. */
-export const ServerMessageSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("ACK"),
-    clientSeq: z.number().int().nonnegative(),
-    seq: z.number().int().nonnegative(),
-  }),
-  z.object({
-    kind: z.literal("STATE"),
-    state: InterviewStateSchema,
-    remainingSeconds: z.number().int().nonnegative(),
-    interviewerStatus: z.enum(["LISTENING", "WAITING", "SPEAKING"]),
-  }),
-  z.object({ kind: z.literal("RUN_RESULT"), result: RunResultSchema }),
-  z.object({
-    kind: z.literal("ACTION"),
-    action: InterviewActionSchema,
-    /** Present only for actions that produce speech. */
-    utteranceId: z.string().optional(),
-    /** Server-measured deltas (never cross-clock with browser marks). */
-    serverTiming: z.object({
-      decisionMs: z.number().nonnegative(),
-      classifierMs: z.number().nonnegative(),
-      classifierSource: z.enum(["SPECULATIVE", "DIRECT"]).optional(),
-    }).optional(),
-    /**
-     * Pre-rendered audio head for the authorized utterance (P3).
-     *
-     * When present, the client schedules this synchronously before any await,
-     * cutting decision-to-first-audio from ~1.5 s to ~50 ms. The tail (if any)
-     * is fetched via GET /voice-utterance-audio?utteranceId=&fromByte=tailFrom.
-     *
-     * `head` is base64-encoded PCM16 little-endian. `tailFrom` is absent when
-     * the head covers the entire utterance. The wording never appears here —
-     * only samples.
-     */
-    audio: z.object({
-      head: z.string(),
-      rate: z.number().int().positive(),
-      tailFrom: z.number().int().nonnegative().optional(),
-      /** Full PCM byte length, so the client can detect a truncated tail. */
-      totalBytes: z.number().int().positive().optional(),
-    }).optional(),
-  }),
-  z.object({ kind: z.literal("REPLAY_FROM"), seq: z.number().int().nonnegative() }),
-  z.object({ kind: z.literal("ERROR"), code: z.string(), message: z.string() }),
-]);
-export type ServerMessage = z.infer<typeof ServerMessageSchema>;

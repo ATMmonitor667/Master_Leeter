@@ -69,6 +69,12 @@ const contentSecurityPolicy = [
 const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ["@master-leeter/contracts"],
+  // The contracts package is TypeScript source whose imports end in ".js"
+  // (Node ESM style). Let the bundler find the ".ts" file behind each.
+  webpack(config) {
+    config.resolve.extensionAlias = { ...config.resolve.extensionAlias, ".js": [".ts", ".tsx", ".js"] };
+    return config;
+  },
   // This repository is a pnpm workspace. Without an explicit root, Next can
   // mistake an unrelated user-level package-lock for the project root and try
   // to trace the entire home directory during production builds.

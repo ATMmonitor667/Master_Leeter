@@ -1,0 +1,61 @@
+id: shift-handover
+title: Merge Two Sorted Lists
+concept: Merge two already-ordered sequences into one, with a stable tie rule.
+difficulty: EASY
+topics: [two pointers, merging, sorting]
+statement: >
+  A factory has a day crew and a night crew, and each keeps a maintenance log. Every
+  entry is a pair: a timestamp and a short label. Each crew's log is already in
+  chronological order. Return one combined log with every entry in chronological order.
+  When two entries have the same timestamp, the day crew's entry comes first.
+signature:
+  name: merge_logs
+  params:
+    - { name: day, type: "list[list]" }
+    - { name: night, type: "list[list]" }
+  returns: "list[list]"
+constraints:
+  - Each log has up to 5000 entries and is already sorted by timestamp.
+  - Each entry is [timestamp, label] with an integer timestamp.
+  - Timestamps can repeat, within a log and across logs. On a tie, day entries come first.
+  - Either log can be empty. Do not modify the inputs; return a new list.
+examples:
+  - { args: [[[900, "oil"], [1130, "belt"]], [[1015, "filter"]]], expected: [[900, "oil"], [1015, "filter"], [1130, "belt"]] }
+  - { args: [[], [[200, "lamp"]]], expected: [[200, "lamp"]] }
+  - { args: [[[800, "a"]], [[800, "b"]]], expected: [[800, "a"], [800, "b"]], note: "The tie goes to the day crew." }
+tests:
+  - { args: [[[900, "oil"], [1130, "belt"]], [[1015, "filter"]]], expected: [[900, "oil"], [1015, "filter"], [1130, "belt"]] }
+  - { args: [[[800, "a"]], [[800, "b"]]], expected: [[800, "a"], [800, "b"]] }
+  - { args: [[], []], expected: [], hidden: true }
+  - { args: [[], [[200, "x"], [400, "y"]]], expected: [[200, "x"], [400, "y"]], hidden: true }
+  - { args: [[[100, "a"], [200, "b"], [300, "c"]], [[700, "d"], [800, "e"]]], expected: [[100, "a"], [200, "b"], [300, "c"], [700, "d"], [800, "e"]], hidden: true }
+  - { args: [[[100, "a"], [300, "c"], [500, "e"]], [[200, "b"], [400, "d"], [600, "f"]]], expected: [[100, "a"], [200, "b"], [300, "c"], [400, "d"], [500, "e"], [600, "f"]], hidden: true }
+  - { args: [[[100, "d1"], [100, "d2"]], [[100, "n1"]]], expected: [[100, "d1"], [100, "d2"], [100, "n1"]], hidden: true }
+  - { args: [[[500, "z"]], [[100, "a"], [200, "b"]]], expected: [[100, "a"], [200, "b"], [500, "z"]], hidden: true }
+hints:
+  - You know something about each list that a general-purpose approach would ignore.
+  - If both lists are already in order, what is the smallest thing you could look at to decide which entry comes next?
+  - Walk both lists at once with a position in each, repeatedly taking whichever front entry is earlier.
+followUps:
+  - Now there are twelve crews, each with its own ordered log. Does your approach still work, and what would you change?
+  - The logs arrive as streams too large to hold in memory and you can only read forward. What still works?
+privateNotes:
+  approach: Two indices; take the earlier front entry, preferring day on ties; append the remainder when one runs out.
+  complexity: O(n + m) time, O(n + m) space
+  mistakes:
+    - Using strict less-than the wrong way round so night entries win ties.
+    - Forgetting to append what is left of the longer log.
+referenceSolution: |
+  def merge_logs(day, night):
+      out, i, j = [], 0, 0
+      while i < len(day) and j < len(night):
+          if day[i][0] <= night[j][0]:
+              out.append(day[i]); i += 1
+          else:
+              out.append(night[j]); j += 1
+      out.extend(day[i:]); out.extend(night[j:])
+      return out
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  notes: Authored from the ordered-merge concept. No third-party statement consulted.

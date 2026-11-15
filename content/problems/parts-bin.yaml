@@ -1,0 +1,58 @@
+id: parts-bin
+title: Top K Frequent Elements
+concept: Count occurrences, then select the k most frequent with a deterministic tie rule.
+difficulty: MEDIUM
+topics: [hashing, heaps, sorting]
+statement: >
+  A repair shop logs the part number every time a technician requests a part. Given the
+  month's list of requests and a number k, return the k most frequently requested part
+  numbers, most frequent first. When two parts have the same count, the alphabetically
+  smaller part number comes first.
+signature:
+  name: top_parts
+  params:
+    - { name: requests, type: "list[str]" }
+    - { name: k, type: int }
+  returns: "list[str]"
+constraints:
+  - Up to 1000000 requests, but only a few thousand distinct part numbers.
+  - k is between 0 and 50. If k is 0, return an empty list.
+  - If k is larger than the number of distinct parts, return all of them.
+  - Part numbers are opaque strings; do not assume they are numeric.
+  - Ties on count are broken alphabetically, smaller first.
+examples:
+  - { args: [["A", "B", "A", "C", "A", "B"], 2], expected: ["A", "B"], note: "A appears three times, B twice." }
+  - { args: [["A", "B"], 5], expected: ["A", "B"], note: "Fewer distinct parts than k." }
+  - { args: [["B", "A"], 1], expected: ["A"], note: "Both appear once; A wins the tie." }
+tests:
+  - { args: [["A", "B", "A", "C", "A", "B"], 2], expected: ["A", "B"] }
+  - { args: [["B", "A"], 1], expected: ["A"] }
+  - { args: [["A", "B", "C"], 0], expected: [], hidden: true }
+  - { args: [[], 3], expected: [], hidden: true }
+  - { args: [["A", "B"], 10], expected: ["A", "B"], hidden: true }
+  - { args: [["C", "B", "A"], 3], expected: ["A", "B", "C"], hidden: true }
+  - { args: [["A", "A", "B", "B", "C"], 2], expected: ["A", "B"], hidden: true }
+  - { args: [["A", "A", "A", "A"], 1], expected: ["A"], hidden: true }
+hints:
+  - Start with what you need to know about each part before you can rank anything.
+  - Once you have the counts, think about how much of that collection the answer actually depends on.
+  - Keep only the best k as you go, instead of ordering every distinct part and discarding most of them.
+followUps:
+  - Requests now arrive as a continuous stream and there are too many distinct parts to keep a count for each. An approximate answer is acceptable. How would you approach it?
+  - We now want the top k for the last thirty days only, and the window slides forward each day. What changes?
+privateNotes:
+  approach: One pass to build a count map, then a size-k heap (or a sort keyed on negative count then name).
+  complexity: O(n + d log k) time, O(d) space
+  mistakes:
+    - Tie rule inverted or left to an unstable ordering.
+    - Sorting all distinct parts without noticing k is tiny, and not being able to say what that costs.
+referenceSolution: |
+  def top_parts(requests, k):
+      counts = {}
+      for p in requests:
+          counts[p] = counts.get(p, 0) + 1
+      return sorted(counts, key=lambda p: (-counts[p], p))[:k]
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  notes: Authored from the top-k-by-frequency concept. No third-party statement consulted.

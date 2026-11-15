@@ -1,24 +1,22 @@
-import { createHash, randomUUID } from "node:crypto";
-import { ChatFocusSchema, InterviewFormatSchema, InterviewMinutesSchema, InterviewModeSchema, InterviewerToneSchema, type ChatFocus, type InterviewMode } from "@master-leeter/contracts";
+import { randomUUID } from "node:crypto";
+import { InterviewerToneSchema } from "@master-leeter/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { userIdFor } from "../auth/index.js";
-import { AdmissionError } from "../admission/index.js";
-import type { LoadedScenario } from "../scenario/loader.js";
-import { chooseQuestion, type QuestionBank } from "../scenario/question-bank.js";
-import type { SessionLifecycle } from "../session/lifecycle.js";
-import type { EventLog } from "../session/event-log.js";
-import type { CreateSessionRequest, InterviewSession, SessionStore } from "../session/session-store.js";
 import { EmptyResumeAnalyzer, type ResumeAnalyzer } from "./resume-analyzer.js";
-import { CanonicalScenarioRestater, type ScenarioRestater } from "./restatement.js";
 import { InMemoryPreparationStore, type PreparationStore } from "./store.js";
 import { publicPreparation, type PreparationRecord } from "./types.js";
+
+/**
+ * Resume preparation: analyse a pasted resume and let the candidate confirm
+ * which extracted facts are true. A session created with a preparationId gets
+ * the confirmed facts as an optional warm-up question in the interviewer prompt.
+ */
 
 export * from "./types.js";
 export * from "./store.js";
 export * from "./pg-store.js";
 export * from "./resume-analyzer.js";
-export * from "./restatement.js";
 
 export const RESUME_NOTICE_VERSION = "resume-processing-v1";
 export const INTERVIEW_SECONDS = 2_700;
@@ -34,31 +32,15 @@ const ConfirmBody = z.object({
   confirmedFactIds: z.array(z.string().uuid()).max(40),
 }).strict();
 
-const CompleteBody = z.object({
-  format: InterviewFormatSchema.default("VOICE"),
-  focus: ChatFocusSchema.default("CODING"),
-  durationMinutes: InterviewMinutesSchema.optional(),
-  scenarioRef: z.string().min(1).max(200).optional(),
-  mode: InterviewModeSchema.default("MOCK"),
-  language: z.string().trim().min(1).max(40).default("python"),
-}).strict();
-
 export interface PreparationModuleOptions {
   store?: PreparationStore;
-  questionBank: QuestionBank;
-  sessions: SessionStore;
-  events: EventLog;
-  lifecycle?: SessionLifecycle;
   analyzer?: ResumeAnalyzer;
-  restater?: ScenarioRestater;
 }
 
 export async function registerPreparationModule(app: FastifyInstance, opts: PreparationModuleOptions): Promise<void> {
   const store = opts.store ?? new InMemoryPreparationStore();
   const analyzer = opts.analyzer ?? new EmptyResumeAnalyzer();
-  const restater = opts.restater ?? new CanonicalScenarioRestater();
   const analysisWork = new Map<string, Promise<PreparationRecord>>();
-  const completionWork = new Map<string, Promise<PreparationRecord>>();
   let purgeWork: Promise<void> | undefined;
   const purgeExpired = (): Promise<void> => {
     purgeWork ??= store.purgeExpiredResumes(new Date().toISOString())
@@ -146,32 +128,6 @@ export async function registerPreparationModule(app: FastifyInstance, opts: Prep
     return reply.header("Cache-Control", "no-store").send(publicPreparation(confirmed));
   });
 
-  app.post("/preparations/:id/complete", async (req, reply) => {
-    const id = preparationId(req.params);
-    const body = CompleteBody.safeParse(req.body ?? {});
-    if (!id || !body.success) return reply.code(400).send({ error: "INVALID_COMPLETION" });
-    const record = await owned(id, userIdFor(req));
-    if (!record) return reply.code(404).send({ error: "UNKNOWN_PREPARATION" });
-    if (record.status === "READY") return reply.send(publicPreparation(record));
-    if (record.status !== "CONFIRMED") return reply.code(409).send({ error: "RESUME_FACTS_NOT_CONFIRMED" });
-    const existing = completionWork.get(id);
-    if (existing) return reply.send(publicPreparation(await existing));
-    const work = completePreparation(record, body.data, opts, store, restater)
-      .finally(() => completionWork.delete(id));
-    completionWork.set(id, work);
-    try {
-      return reply.code(201).header("Cache-Control", "no-store").send(publicPreparation(await work));
-    } catch (error) {
-      if (error instanceof AdmissionError) {
-        return reply.code(error.code === "ACTIVE_SESSION_EXISTS" ? 409 : error.code === "ADMISSION_PAUSED" ? 503 : 429)
-          .header("Retry-After", "60").send({ error: error.code });
-      }
-      const code = preparationFailure(error);
-      req.log.error({ preparationId: id, code }, "preparation completion failed");
-      return reply.code(code === "NO_ACTIVE_QUESTIONS" ? 503 : 409).send({ error: code });
-    }
-  });
-
   app.delete("/preparations/:id/resume", async (req, reply) => {
     const id = preparationId(req.params);
     if (!id || !await owned(id, userIdFor(req))) return reply.code(404).send({ error: "UNKNOWN_PREPARATION" });
@@ -186,104 +142,6 @@ export async function registerPreparationModule(app: FastifyInstance, opts: Prep
   });
 }
 
-async function completePreparation(
-  initial: PreparationRecord,
-  body: { scenarioRef?: string | undefined; mode: InterviewMode; language: string; format: "VOICE" | "CHAT"; focus: ChatFocus; durationMinutes?: 30 | 45 | 60 | 90 | undefined },
-  opts: PreparationModuleOptions,
-  store: PreparationStore,
-  restater: ScenarioRestater,
-): Promise<PreparationRecord> {
-  let record = initial;
-  if (body.format === "CHAT" && body.focus !== "CODING" &&
-    !record.analysis?.facts.some((fact) => record.confirmedFactIds.includes(fact.id))) {
-    throw new Error("CONFIRMED_RESUME_REQUIRED");
-  }
-  let scenario: LoadedScenario | null;
-  if (record.scenarioVersionId) {
-    scenario = await opts.questionBank.get(record.scenarioVersionId);
-    if (body.scenarioRef) {
-      const requested = await opts.questionBank.get(body.scenarioRef);
-      if (!requested || requested.version.id !== record.scenarioVersionId) throw new Error("PREPARATION_ALREADY_PINNED");
-    }
-  } else {
-    scenario = body.scenarioRef
-      ? await opts.questionBank.get(body.scenarioRef)
-      : chooseQuestion(
-          await opts.questionBank.listActive(),
-          await opts.sessions.scenarioVersionIdsForUser(record.userId),
-        );
-    if (!scenario || scenario.version.status !== "ACTIVE") throw new Error("NO_ACTIVE_QUESTIONS");
-    record = await store.pinScenario(record.id, scenario.version.id, scenario.contentHash);
-  }
-  if (!scenario || scenario.version.id !== record.scenarioVersionId || scenario.contentHash !== record.scenarioHash) {
-    throw new Error("PINNED_QUESTION_UNAVAILABLE");
-  }
-  if (!record.restatement) {
-    const token = randomUUID();
-    const staleBefore = new Date(Date.now() - 2 * 60_000).toISOString();
-    if (!await store.claimRestatement(record.id, token, staleBefore)) throw new Error("PREPARATION_BUSY");
-    try {
-      const generated = await restater.restate(scenario.version);
-      record = await store.saveRestatement(record.id, generated, token);
-    } catch (error) {
-      await store.releaseRestatement(record.id, token);
-      throw error;
-    }
-  }
-  const wording = record.restatement;
-  if (!wording) throw new Error("PREPARATION_STATE_CONFLICT");
-  const resumeQuestion = body.format === "VOICE" ? resumeDiscussionQuestion(record) : null;
-  const preparedScenario = withRestatement(scenario, wording.openingScript, wording.repeatVariants, resumeQuestion);
-  if (body.format === "CHAT") preparedScenario.chat = { focus: body.focus, preparationId: record.id };
-  const request: CreateSessionRequest = {
-    userId: record.userId, scenario: preparedScenario, mode: body.mode, language: body.language,
-    interviewerTone: record.tone, expectedSeconds: body.format === "CHAT" && body.durationMinutes ? body.durationMinutes * 60 : INTERVIEW_SECONDS,
-    idempotencyKey: `preparation:${record.id}`,
-  };
-  const session = await createSession(request, opts);
-  return store.complete(record.id, wording, session.id);
-}
-
-async function createSession(request: CreateSessionRequest, opts: PreparationModuleOptions): Promise<InterviewSession> {
-  if (opts.lifecycle) return opts.lifecycle.createStarted(request);
-  const session = await opts.sessions.create(request);
-  await opts.events.append({
-    sessionId: session.id, type: "SESSION_STARTED", actor: "SYSTEM",
-    scenarioVersionId: session.scenarioVersionId,
-    payload: { mode: session.mode, language: session.language, scenarioHash: session.scenarioHash,
-      interviewerTone: session.interviewerTone ?? "NORMAL", expectedSeconds: session.expectedSeconds, preparation: true },
-    traceId: session.traceId, idempotencyKey: `session-started:${session.id}`,
-  });
-  return session;
-}
-
-function withRestatement(
-  scenario: LoadedScenario,
-  openingScript: string,
-  repeatVariants: string[],
-  resumeQuestion: string | null,
-): LoadedScenario {
-  const preparedOpening = resumeQuestion ? `${openingScript}\n\n${resumeQuestion}` : openingScript;
-  const version = { ...scenario.version, oralBrief: { openingScript: preparedOpening, repeatVariants } };
-  const contentHash = `sha256:${createHash("sha256").update(JSON.stringify(version)).digest("hex")}`;
-  return { ...scenario, version, contentHash };
-}
-
-function resumeDiscussionQuestion(record: PreparationRecord): string | null {
-  const confirmed = new Set(record.confirmedFactIds);
-  const fact = record.analysis?.facts.find((candidate) => confirmed.has(candidate.id));
-  if (!fact) return null;
-  // The question is deterministic and contains no resume text. Resume content
-  // remains data and cannot smuggle instructions into the voice model.
-  if (fact.category === "PROJECT") {
-    return "Before you start coding, choose the confirmed project from your resume and briefly tell me what you personally owned and one tradeoff you made.";
-  }
-  if (fact.category === "EXPERIENCE") {
-    return "Before you start coding, choose the confirmed experience from your resume and briefly tell me about one technical decision you made there.";
-  }
-  return "Before you start coding, choose the confirmed skill from your resume and briefly tell me where you used it in practice.";
-}
-
 function preparationId(params: unknown): string | null {
   const parsed = z.object({ id: z.string().uuid() }).safeParse(params);
   return parsed.success ? parsed.data.id : null;
@@ -291,8 +149,7 @@ function preparationId(params: unknown): string | null {
 
 function preparationFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : "PREPARATION_FAILED";
-  return ["CONFIRMED_RESUME_REQUIRED", "NO_ACTIVE_QUESTIONS", "PREPARATION_ALREADY_PINNED", "PINNED_QUESTION_UNAVAILABLE", "PREPARATION_STATE_CONFLICT", "PREPARATION_BUSY"]
-    .includes(message) ? message : "PREPARATION_FAILED";
+  return ["PREPARATION_STATE_CONFLICT", "PREPARATION_BUSY"].includes(message) ? message : "PREPARATION_FAILED";
 }
 
 function safePreparationError(error: unknown): { name: string; message: string } {

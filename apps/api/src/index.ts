@@ -3,40 +3,30 @@ import { dirname, join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { runtimeConfig } from "./config.js";
-import { ProviderCircuit } from "./lib/provider-circuit.js";
 import { WebhookAlertSink, type OperationalAlert, type OperationalAlertSink } from "./lib/operational-alerts.js";
 import { InMemoryRateLimitStore, type RateLimitPolicy, type RateLimitStore } from "./modules/admission/index.js";
 import { type Authenticator, authenticatorFromEnv, registerAccessControl, SocketTickets, type SocketTicketStore } from "./modules/auth/index.js";
 import { identityAdminFromEnv, type IdentityAdmin } from "./modules/auth/identity-admin.js";
 import { EvaluationQueue, IndependentGeminiEvaluator, MAX_REPORT_ATTEMPTS, registerReportModule, type Evaluator, type ReportJobStore } from "./modules/report/index.js";
 import { startReportRecovery } from "./modules/report/recovery-worker.js";
-import type { RuntimeOwnership } from "./modules/session/runtime-ownership.js";
 import { loadEnv } from "./env.js";
 import { GeminiClient, geminiApiKeyFromEnv } from "./lib/gemini.js";
-import { registerChatModule } from "./modules/chat/index.js";
-import { GeminiChatInterviewer, type ChatInterviewer } from "./modules/chat/interviewer.js";
-import { GeminiChatProfessor, type ChatProfessor } from "./modules/chat/professor.js";
-import { classifierFromEnv, GeminiClassifier, type IntentClassifier } from "./modules/orchestrator/index.js";
+import { registerInterviewModule } from "./modules/interview/routes.js";
+import { liveMinterFromEnv, type LiveMinter } from "./modules/interview/live.js";
+import { loadProblemBank, type BankEntry } from "./modules/interview/problem.js";
+import { Professor } from "./modules/interview/review.js";
 import {
   GeminiResumeAnalyzer,
-  GeminiScenarioRestater,
   InMemoryPreparationStore,
   registerPreparationModule,
   type PreparationStore,
   type ResumeAnalyzer,
-  type ScenarioRestater,
 } from "./modules/preparation/index.js";
-import { ModelJudgeRunner, type CodeRunner } from "./modules/runner/index.js";
+import { Judge0Runner, PredictedRunner, PreferredRunner } from "./modules/runner/index.js";
 import { registerPrivacyModule, type ConsentStore, type DeletionStore } from "./modules/privacy/index.js";
-import { geminiUtteranceTranscriber, minterFromEnv, ttsFromEnv, type RealtimeTokenMinter, type UtteranceTranscriber } from "./modules/realtime/index.js";
-import { registerScenarioModule } from "./modules/scenario/index.js";
-import { loadScenarioLibrary } from "./modules/scenario/loader.js";
-import type { LoadedScenario } from "./modules/scenario/loader.js";
-import { FileQuestionBank, type QuestionBank, QuestionBankError, questionBankFromEnv, questionBankSource } from "./modules/scenario/question-bank.js";
 import {
   InMemoryEventLog,
   InMemorySessionStore,
-  registerSessionModule,
   type EventLog,
   type SessionStore,
   type SessionLifecycle,
@@ -45,27 +35,20 @@ import { createSupabaseStorage } from "./storage.js";
 import { InMemorySupportIncidentStore, registerSupportModule, type SupportIncidentStore } from "./modules/support/index.js";
 
 /**
- * Modular monolith (ADR-005).
+ * Modular monolith. One process; module boundaries live in code.
  *
- * One process, four modules with boundaries enforced in code so services can be
- * extracted later. The orchestrator is deliberately NOT an HTTP module — it is a
- * domain layer the session module calls into. Interview policy must never live
- * in a transport handler.
- *
- * The event log is constructed here and shared: the session module appends to
- * it, the report module reads from it, and neither knows about the other. That
- * one-directional relationship through immutable evidence is ADR-004 in
- * practice.
+ * The interview module owns the routes of a live interview. The event log is
+ * built here and shared: the interview module appends to it, the report module
+ * reads from it afterwards, and neither knows about the other.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
+export const PROBLEMS_ROOT = join(here, "../../../content/problems");
+/** The earlier scenario files. No longer served; kept as fixtures for the evaluator and storage tests. */
 export const CONTENT_ROOT = join(here, "../../../content/scenarios");
 
 export interface ServerOptions {
-  chatInterviewer?: ChatInterviewer;
-  chatProfessor?: ChatProfessor;
-  library: Map<string, LoadedScenario>;
-  questionBank?: QuestionBank;
+  bank: BankEntry[];
   logger?: boolean;
   production?: boolean;
   authenticator?: Authenticator;
@@ -81,43 +64,23 @@ export interface ServerOptions {
   supportStore?: SupportIncidentStore;
   sessionRetentionDays?: number;
   lifecycle?: SessionLifecycle;
-  runtimeOwnership?: RuntimeOwnership;
   preparationStore?: PreparationStore;
   resumeAnalyzer?: ResumeAnalyzer;
-  scenarioRestater?: ScenarioRestater;
   closeStorage?: () => Promise<void>;
   readinessChecks?: ReadonlyArray<{ name: string; check: () => Promise<void> }>;
   writesPermitted?: () => boolean;
   release?: string;
   rateLimiter?: RateLimitStore;
   rateLimits?: RateLimitPolicy;
-  maxRealtimeMintsPerSession?: number;
-  realtimeCircuit?: ProviderCircuit;
   status?: () => Record<string, unknown>;
   alertSink?: OperationalAlertSink;
-  /** Absent when no judge model is configured. Runs then return 503, and say so. */
-  runner?: CodeRunner;
-  /**
-   * Absent in tests, where the rule stub is the point. `start()` always supplies
-   * one — `classifierFromEnv` returns the stub rather than throwing when
-   * unconfigured, so this is never a reason not to boot.
-   */
-  classifier?: IntentClassifier;
-  /**
-   * Absent when voice is unconfigured. The token route then answers 503 and the
-   * rest of the interview is unaffected.
-   */
-  realtimeTokenMinter?: RealtimeTokenMinter;
-  /**
-   * TTS renderer for pre-rendering authored utterances (P3).
-   *
-   * When absent, every authored line is spoken by the realtime model as before.
-   * Built by `ttsFromEnv` in `start()` when TTS_PRERENDER is not "off" and a
-   * Gemini API key is available.
-   */
-  ttsRenderer?: import("./modules/realtime/index.js").TtsRenderer;
-  ttsTranscriber?: UtteranceTranscriber;
-  ttsCacheDir?: string;
+  /** Runs candidate code in a sandbox, or predicts the result when none is up. */
+  runner?: PreferredRunner;
+  /** Absent when no key is configured: voice then answers 503 and chat still works. */
+  liveMinter?: LiveMinter | null;
+  reskinClient?: GeminiClient;
+  chatClient?: GeminiClient;
+  professor?: Professor;
 }
 
 export function buildServer(opts: ServerOptions) {
@@ -142,7 +105,7 @@ export function buildServer(opts: ServerOptions) {
       return reply.code(503).header("Retry-After", "10").send({ error: "API_REPLICA_LEASE_LOST" });
     }
     if (draining && req.method === "POST" && [
-      "/v1/interview-sessions", "/v1/preparations", "/v1/preparations/:id/complete",
+      "/v1/interview-sessions", "/v1/preparations",
     ].includes(req.routeOptions.url ?? "")) {
       return reply.code(503).header("Retry-After", "10").send({ error: "SERVICE_DRAINING" });
     }
@@ -188,12 +151,11 @@ export function buildServer(opts: ServerOptions) {
     if (req.method !== "POST") return;
     const route = req.routeOptions.url ?? "";
     const limit = route === "/v1/interview-sessions" ? rateLimits.sessionCreatesPerMinute
-      : route === "/v1/preparations" || route === "/v1/preparations/:id/complete" ? rateLimits.preparationsPerMinute
-        : route === "/v1/interview-sessions/:id/realtime-token" ? rateLimits.realtimeMintsPerMinute
+      : route === "/v1/preparations" ? rateLimits.preparationsPerMinute
+        : route === "/v1/interview-sessions/:id/live" ? rateLimits.realtimeMintsPerMinute
           : route === "/v1/interview-sessions/:id/runs" ? rateLimits.runRequestsPerMinute
             : route === "/v1/interview-sessions/:id/support-incidents" ? rateLimits.supportReportsPerMinute
-              : route === "/v1/interview-sessions/:id/voice-latency" ? (rateLimits.voiceLatencyPerMinute ?? 30)
-            : undefined;
+              : undefined;
     if (!limit) return;
     try {
       const identity = req.principal?.userId ?? `ip:${req.ip}`;
@@ -244,7 +206,7 @@ export function buildServer(opts: ServerOptions) {
   // registerReportModule would be invisible out here.
   app.decorate("evaluationQueue", evaluationQueue);
 
-  app.get("/health", async () => ({ ok: true, scenarios: opts.library.size }));
+  app.get("/health", async () => ({ ok: true, problems: opts.bank.length }));
   app.get("/health/live", async () => ({ status: "live", release: opts.release ?? "development" }));
   app.get("/health/ready", async (_req, reply) => {
     if (draining) return reply.code(503).send({ status: "draining" });
@@ -253,7 +215,7 @@ export function buildServer(opts: ServerOptions) {
     const failed = results.flatMap((result, index) => result.status === "rejected"
       ? [checks[index]?.name ?? "unknown"] : []);
     if (failed.length) return reply.code(503).send({ status: "unavailable", checks: failed });
-    return reply.send({ status: "ready", scenarios: opts.library.size, release: opts.release ?? "development" });
+    return reply.send({ status: "ready", problems: opts.bank.length, release: opts.release ?? "development" });
   });
   app.get("/health/status", async () => ({
     status: "ok",
@@ -261,43 +223,26 @@ export function buildServer(opts: ServerOptions) {
     ...(opts.status ? { capabilities: opts.status() } : {}),
   }));
 
-  void app.register(registerSessionModule, {
+  void app.register(registerInterviewModule, {
     prefix: "/v1",
-    library: opts.library,
-    ...(opts.questionBank ? { questionBank: opts.questionBank } : {}),
     store,
     eventLog,
     evaluationQueue,
+    bank: opts.bank,
+    preparations: preparationStore,
+    runner: opts.runner ?? new PreferredRunner(null, null),
+    liveMinter: opts.liveMinter ?? null,
     ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
-    ...(opts.runtimeOwnership ? { runtimeOwnership: opts.runtimeOwnership } : {}),
-    ...(opts.runner ? { runner: opts.runner } : {}),
-    ...(opts.classifier ? { classifier: opts.classifier } : {}),
-    ...(opts.realtimeTokenMinter ? { realtimeTokenMinter: opts.realtimeTokenMinter } : {}),
-    ...(opts.maxRealtimeMintsPerSession ? { maxRealtimeMintsPerSession: opts.maxRealtimeMintsPerSession } : {}),
-    ...(opts.realtimeCircuit ? { realtimeCircuit: opts.realtimeCircuit } : {}),
-    ...(opts.ttsRenderer ? { ttsRenderer: opts.ttsRenderer } : {}),
-    ...(opts.ttsTranscriber ? { ttsTranscriber: opts.ttsTranscriber } : {}),
-    ...(opts.ttsCacheDir ? { ttsCacheDir: opts.ttsCacheDir } : {}),
-    onRealtimeCircuitOpen: (sessionId, failureKind) =>
-      publishAlert({ kind: "REALTIME_CIRCUIT_OPEN", sessionId, failureKind }),
+    ...(opts.reskinClient ? { reskinClient: opts.reskinClient } : {}),
+    ...(opts.chatClient ? { chatClient: opts.chatClient } : {}),
+    ...(opts.professor ? { professor: opts.professor } : {}),
     onCompletionDiscoveryFailure: (consecutiveFailures) =>
       publishAlert({ kind: "SESSION_COMPLETION_UNAVAILABLE", consecutiveFailures }),
   });
-  void app.register(registerScenarioModule, { prefix: "/v1", library: opts.library, ...(opts.questionBank ? { questionBank: opts.questionBank } : {}) });
   void app.register(registerPreparationModule, {
     prefix: "/v1",
-    questionBank: opts.questionBank ?? new FileQuestionBank(opts.library),
-    sessions: store,
-    events: eventLog,
-    ...(opts.lifecycle ? { lifecycle: opts.lifecycle } : {}),
     store: preparationStore,
     ...(opts.resumeAnalyzer ? { analyzer: opts.resumeAnalyzer } : {}),
-    ...(opts.scenarioRestater ? { restater: opts.scenarioRestater } : {}),
-  });
-  void app.register(registerChatModule, {
-    prefix: "/v1", sessions: store, events: eventLog, preparations: preparationStore,
-    ...(opts.chatInterviewer ? { interviewer: opts.chatInterviewer } : {}),
-    ...(opts.chatProfessor ? { professor: opts.chatProfessor } : {}),
   });
   void app.register(registerReportModule, { prefix: "/v1", eventLog, queue: evaluationQueue });
   void app.register(registerSupportModule, {
@@ -336,74 +281,29 @@ export async function start(): Promise<void> {
   const config = runtimeConfig(process.env);
   const authenticator = authenticatorFromEnv(process.env);
 
-  // Scenarios load at boot and fail loudly. A content bug should stop a deploy,
-  // not surface mid-interview as an interviewer that cannot answer questions.
-  const library = questionBankSource(process.env) === "files"
-    ? await loadScenarioLibrary(CONTENT_ROOT)
-    : new Map<string, LoadedScenario>();
-  const questionBank = questionBankFromEnv(process.env, library);
-  const activeQuestions = await questionBank.listActive();
-  if (activeQuestions.length === 0) throw new QuestionBankError("INVALID_CONTENT");
-  for (const question of activeQuestions) library.set(question.version.id, question);
+  // Problems load at boot and fail loudly: a content bug should stop a start,
+  // not surface mid-interview.
+  const bank = await loadProblemBank(PROBLEMS_ROOT);
+  if (bank.length === 0) throw new Error("CONFIGURATION_INVALID: content/problems is empty");
 
-  // The judge is optional at boot. Without it the interview runs, minus
-  // execution — far better than refusing to start (M2-4).
-  const judgeModel = process.env["JUDGE_MODEL"];
-  // Same resolution as every other model role: GEMINI_API_KEY, falling back to
-  // REALTIME_API_KEY, since one AI Studio key serves Live and the text models.
-  const judgeKey = geminiApiKeyFromEnv();
-  const runner: CodeRunner | undefined =
-    judgeModel && judgeKey
-      ? new ModelJudgeRunner({ model: judgeModel, apiKey: judgeKey })
-      : undefined;
+  const apiKey = geminiApiKeyFromEnv();
+  const text = (model: string, requestTimeoutMs: number) => new GeminiClient({ apiKey, model, requestTimeoutMs });
+  const fastModel = process.env["CHAT_MODEL"] || "gemini-3.5-flash";
 
-  // Built once and shared by every session (see SessionModuleOptions.classifier).
-  // Returns the rule stub when unconfigured rather than throwing — booting
-  // without a model key is a supported state.
-  const classifier = classifierFromEnv();
+  // Real execution when a Judge0 sandbox answers; otherwise a labelled prediction.
+  const judge0Url = process.env["JUDGE0_URL"]?.replace(/[/]$/, "");
+  const judge0 = judge0Url ? new Judge0Runner(judge0Url) : null;
+  const sandbox = judge0 && await judge0.healthy() ? judge0 : null;
+  const predicted = apiKey ? new PredictedRunner(text(process.env["JUDGE_MODEL"] || fastModel, 30_000)) : null;
+  const runner = new PreferredRunner(sandbox, predicted);
 
-  const preparationKey = geminiApiKeyFromEnv();
-  const chatInterviewer = preparationKey ? new GeminiChatInterviewer(new GeminiClient({
-    apiKey: preparationKey,
-    model: process.env["CHAT_INTERVIEW_MODEL"] || process.env["OBSERVER_MODEL"] || "gemini-3.5-flash",
-    requestTimeoutMs: 30_000,
-  })) : undefined;
-  // Post-session teaching may use the stronger evaluator model when configured.
-  const chatProfessor = preparationKey ? new GeminiChatProfessor(new GeminiClient({
-    apiKey: preparationKey,
-    model: process.env["CHAT_REVIEW_MODEL"] || process.env["EVALUATOR_MODEL"] || process.env["CHAT_INTERVIEW_MODEL"] || "gemini-3.5-flash",
-    requestTimeoutMs: 60_000,
-  })) : undefined;
+  const reskinClient = apiKey ? text(process.env["RESKIN_MODEL"] || fastModel, 20_000) : undefined;
+  const chatClient = apiKey ? text(fastModel, 30_000) : undefined;
+  const professor = apiKey ? new Professor(text(process.env["REVIEW_MODEL"] || process.env["EVALUATOR_MODEL"] || fastModel, 60_000)) : undefined;
   const evaluatorModel = process.env["EVALUATOR_MODEL"];
-  const evaluator = preparationKey && evaluatorModel ? new IndependentGeminiEvaluator(new GeminiClient({
-    apiKey: preparationKey,
-    model: evaluatorModel,
-    requestTimeoutMs: 45_000,
-  })) : undefined;
-  const resumeAnalyzer = preparationKey ? new GeminiResumeAnalyzer(new GeminiClient({
-    apiKey: preparationKey,
-    model: process.env["RESUME_ANALYZER_MODEL"] ?? process.env["OBSERVER_MODEL"] ?? "gemini-3.5-flash",
-    requestTimeoutMs: 15_000,
-  })) : undefined;
-  const scenarioRestater = preparationKey ? new GeminiScenarioRestater(new GeminiClient({
-    apiKey: preparationKey,
-    model: process.env["RESTATEMENT_MODEL"] ?? process.env["OBSERVER_MODEL"] ?? "gemini-3.5-flash",
-    requestTimeoutMs: 15_000,
-  })) : undefined;
-
-  // Null when voice is unconfigured. Built once and shared: the token route is
-  // the only caller, and the credential it mints is per-request regardless.
-  const realtimeTokenMinter = minterFromEnv();
-  // P3: null when TTS_PRERENDER=off or no API key. Falls back to the realtime model.
-  const ttsRenderer = ttsFromEnv(process.env, geminiApiKeyFromEnv());
-  const verifyTts = process.env["TTS_VERIFY"] !== "off";
-  if (config.production && !verifyTts) throw new Error("TTS_VERIFICATION_REQUIRED");
-  const ttsTranscriber = ttsRenderer && verifyTts
-    ? geminiUtteranceTranscriber(geminiApiKeyFromEnv()!, {
-        model: process.env["TTS_VERIFY_MODEL"] || "gemini-3.5-transcribe",
-      })
-    : undefined;
-  const realtimeCircuit = new ProviderCircuit(3, 60_000);
+  const evaluator = apiKey && evaluatorModel ? new IndependentGeminiEvaluator(text(evaluatorModel, 45_000)) : undefined;
+  const resumeAnalyzer = apiKey ? new GeminiResumeAnalyzer(text(process.env["RESUME_ANALYZER_MODEL"] || fastModel, 15_000)) : undefined;
+  const liveMinter = liveMinterFromEnv();
   const alertSink = config.alertWebhookUrl ? new WebhookAlertSink({
     url: config.alertWebhookUrl,
     release: config.release,
@@ -413,44 +313,45 @@ export async function start(): Promise<void> {
   // Supabase is PostgreSQL. Its direct/pooler connection string activates the
   // durable repositories; local development may still run explicitly in memory.
   const databaseUrl = config.databaseUrl;
-  const durableStorage = databaseUrl ? await createSupabaseStorage(databaseUrl, undefined, config.admission, config.production) : undefined;
+  // In production a database that cannot be reached stops the start. In local
+  // development it must not: the interview runs in memory and says so loudly.
+  let storageFallback: string | undefined;
+  const durableStorage = databaseUrl
+    ? await createSupabaseStorage(databaseUrl, undefined, config.admission, config.production).catch((error: unknown) => {
+        if (config.production) throw error;
+        storageFallback = error instanceof Error ? error.message : "STORAGE_UNAVAILABLE";
+        return undefined;
+      })
+    : undefined;
   const identityAdmin = identityAdminFromEnv(process.env);
 
   const app = buildServer({
-    library,
-    questionBank,
+    bank,
     logger: true,
     production: config.production,
     webOrigin: config.webOrigin,
     release: config.release,
     rateLimits: config.rateLimits,
     sessionRetentionDays: config.sessionRetentionDays,
-    maxRealtimeMintsPerSession: config.admission.maxRealtimeMintsPerSession,
-    realtimeCircuit,
+    runner,
+    liveMinter,
     status: () => ({
       admission: config.admission.enabled ? "OPEN" : "PAUSED",
       authentication: authenticator ? "AVAILABLE" : "DEVELOPMENT",
       storage: durableStorage ? "AVAILABLE" : "MEMORY",
-      voice: realtimeTokenMinter ? realtimeCircuit.state() : "UNAVAILABLE",
-      classifier: classifier instanceof GeminiClassifier ? classifier.operationalStatus().circuit : "FALLBACK",
+      voice: liveMinter ? "AVAILABLE" : "UNAVAILABLE",
+      chat: chatClient ? "AVAILABLE" : "UNAVAILABLE",
       evaluator: evaluator ? evaluator.operationalStatus().circuit : "FALLBACK",
-      runFeedback: runner ? "AVAILABLE_MODEL_ESTIMATE" : "UNAVAILABLE",
-      chat: chatInterviewer ? "AVAILABLE" : "UNAVAILABLE",
+      runFeedback: sandbox ? "EXECUTED" : predicted ? "PREDICTED" : "UNAVAILABLE",
       alerts: alertSink ? "WEBHOOK" : "LOG_ONLY",
     }),
     ...(durableStorage ? { readinessChecks: [{ name: "storage", check: durableStorage.storageReadiness }] } : {}),
     ...(authenticator ? { authenticator } : {}),
     ...(identityAdmin ? { identityAdmin } : {}),
-    ...(runner ? { runner } : {}),
-    classifier,
-    ...(realtimeTokenMinter ? { realtimeTokenMinter } : {}),
-    ...(ttsRenderer ? { ttsRenderer } : {}),
-    ...(ttsTranscriber ? { ttsTranscriber } : {}),
-    ...(process.env["TTS_CACHE_DIR"] ? { ttsCacheDir: process.env["TTS_CACHE_DIR"] } : {}),
     ...(resumeAnalyzer ? { resumeAnalyzer } : {}),
-    ...(chatInterviewer ? { chatInterviewer } : {}),
-    ...(chatProfessor ? { chatProfessor } : {}),
-    ...(scenarioRestater ? { scenarioRestater } : {}),
+    ...(reskinClient ? { reskinClient } : {}),
+    ...(chatClient ? { chatClient } : {}),
+    ...(professor ? { professor } : {}),
     ...(evaluator ? { evaluator } : {}),
     ...(alertSink ? { alertSink } : {}),
     ...(durableStorage ?? {}),
@@ -460,64 +361,20 @@ export async function start(): Promise<void> {
   // Names only, never values.
   app.log.info({ files: env.loaded, vars: env.applied }, "environment loaded");
 
-  app.log.info(
-    {
-      scenarios: [...library.keys()],
-      questionBank: questionBank.kind,
-      authentication: authenticator ? "supabase" : "insecure-local-development",
-      runner: runner ? "model-judge" : "none",
-      classifier: classifier.id,
-      evaluator: evaluator ? `${evaluatorModel}:independent-v1` : "deterministic-baseline",
-      realtime: realtimeTokenMinter ? realtimeTokenMinter.id : "none",
-    },
-    "scenario library loaded",
-  );
-
-  // Quieter than the other two warnings on purpose: without voice the product
-  // is incomplete rather than misleading. Nothing silently degrades — the token
-  // route says 503 and the client has to handle it.
-  if (!realtimeTokenMinter) {
-    app.log.warn(
-      "REALTIME_MODEL or REALTIME_API_KEY is not set — voice is DISABLED and " +
-        "POST /realtime-token will return 503. Set both in apps/api/.env.local.",
-    );
+  app.log.info({
+    problems: bank.length,
+    authentication: authenticator ? "supabase" : "insecure-local-development",
+    voice: liveMinter ? liveMinter.model : "none",
+    chat: chatClient ? fastModel : "none",
+    runs: sandbox ? "judge0 (executed)" : predicted ? "model (predicted)" : "none",
+    evaluator: evaluator ? `${evaluatorModel}:independent-v1` : "deterministic-baseline",
+  }, "interview service ready");
+  if (storageFallback) {
+    app.log.warn(`Database not usable (${storageFallback}): running IN MEMORY. Interviews and reports are lost when this process stops.`);
   }
-
-  if (!evaluator) {
-    app.log.warn(
-      "EVALUATOR_MODEL or a Gemini API key is not set — reports use the deterministic " +
-        "baseline and will not include independent 0-100 solution/transcript grades.",
-    );
-  }
-
-  // Loud for the same reason the runner warning is: the stub degrades quietly.
-  // An interviewer on rules answers clarifications and stays silent correctly,
-  // but never notices a complexity claim or a hint request phrased any way the
-  // keyword list did not anticipate. It looks like a working interview that is
-  // merely reticent, which is the hardest failure to spot.
-  if (classifier.id.startsWith("stub-")) {
-    app.log.warn(
-      "CLASSIFIER_MODEL or an API key is not set — intent classification is running on the " +
-        "RULE STUB. The interviewer will miss intents the keyword list does not cover. " +
-        "Set CLASSIFIER_MODEL in apps/api/.env.local.",
-    );
-  }
-
-  // Loud, because the failure is otherwise silent: the interview runs fine right
-  // up until the candidate presses Run and gets a 503.
-  if (!runner) {
-    app.log.warn(
-      "JUDGE_MODEL or REALTIME_API_KEY is not set — code checking is DISABLED and run " +
-        "requests will return 503. Set both in apps/api/.env.local.",
-    );
-  } else {
-    // Said at every boot on purpose. A judged run is a prediction, and a branch
-    // that quietly behaves like it executes code is one you will eventually
-    // trust by accident.
-    app.log.warn(
-      "Code is AI-JUDGED, not executed. Run results are predictions and may be wrong. " +
-        "Do not read evaluator scores as measurements on this branch.",
-    );
+  if (!liveMinter) app.log.warn("No REALTIME_API_KEY or GEMINI_API_KEY: voice interviews are DISABLED.");
+  if (!sandbox && predicted) {
+    app.log.warn("No Judge0 sandbox reachable: test results are PREDICTED by a model, not executed, and are labelled so.");
   }
   await app.listen({ port, host: "0.0.0.0" });
 
@@ -546,7 +403,7 @@ if (entry.endsWith("src/index.ts") || entry.endsWith("dist/index.js")) {
     const message = err instanceof Error ? err.message : "STARTUP_FAILED";
     const safe = message.startsWith("CONFIGURATION_INVALID:") ||
       ["STORAGE_SCHEMA_INCOMPLETE", "STORAGE_UNAVAILABLE", "AUTH_CONFIGURATION"].includes(message)
-      ? message : err instanceof QuestionBankError ? `QUESTION_BANK_${err.code}` : "STARTUP_FAILED";
+      ? message : "STARTUP_FAILED";
     console.error(safe);
     process.exit(1);
   });

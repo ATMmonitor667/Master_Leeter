@@ -1,0 +1,59 @@
+id: conveyor-rescan
+title: First Duplicate
+concept: Find the first item whose second occurrence comes earliest in a sequence.
+difficulty: EASY
+topics: [hashing, sets]
+statement: >
+  Packages pass a barcode scanner on a conveyor and each pass records the package
+  identifier, in scan order. Sometimes a package is put back on the line and scanned
+  again. Return the identifier of the first package to be scanned a second time, meaning
+  the one whose second scan happens earliest. If no package is scanned twice, return null.
+signature:
+  name: first_rescan
+  params:
+    - { name: readings, type: "list[str]" }
+  returns: "str | None"
+constraints:
+  - Up to 300000 readings in a shift.
+  - Readings are in scan order, not sorted by identifier.
+  - A package can be scanned more than twice; the second scan is what counts.
+  - An empty shift, or one with no repeats, returns null (None).
+  - Do not modify the input list.
+examples:
+  - { args: [["A7", "B2", "C9", "B2", "A7"]], expected: "B2", note: "B2 is scanned again at position 3, before A7 at position 4." }
+  - { args: [["A7", "B2", "C9"]], expected: null, note: "No package is scanned twice." }
+  - { args: [["A7", "A7", "A7"]], expected: "A7" }
+tests:
+  - { args: [["A7", "B2", "C9", "B2", "A7"]], expected: "B2" }
+  - { args: [["A1", "B1", "C1", "D1"]], expected: null }
+  - { args: [[]], expected: null, hidden: true }
+  - { args: [["A1", "A1", "B1", "B1"]], expected: "A1", hidden: true }
+  - { args: [["A1", "B1", "C1", "B1", "B1", "A1"]], expected: "B1", hidden: true }
+  - { args: [["A1", "B1", "C1", "D1", "A1"]], expected: "A1", hidden: true }
+  - { args: [["A1"]], expected: null, hidden: true }
+  - { args: [["Z9", "A1", "B2", "A1", "Z9"]], expected: "A1", hidden: true }
+hints:
+  - Think about what you would need to remember as you move down the list.
+  - You are re-reading earlier entries to check whether you have seen something. Is there a cheaper way to answer "have I seen this before"?
+  - Keep a collection of the identifiers you have already passed, and check each new reading against it before adding it.
+followUps:
+  - Readings now arrive continuously and cannot all be held in memory. A repeat only matters if the two scans are within ten minutes of each other. How does your approach change?
+  - Same list, but now return the first package that was scanned exactly once.
+privateNotes:
+  approach: Single pass with a set of seen identifiers; return on the first reading already in the set.
+  complexity: O(n) time, O(n) space
+  mistakes:
+    - Returning the item whose FIRST occurrence is earliest instead of the earliest second occurrence.
+    - Sorting the readings, which destroys the scan order the answer depends on.
+referenceSolution: |
+  def first_rescan(readings):
+      seen = set()
+      for r in readings:
+          if r in seen:
+              return r
+          seen.add(r)
+      return None
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  notes: Authored from the first-repeat concept. No third-party statement consulted.
