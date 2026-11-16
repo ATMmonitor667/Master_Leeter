@@ -4,14 +4,11 @@ Source tasks: LIVE_INTERVIEW_REBUILD_PLAN.txt (behaviour/architecture) and
               Master_Leeter_Futuristic_3D_Master_Design.txt (visual design).
 Branch: live-interview (cut from feature/adaptive-interviewer @ 219c3bc)
 Safety tag: pre-live-rebuild  (git checkout pre-live-rebuild restores everything)
-Nothing is committed. All work is in the working tree.
 
-!! STATE WHEN THIS SESSION STOPPED (usage limit, 2026-11-14) !!
-The API DOES NOT COMPILE and the web app is UNTOUCHED (still imports the old
-voice code and old contract types, so it does not compile either). The work
-stopped mid-way through rewiring the server. Nothing has been typechecked,
-tested or run since the rewrite began. To get a working app back immediately:
-    git stash -u   (or)   git checkout pre-live-rebuild
+STATE (2026-11-15)
+The rebuild compiles, builds and runs. Commit 22f4003 holds the server rewrite,
+the new room, setup screen and orb. The work listed under "DONE 2026-11-15" is
+in the working tree and NOT committed.
 
 DECISIONS TAKEN (the plan's recommended options, section 2)
   D1 Response Gate retired for voice: YES. Realtime model runs the conversation.
@@ -40,63 +37,75 @@ STEP 1 SPIKE RESULTS (measured 2026-11-14, gemini-3.8-live, this machine)
   {setup:{model}}; server sends voiceActivity, serverContent.modelTurn (PCM 24k),
   inputTranscription / outputTranscription, interrupted, turnComplete,
   sessionResumptionUpdate.newHandle, goAway.
-  Code runs: Judge0 at JUDGE0_URL (localhost:2358) is NOT running and Docker is
-  down, so runs are model-PREDICTED, labelled as such.
 
-DONE
-  [x] Tag + branch; 9 other txt plans moved into plans/
-  [x] Step 1 spike (above)
-  [x] packages/contracts: new src/interview.ts (problem spec, pinned problem,
-      styles, live events, chat turn, run report, room snapshot, cueText,
-      codeContext); TRANSCRIPT_TURN + CUE event types; removed gate.ts,
-      candidate-state.ts, chat.ts and the WebSocket envelope. Typechecks.
-  [x] content/problems/*.yaml: 5 specs (parts-bin, badge-window,
-      conveyor-rescan, shift-handover, route-cache) with reference solutions.
-      NOT yet verified by running the reference solutions against the tests.
-  [x] apps/api/src/modules/interview/: problem.ts (bank, reskin, V1-V4, paste),
-      prompt.ts, live.ts, pin.ts, transcript.ts, review.ts, routes.ts
-  [x] apps/api/src/modules/runner/index.ts rewritten (Judge0 + predicted runner)
-  [x] lib/gemini.ts: streamText() for streamed chat
-  [x] session/index.ts reduced to storage exports; session/policy.ts added;
-      session-store + pg-session-store carry `live` pin; auth special-case for
-      the old WebSocket events route removed; privacy redacts TRANSCRIPT_TURN
-  [x] report/chat-evidence.ts projects TRANSCRIPT_TURN/CUE for the evaluator
-  [x] preparation/index.ts trimmed to resume analysis + fact confirmation
-  [x] Deleted: modules/orchestrator, realtime, observer, chat, src/eval, src/sim,
-      scenario probes/triggers/clarification/index/question-bank, session
-      channel/ws/client-events/runs/resume/review/lease, old runner files,
-      preparation/restatement.ts, 7 old scripts, and the tests for all of these.
+DONE (in commit 22f4003)
+  [x] contracts: src/interview.ts; gate/candidate-state/chat types removed
+  [x] content/problems/*.yaml: 5 specs with reference solutions
+  [x] api: modules/interview (problem, prompt, live, pin, transcript, review,
+      routes), runner rewrite, src/index.ts rewired, old modules and their
+      tests deleted, root scripts cleaned, problems:verify + live:check added
+  [x] web: lib/live/{provider,gemini-live,audio-io,live-session,latency},
+      one room at /interview/[sessionId] for voice + chat, one-screen /start,
+      InterviewerSignal orb, design tokens, old voice code deleted
 
-NEXT (in order)
-  [ ] api: rewrite src/index.ts -- it still imports the deleted modules. Wire:
-      loadProblemBank(content/problems), registerInterviewModule (prefix /v1),
-      LiveMinter via liveMinterFromEnv, PreferredRunner(Judge0Runner if
-      JUDGE0_URL healthy, PredictedRunner(GeminiClient JUDGE_MODEL)),
-      reskinClient / chatClient (thinkingBudget 0) / Professor, trimmed
-      registerPreparationModule({store, analyzer}), report/privacy/support as
-      before. Update rate-limit route names (/live replaces /realtime-token).
-  [ ] api: fix remaining compile errors (preparation store/pg-store still have
-      restatement methods that import deleted types; report/index.ts imports
-      scenarioRef from loader; config.ts; storage.ts; scripts/product-metrics,
-      release-preflight; remaining tests such as preparation.test, storage.test,
-      privacy/report tests). Run: pnpm --filter @master-leeter/api typecheck
-  [ ] api: root package.json scripts that point at deleted files (sim, eval,
-      review, voice:probe, voice:prerender, questions:import, eval:test)
-  [ ] api: add `problems:verify` script (run reference solutions vs tests, V5)
-      and focused tests for problem validators, prompt, routes
-  [ ] web: lib/live/{provider,gemini-live,mic,use-live-interview,latency}.ts
-      (reuse lib/audio.ts, playback.ts; capture worklet is in voice-session.ts
-      lines ~39-70 and ~1420-1440 before deleting it)
-  [ ] web: one room at /interview/[sessionId] for voice + chat; one-screen
-      /start (mode, problem or paste, style, length, optional resume, mic check)
-  [ ] web: delete voice-session, realtime-voice, turn-predictor, latency-ledger,
-      utterance-lifecycle, speech-transcriber, room-tone, session-client,
-      session-transport, chat-client, StageProgress, old chat page
-  [ ] design doc: tokens in design/tokens/semantic.json (+ pnpm tokens),
-      InterviewerSignal orb, cockpit restyle, landing Cognition Core
-      (three.js island with static fallback), /dashboard from the history API
-  [ ] docs: rewrite CLAUDE.md and README, update .env.example
-      (LIVE_MODEL=gemini-3.8-live, LIVE_VOICE=Charon replace REALTIME_MODEL /
-      REALTIME_VOICE; TTS_* and CLASSIFIER_*/OBSERVER_* are no longer read)
-  [ ] verify: typecheck, tests, web build, run a voice and a chat interview
-  [ ] OpenAI A/B (plan step 5): needs a paid OpenAI key; not started
+DONE 2026-11-15 (working tree, uncommitted)
+  [x] Production web build was resolving a STALE packages/contracts/dist (from
+      September) and failing to find codeContext/cueText. The web build script
+      now builds contracts first.
+  [x] check:ui failure fixed (colour literal in Setup.module.css)
+  [x] .env.example rewritten for LIVE_MODEL / LIVE_VOICE / CHAT_MODEL / JUDGE0_URL;
+      REALTIME_MODEL, REALTIME_VOICE, TTS_*, CLASSIFIER_*, OBSERVER_* removed
+  [x] Landing: Cognition Core (three.js in a lazy chunk, SVG poster fallback for
+      reduced motion / data saver / <=480 px / no WebGL / context loss), new
+      hero, storyboard sections, copy rewritten to match the rebuilt product
+  [x] /dashboard from the session-list API (measured values only), nav links,
+      login redirect allow-list, no-store headers, robots
+  [x] FAQ copy corrected (code runs, lengths, styles, audio handling)
+  [x] CLAUDE.md and README rewritten for the new architecture
+  [x] Review failures now log the provider error kind and status
+
+UI PASS 2026-11-15, late (working tree, uncommitted)
+  [x] Shared card and motion system: app/styles/surfaces.css + lib/motion.ts
+      (pointer spotlight, signal edge, tilt, mount and scroll reveals), applied to
+      landing, dashboard, start, history, settings, report, login, faq, privacy,
+      support. Sticky glass nav, button sheen, accordions. Room left untouched.
+  [x] typecheck, web tests, check:ui, tokens:check pass. Screenshots of landing
+      (dark/light/390), dashboard, start, history, settings, faq: no overflow.
+  [ ] NOT verified: production build and check:ui-budget (dev server was running,
+      0.7 GB RAM free; landing was at 109.9 of 110 KiB before this pass), and the
+      report page restyle (dev compile worker crashed with HTTP 500 on /report and
+      /interview while memory was low; retry after restarting dev:web).
+
+VERIFIED 2026-11-15
+  pnpm typecheck                       pass (contracts, api, web)
+  pnpm test                            pass (4 + 177 + 56)
+  pnpm problems:verify                 5 of 5 reference solutions pass 8/8
+  web build, check:ui, check:ui-budget, tokens:check, check:sorted   pass
+      landing 109.9 of 110 KiB initial JS; three.js is not in it
+  pnpm live:check (real provider, no microphone)   PASS
+      opening first audio 690 ms; silent [CODE] stayed silent; code question
+      answered in 816 ms
+  Chat interview through the API       brief, clarification from constraints,
+      injection refused, code question, hint, run (PREDICTED), restore, end,
+      report READY, review debrief and follow-up all returned
+  Screenshots (headless Chromium)      landing dark/light/390, dashboard,
+      start, chat room, voice room: no console errors, no horizontal overflow
+
+NOT DONE / NOT VERIFIED
+  [ ] A full spoken interview with a real microphone in the room UI. Everything
+      voice-related above used typed cues or synthetic speech.
+  [ ] Reconnect across the ~10 minute connection limit inside the room UI.
+  [ ] Quiet during long think-aloud, hint leakage, report quality: unmeasured.
+      One report said the candidate "asked no clarifying questions" when one
+      had been asked; evaluator accuracy needs a look.
+  [ ] One review request returned 502 (provider error) and did not reproduce.
+  [ ] Database: the local DATABASE_URL was not usable, so the API ran IN MEMORY.
+      Postgres-backed sessions were not exercised on this branch.
+  [ ] Judge0: not running; every run so far was a model prediction.
+  [ ] OpenAI A/B (plan step 5): needs a paid OpenAI key; not started.
+  [ ] Design doc items not built: dashboard sidebar shell, GSAP scroll scenes,
+      Blender/GLB asset (the core is procedural), visual-effects setting,
+      report/settings restyle, e2e UI tests, axe audit.
+  [ ] scripts/check-bundle.mjs still scans content/scenarios, not content/problems.
+  [ ] apps/api/.env.local and .env still set REALTIME_MODEL / REALTIME_VOICE
+      (ignored now; the voice is the LIVE_VOICE default, Charon).

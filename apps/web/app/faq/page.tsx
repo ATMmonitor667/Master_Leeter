@@ -5,23 +5,23 @@ import { AccountMenu } from "../../components/AccountMenu";
 const items = [
   [
     "Does it execute my code?",
-    "No. This beta does not require Run or Submit. Any code-quality or correctness grade is a model estimate grounded in the final code and interview evidence, and may be wrong.",
+    "When a code sandbox is connected, Run executes your code against the examples. Otherwise the run result is a model prediction and the room labels it as one. Post-interview grades are model estimates grounded in your code and the transcript, and may be wrong.",
   ],
   [
     "Which devices are supported?",
-    "Use a current desktop Chrome or Edge release with a working microphone and speakers. Other browsers and mobile devices have not completed release acceptance.",
+    "Use a current desktop Chrome or Edge release. Voice interviews need a working microphone and speakers; chat interviews need neither. Other browsers and mobile devices have not completed release acceptance.",
   ],
   [
     "How long is an interview?",
-    "The interview budget is 45 minutes. Preparation happens before the clock. The server owns the deadline, and reconnecting does not start a new interview.",
+    "You choose 30, 45 or 60 minutes. Setup happens before the clock. The server owns the deadline, and reconnecting does not start a new interview.",
   ],
   [
     "Will the interviewer constantly talk?",
-    "No. Silence is an application decision. The interviewer speaks only for the oral prompt, an allowed clarification or probe, a bounded hint, a transition, or completion.",
+    "It is instructed not to. The interviewer is a live voice model told to stay quiet while you think aloud and to answer when you ask it something. It can still misjudge a pause; muting the microphone guarantees silence.",
   ],
   [
-    "Do the tones change my grade?",
-    "No. Extra nice, Normal and Mean change presentation only. Tone is not a scoring dimension.",
+    "Do the styles change my grade?",
+    "No. Supportive, Neutral and Tough change how the interviewer talks and how many hints you get. Style is not a scoring dimension.",
   ],
   [
     "Do I have to paste a resume?",
@@ -33,7 +33,7 @@ const items = [
   ],
   [
     "What happens to my data?",
-    "Raw audio is not retained. Resume text expires after 24 hours, diagnostic reports after 30 days, and completed interview evidence after 365 days. You can export or delete interview data sooner.",
+    "Audio goes from your browser to the voice provider for the live conversation and is not stored by Master Leeter; the text transcript is. Resume text expires after 24 hours, diagnostic reports after 30 days, and completed interview evidence after 365 days. You can export or delete interview data sooner.",
   ],
 ];
 
@@ -49,12 +49,12 @@ export default function FaqPage() {
           </a>
           <AccountMenu />
         </nav>
-        <header>
+        <header data-enter>
           <div className="eyebrow">Free capped beta</div>
           <h1>What to expect.</h1>
           <p>Clear limits make practice more useful.</p>
         </header>
-        <div className="faq-list">
+        <div className="faq-list" data-accordion>
           {items.map(([question, answer]) => (
             <details key={question}>
               <summary>{question}</summary>

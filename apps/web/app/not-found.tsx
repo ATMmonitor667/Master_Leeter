@@ -5,7 +5,7 @@ export default function NotFound() {
   return (
     <section className={s.page}>
       <Navigation />
-      <div className="report-state">
+      <div className="report-state" data-card="quiet" data-enter>
         <div className="eyebrow">404</div>
         <h1>This page isn’t here.</h1>
         <p>Return to your practice record or start a new interview.</p>

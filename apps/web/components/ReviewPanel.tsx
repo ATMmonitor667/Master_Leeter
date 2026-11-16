@@ -40,7 +40,7 @@ export function ReviewPanel({ sessionId }: { sessionId: string }) {
   return (
     <>
       {available && (
-        <section className={s.panel} aria-labelledby="professor">
+        <section className={s.panel} data-card="signal quiet" aria-labelledby="professor">
           <h2 id="professor">Review with a professor</h2>
           <p className={s.help}>A teaching conversation about this interview: what worked, where the reasoning slipped, and a strong solution. It does not change your scores.</p>
           {turns.map((turn) => (
@@ -62,7 +62,7 @@ export function ReviewPanel({ sessionId }: { sessionId: string }) {
         </section>
       )}
       {transcript.length > 0 && (
-        <details className={s.panel}>
+        <details className={s.panel} data-card="quiet">
           <summary><h2>Transcript</h2><small>{transcript.length} turns</small></summary>
           <ol className={s.transcript}>
             {transcript.map((entry) => (

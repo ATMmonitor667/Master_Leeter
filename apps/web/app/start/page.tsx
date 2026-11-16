@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Navigation } from "../../components/Shell";
 import { Button } from "../../components/ui/Primitives";
+import { Icon, type IconName } from "../../components/ui/Icon";
 import { apiFetch, SignInRequired } from "../../lib/api-client";
 import { apiUrl } from "../../lib/public-config";
 import styles from "./Setup.module.css";
@@ -28,13 +29,13 @@ const STYLES: Array<{ id: Style; title: string; text: string }> = [
   { id: "TOUGH", title: "Tough", text: "Terse, pushes on weak reasoning. 1 hint." },
 ];
 
-function Choice<T extends string | number>({ name, value, current, onChange, title, text }: {
-  name: string; value: T; current: T; onChange: (value: T) => void; title: string; text?: string;
+function Choice<T extends string | number>({ name, value, current, onChange, title, text, icon }: {
+  name: string; value: T; current: T; onChange: (value: T) => void; title: string; text?: string; icon?: IconName;
 }) {
   return (
-    <label className={styles.choice} data-checked={current === value}>
+    <label className={styles.choice} data-card data-checked={current === value}>
       <input type="radio" name={name} checked={current === value} onChange={() => onChange(value)} />
-      <strong>{title}</strong>
+      <strong>{icon && <Icon name={icon} />}{title}<i className={styles.tick} aria-hidden /></strong>
       {text && <span>{text}</span>}
     </label>
   );
@@ -142,23 +143,23 @@ export default function SetupPage() {
 
   return (
     <>
-      <Navigation />
+      <div className={styles.bar}><Navigation /></div>
       <div className={styles.page}>
-        <header className={styles.header}>
+        <header className={styles.header} data-enter>
           <p className={styles.eyebrow}>New interview</p>
           <h1>Set up the room</h1>
           <p>You talk through a coding problem with an AI interviewer, write Python, and get an evidence-based report afterwards.</p>
         </header>
 
-        <section className={styles.section} aria-labelledby="mode">
+        <section className={styles.section} data-card="quiet" data-enter="1" aria-labelledby="mode">
           <h2 id="mode">Mode</h2>
           <div className={styles.grid2}>
-            <Choice name="format" value="VOICE" current={format} onChange={setFormat} title="Voice" text="Speak with the interviewer, like a real onsite. Needs a microphone." />
-            <Choice name="format" value="CHAT" current={format} onChange={setFormat} title="Chat" text="Type with the interviewer. Same interviewer, no microphone." />
+            <Choice name="format" value="VOICE" current={format} onChange={setFormat} title="Voice" icon="mic" text="Speak with the interviewer, like a real onsite. Needs a microphone." />
+            <Choice name="format" value="CHAT" current={format} onChange={setFormat} title="Chat" icon="notes" text="Type with the interviewer. Same interviewer, no microphone." />
           </div>
         </section>
 
-        <section className={styles.section} aria-labelledby="problem">
+        <section className={styles.section} data-card="quiet" data-enter="2" aria-labelledby="problem">
           <h2 id="problem">Problem</h2>
           <div className={styles.grid2}>
             <Choice name="source" value="BANK" current={source} onChange={setSource} title="Surprise me" text="An original problem, retold in a fresh story each time." />
@@ -182,21 +183,21 @@ export default function SetupPage() {
           )}
         </section>
 
-        <section className={styles.section} aria-labelledby="style">
+        <section className={styles.section} data-card="quiet" data-enter="3" aria-labelledby="style">
           <h2 id="style">Interviewer style</h2>
           <div className={styles.grid3}>
             {STYLES.map((item) => <Choice key={item.id} name="style" value={item.id} current={style} onChange={setStyle} title={item.title} text={item.text} />)}
           </div>
         </section>
 
-        <section className={styles.section} aria-labelledby="length">
+        <section className={styles.section} data-card="quiet" data-enter="4" aria-labelledby="length">
           <h2 id="length">Length</h2>
           <div className={styles.inline}>
             {([30, 45, 60] as const).map((value) => <Choice key={value} name="minutes" value={value} current={minutes} onChange={setMinutes} title={`${value} minutes`} />)}
           </div>
         </section>
 
-        <details className={styles.section}>
+        <details className={styles.section} data-card="quiet" data-enter="5">
           <summary><h2>Resume warm-up <small>optional</small></h2></summary>
           <p className={styles.help}>Paste your resume and the interviewer opens with one question about something you confirm. The text is deleted after 24 hours.</p>
           {!preparation ? (
@@ -229,7 +230,13 @@ export default function SetupPage() {
           )}
         </details>
 
-        <footer className={styles.footer}>
+        <footer className={styles.footer} data-card="signal quiet" data-enter="6">
+          <dl className={styles.summary} aria-label="Your interview">
+            <div><dt>Mode</dt><dd>{format === "VOICE" ? "Voice" : "Chat"}</dd></div>
+            <div><dt>Problem</dt><dd>{source === "PASTE" ? "Your own" : difficulty === "ANY" ? "Any difficulty" : difficulty[0] + difficulty.slice(1).toLowerCase()}</dd></div>
+            <div><dt>Style</dt><dd>{style[0] + style.slice(1).toLowerCase()}</dd></div>
+            <div><dt>Length</dt><dd>{minutes} min</dd></div>
+          </dl>
           {error && (
             <p role="alert" className={styles.error}>
               {error}

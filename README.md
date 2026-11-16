@@ -1,298 +1,163 @@
 # Master_Leeter
 
-**A voice-first AI technical interview simulator.**
+**A live AI technical interview simulator.**
 
-Production work is planned on the `production` branch. See the
-[production checklist](PRODUCTION_TODO.txt), [implementation plan](docs/PRODUCTION_PLAN.md),
-and [Vercel deployment runbook](docs/VERCEL_DEPLOYMENT.md). These documents distinguish
-the existing personal MVP from the remaining requirements for external users;
-historical branch/status descriptions below are not production-readiness claims.
+Practice coding interviews the way they happen: an interviewer presents a problem out
+loud, you think aloud and ask questions, you write and run code, and afterwards you get a
+report tied to what was said and written. You can also do the whole interview as a chat.
 
-The current [iteration roadmap](docs/PRODUCTION_ITERATIONS.md) supersedes earlier
-product/provider proposals: original Supabase questions, resume context, a 45-minute
-codepad interview and separate final AI graders. Iteration 1 adds the private bank;
-see [Supabase setup and acceptance](docs/SUPABASE_QUESTION_BANK.md). Public launch
-still requires live authentication acceptance, durable sessions and the remaining iterations.
+You talk to the interviewer like a person. It is a realtime voice model with one prompt:
+it answers when you ask something, stays quiet while you think, can see your code, and
+you can interrupt it.
 
-Iteration I02a adds [Supabase email-code sign-in and access control](docs/SUPABASE_AUTH.md).
-Node 22+ is required. Configure both API and browser public auth settings for
-protected use; live Supabase and browser acceptance remain pending. The current
-release artifact and environment inventory are in
-[production configuration](docs/PRODUCTION_CONFIGURATION.md).
-For a local run, use the [local development guide](docs/LOCAL_DEVELOPMENT.md).
-
-Practice coding interviews the way they actually happen: you hear the problem spoken aloud, think out loud, write code, and run tests — while an AI interviewer watches and **speaks only when it has something authorized to say**. Silence is a system action, not a prompt suggestion.
-
----
-
-## Why this exists
-
-Most mock interview tools are chatbots with a code editor attached. The candidate reads the problem, the model replies whenever it feels helpful, and the experience collapses back into text.
-
-Master_Leeter is built around a different thesis:
-
-| Typical mock interview | Master_Leeter |
-|---|---|
-| Problem shown as text | Problem delivered **orally only** |
-| Model decides when to speak | **Application-controlled** response gate |
-| Transcript drives the session | Append-only **event log** drives scoring |
-| Live model grades you | Post-session **evaluator** over evidence |
-
-The hard problem is not generating hints — it is knowing when **not** to interrupt.
+> This branch (`live-interview`) is a rebuild. The earlier design routed every reply
+> through an application-controlled gate; it was slow and sometimes silent. The reasons
+> and the trade-offs are in [`LIVE_INTERVIEW_REBUILD_PLAN.txt`](LIVE_INTERVIEW_REBUILD_PLAN.txt).
+> Files under `plans/` and most of `docs/` describe the earlier design.
 
 ---
 
 ## What works today
 
-On the current `simplified` branch you can:
+- **Voice interview** in the browser over Gemini Live: spoken brief, clarifications,
+  interruption, captions for both speakers, reconnect when the provider rotates the
+  connection.
+- **Chat interview** with the same interviewer prompt, streamed replies, one composer.
+- **One room** for both: editor, problem card (with an oral-only switch), run panel,
+  Hint / Repeat / Done buttons, timer.
+- **Problems**: a bank of five original problems, each reworded into a new story per
+  session, or paste your own problem for one session.
+- **Three interviewer styles**: supportive, neutral, tough. **30, 45 or 60 minutes.**
+- **Running code** against the problem's tests: executed in a Judge0 sandbox when one is
+  reachable, otherwise predicted by a model and labelled as a prediction.
+- **After the interview**: an evaluator report with evidence, the transcript, and a review
+  conversation that may explain the intended solution.
+- **Dashboard and history**, with export and deletion.
 
-- Pick from **5 authored scenarios** (hashing, sliding window, two pointers, heaps, system design)
-- Work in a **Monaco** Python editor with notes, timer, and test panel
-- **Run** code (model-judged on this branch; Judge0 on `main`)
-- Use **live captions** for speech-to-text accessibility
-- End a session and receive an **evidence-backed report** with a 7-dimension rubric
-- Run **751+ automated tests**, a **candidate-bot simulator**, and an **interruption eval harness** in CI
+### What has and has not been verified
 
-Voice infrastructure is largely built (Gemini Live credentials, client audio stack, response gate) but the full oral interview loop — hear the problem, speak, get authorized replies — is still being wired end to end.
+| Check | Result |
+|---|---|
+| Typecheck, unit tests, web build, UI colour and bundle budgets | Pass |
+| Reference solutions against every bank problem's tests (`pnpm problems:verify`) | 5 of 5 pass |
+| Voice path against the real provider, no microphone (`pnpm live:check`) | Pass; first audio about 0.7-0.8 s after a typed cue |
+| End of speech to first audio, spoken input | 454-565 ms over 3 turns with synthetic speech (small sample) |
+| Chat interview driven through the API end to end | Pass |
+| A full spoken interview with a real microphone in the room UI | **Not done** |
+| Quiet during long think-aloud, hint leakage, report quality | **Not measured** |
+| OpenAI realtime A/B (plan step 5) | **Not done**; needs a paid OpenAI key |
+| Judge0 execution | **Not exercised**; runs so far were model predictions |
 
 ---
 
 ## Architecture
 
-Modular monolith: one TypeScript backend, one Next.js client, shared contracts, Postgres event log, Redis session leases.
-
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Browser · Next.js                                               │
-│                                                                  │
-│   Workspace (Monaco, notes, run panel, captions)                 │
-│   Voice client (VAD → Gemini Live, no auto-responses)            │
-└───────────────┬──────────────────────────────┬───────────────────┘
-                │ WebSocket                     │ live audio
-                ▼                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  API · Fastify (modular monolith)                                │
-│                                                                  │
-│   Gateway ──► Orchestrator ──► Response Gate                     │
-│                    │              │                              │
-│                    │              └── decides: speak or STAY_SILENT
-│                    ├── Scenario engine (facts, probes, hints)    │
-│                    └── Candidate observer (async, between turns) │
-└───────────────┬──────────────────────────────┬───────────────────┘
-                │                               │
-                ▼                               ▼
-         Postgres · event log            Redis · session lease
-                │
-                └──► Post-session evaluator (rubric + evidence)
+Browser (Next.js + Monaco)
+  ├── WebSocket, audio both ways ─► Gemini Live (prompt pinned in a server-minted credential)
+  └── HTTPS, never on the speaking path
+        │
+      API (Fastify): create session + pin problem · mint live credential ·
+                     accept transcript/code/cue events · streamed chat turn ·
+                     run code · end · review · report
+        │
+      Postgres (sessions, append-only event log, reports) · Judge0 (optional) · Gemini text models
 ```
 
-**Data flow:** the client sends code deltas and transcript events over WebSocket. The orchestrator runs deterministic rules first, then optional model classification. Only authorized actions reach the voice agent. Everything is appended to the event log; scoring reads that log after the session ends — the live interviewer never grades.
-
-**Four model roles**, each with a conflicting job:
-
-| Role | Job | When |
-|---|---|---|
-| Realtime voice agent | Speech, oral delivery, short authorized replies | Live session |
-| Turn classifier | Intent + turn-end confidence | Every finalized transcript |
-| Candidate observer | Structured state from transcript + code | Async between turns |
-| Evaluator | Rubric scores with evidence citations | After session ends |
+The server makes no decision during a spoken exchange. If the API is slow, the
+conversation continues and only the transcript upload retries.
+[`CLAUDE.md`](CLAUDE.md) has the invariants, the file map and the conventions.
 
 ---
 
 ## Quick start
 
-### Prerequisites
-
-- **Node.js 22**
-- **pnpm 9.15.0**
-- **Docker** (Postgres + Redis)
-
-### 1. Clone and install
+Requirements: **Node.js 22+**, **pnpm 9**, and a Google AI Studio API key. Docker is not
+needed.
 
 ```bash
-git clone <repo-url>
-cd Master_Leeter
 pnpm install
-```
-
-### 2. Start infrastructure
-
-```bash
-pnpm infra:up
-```
-
-Starts Postgres (`localhost:5432`) and Redis (`localhost:6379`).
-
-### 3. Configure environment
-
-Copy the example env and add your API keys:
-
-```bash
 cp .env.example apps/api/.env.local
 ```
 
-Minimum for a working coding session:
+Minimum `apps/api/.env.local` for a local interview:
 
 ```env
-DATABASE_URL=postgresql://leeter:leeter@localhost:5432/leeter
-REDIS_URL=redis://localhost:6379
-JUDGE_MODEL=gemini-3.5-flash
-REALTIME_API_KEY=...   # Google AI Studio key
+NODE_ENV=development
+AUTH_MODE=development
+ALLOW_INSECURE_DEV=1
+WEB_ORIGIN=http://localhost:3000
+GEMINI_API_KEY=...          # one key serves voice and text
+LIVE_MODEL=gemini-3.8-live
+LIVE_VOICE=Charon
 ```
 
-Optional but recommended for smarter gate decisions:
+`apps/web/.env.local`:
 
 ```env
-CLASSIFIER_MODEL=gemini-3.5-flash-lite
-EVALUATOR_MODEL=gemini-3.5-flash
+NEXT_PUBLIC_AUTH_MODE=development
+NEXT_PUBLIC_API_URL=http://localhost:4000
 ```
 
-See [`.env.example`](.env.example) for every variable and what it controls.
-
-### 4. Run the app
-
-In two terminals:
+Then, in two terminals:
 
 ```bash
 pnpm dev:api    # http://localhost:4000
-pnpm dev:web    # http://localhost:3000 (or 3001 if 3000 is busy)
+pnpm dev:web    # http://localhost:3000
 ```
 
-Open the web URL, choose a scenario, and start interviewing.
+Open the web URL and press **Enter practice room**. Use Chrome or Edge.
+
+Without a usable `DATABASE_URL` the API keeps sessions in memory and says so at startup;
+restarting it loses them. For durable sessions see
+[`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md). To execute code instead of
+predicting results, run Judge0 and set `JUDGE0_URL`. [`.env.example`](.env.example) lists
+every variable.
 
 ---
 
-## Branch: `simplified`
-
-> **On this branch, code is AI-judged — not executed.**
-
-When you press **Run**, a model reads your source and *predicts* the outcome. There is no sandbox. This closes the development loop without Docker cgroups or Judge0, but run results and evaluator scores are predictions, not measurements.
-
-| Branch | Code execution | Use case |
-|---|---|---|
-| `simplified` | Model judge | Fast iteration, full loop testing |
-| `main` | Judge0 sandbox | Trustworthy run results |
-
-Invariant 6 (untrusted code isolation) is trivially satisfied here because nothing executes anywhere.
-
----
-
-## Development
-
-### Commands
+## Commands
 
 | Command | Description |
 |---|---|
-| `pnpm dev:api` | Start API with hot reload |
-| `pnpm dev:web` | Start Next.js dev server |
-| `pnpm start:api` | Start the compiled API with production package exports |
+| `pnpm dev:api` / `pnpm dev:web` | Development servers. Stop `dev:web` before building. |
 | `pnpm typecheck` | Typecheck all packages |
-| `pnpm test` | Run unit tests (751+) |
-| `pnpm sim` | Candidate-bot simulator — gate behavior |
-| `pnpm eval` | Interruption + missed-response metrics |
-| `pnpm infra:up` / `infra:down` | Docker Compose lifecycle |
+| `pnpm test` | Unit tests |
+| `pnpm problems:verify` | Run each bank problem's reference solution against its tests (needs Python) |
+| `pnpm live:check` | Voice check against the real provider; the API must be running |
+| `pnpm --filter @master-leeter/web build` | Production web build |
+| `pnpm check:ui` / `pnpm check:ui-budget` | Colour-token guard and bundle budgets (after a build) |
+| `pnpm tokens` / `pnpm tokens:check` | Generate and verify design tokens |
 
-### Verify voice credentials (optional)
+Add `?debug=1` to an interview URL to see per-turn voice latency.
 
-```bash
-pnpm --filter @master-leeter/api verify:token
-```
-
-Confirms ephemeral Gemini credentials enforce silence control (ADR-001).
-
-### Repository layout
+## Repository layout
 
 ```
-Master_Leeter/
-├── apps/
-│   ├── api/          Fastify backend — orchestrator, gate, runner, reports
-│   └── web/          Next.js client — workspace, voice, session client
-├── packages/
-│   └── contracts/    Shared Zod schemas — SessionEvent, InterviewAction, etc.
-├── content/
-│   └── scenarios/    Versioned interview scenarios (YAML)
-├── docs/             MVP scope, roadmap, ADRs, system design report
-└── scripts/          CI guards, bundle checks
+apps/api/           Fastify backend
+  src/modules/interview/   prompt, problem reskin, live credential, routes
+  src/modules/runner/      Judge0 and predicted runners
+  src/modules/report/      post-session evaluator
+apps/web/           Next.js client
+  lib/live/                voice provider seam, Gemini Live adapter, audio, session
+  app/interview/           the room (voice and chat)
+  app/start, dashboard, history, report
+packages/contracts/ Shared Zod schemas and types
+content/problems/   The problem bank (YAML, original, with reference solutions)
+design/tokens/      Colour and shape tokens (source of truth)
+plans/, docs/       Earlier plans and production notes (mostly pre-rebuild)
 ```
 
----
+## Adding a problem
 
-## Quality and testing
-
-Silence quality is the product metric. The codebase enforces it mechanically:
-
-- **`pnpm sim`** — seven deterministic candidate bots (long thinker, rapid clarifications, prompt injection, complexity mismatch, and more)
-- **`pnpm eval`** — unwanted-interruption and missed-response rates; fails CI on regression
-- **Replay determinism** — same event stream + pinned scenario version → same gate decisions
-
-Target from the product spec: **fewer than 1 material unwanted interruption per 30-minute mock**, measured against real sessions — not just bots.
-
----
-
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [`CLAUDE.md`](CLAUDE.md) | Invariants, architecture, conventions |
-| [`docs/MVP.md`](docs/MVP.md) | Scope, cuts, definition of done |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones M0–M7 |
-| [`docs/ISSUES.md`](docs/ISSUES.md) | Issue backlog with status |
-| [`docs/adr/`](docs/adr/) | Architecture decision records |
-| [`docs/system-design-report.pdf`](docs/system-design-report.pdf) | Full product specification |
-
----
-
-## Progress snapshot
-
-| Area | Status |
-|---|---|
-| Response gate + state machine | Done |
-| Workspace UI + event log | Done |
-| Post-session reports | Done |
-| Intent classifier + turn completion | Done (bot-tested) |
-| Voice client + credentials | Built, needs real-device acceptance |
-| Oral delivery + gate → speech | Implemented, needs full oral-session acceptance |
-| Code-aware probes + observer | Implemented on `codex` |
-
-The remaining in-scope engineering has been completed on the `codex` branch.
-Real-device microphone acceptance, one full oral session, and interruption
-labelling still require a human run; see
-[`docs/CODEX-COMPLETION.md`](docs/CODEX-COMPLETION.md) for the exact handoff.
-
-Roughly **~73%** of the engineering backlog and **~88%** of a usable coding mock without voice. The remaining work is the oral interview thesis itself.
-
----
-
-## Core invariants
-
-These are load-bearing design rules — not suggestions:
-
-1. **Application-controlled responses** — turn detection ≠ permission to speak
-2. **No problem text in the DOM** — oral delivery only
-3. **Canonical clarifications** — facts from scenario content, never invented
-4. **Immutable scenario versions** — sessions pin a version; content is retired, not edited
-5. **Live interviewer never grades** — evaluation is a separate post-session pipeline
-6. **Untrusted code never runs in the API process** (Judge0 on `main`; model judge on `simplified`)
-7. **Append-only event log** — the evidence substrate for scoring and replay
-
-Full list in [`CLAUDE.md`](CLAUDE.md).
-
----
+Write a spec in `content/problems/` in your own words, with a signature, constraints,
+examples, tests, three hints, two follow-ups and a reference solution, then run
+`pnpm problems:verify`. Do not copy third-party problem statements.
 
 ## Tech stack
 
-- **TypeScript** throughout — shared types via `packages/contracts`
-- **Next.js 15** + **React 19** — candidate workspace
-- **Fastify 5** — API and WebSocket gateway
-- **Postgres** — append-only session event log
-- **Redis** — session leases
-- **Monaco Editor** — in-browser Python editing
-- **Gemini Live** — realtime voice (WebSocket, not WebRTC)
-- **Tree-sitter** — semantic code snapshots
-- **Vitest** — unit and integration tests
-- **pnpm** — monorepo workspace
-
----
+TypeScript · Next.js 15 · React 19 · Fastify 5 · Postgres · Monaco · Gemini Live
+(WebSocket) · Gemini text models · three.js (landing page only) · Vitest · pnpm
 
 ## License
 

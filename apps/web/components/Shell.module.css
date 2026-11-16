@@ -6,8 +6,67 @@
     justify-content: space-between;
     gap: 20px;
     min-height: 72px;
-    border-bottom: 1px solid var(--border);
     margin-bottom: 40px;
+    /* Sticky glass bar. The blur sits behind navigation only, never behind page text. */
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  .nav::before {
+    content: "";
+    position: absolute;
+    inset: 0 -50vw;
+    z-index: -1;
+    pointer-events: none;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 72%, transparent);
+    backdrop-filter: blur(14px) saturate(1.3);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  }
+  .nav::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 -1px;
+    height: 1px;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--accent) 30%, var(--signal) 55%, transparent);
+    opacity: 0.55;
+  }
+  .nav :global(.brand-mark) {
+    transition: rotate 520ms var(--ease-expo), border-color 180ms var(--ease-out), color 180ms var(--ease-out);
+  }
+  .nav :global(.brand):hover {
+    text-decoration: none;
+  }
+  .nav :global(.brand):hover :global(.brand-mark) {
+    rotate: -8deg;
+    border-color: var(--signal);
+    color: var(--signal);
+  }
+  .links > a {
+    position: relative;
+    padding: 6px 2px;
+    color: var(--muted-strong);
+    transition: color 180ms var(--ease-out);
+  }
+  .links > a::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0;
+    height: 1.5px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--signal));
+    scale: 0 1;
+    transform-origin: left;
+    transition: scale 220ms var(--ease-out);
+  }
+  .links > a:hover {
+    color: var(--text);
+    text-decoration: none;
+  }
+  .links > a:hover::after,
+  .links > a:focus-visible::after {
+    scale: 1 1;
   }
   .links {
     display: flex;
@@ -25,6 +84,17 @@
     padding: 8px 12px;
     min-height: 40px;
     font-size: 14px;
+    transition: border-color 180ms var(--ease-out), background 180ms var(--ease-out);
+  }
+  .theme:hover {
+    border-color: var(--accent);
+    background: var(--panel-raised);
+  }
+  .theme svg {
+    transition: rotate 520ms var(--ease-expo);
+  }
+  .theme:hover svg {
+    rotate: 30deg;
   }
   .footer {
     display: grid;
@@ -32,13 +102,20 @@
     gap: 32px;
     padding: 40px 0;
     margin-top: 72px;
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--line);
     font-size: 14px;
     color: var(--muted);
   }
   .footer a {
     display: block;
+    width: fit-content;
     padding: 4px 0;
+    transition: color 180ms var(--ease-out), translate 180ms var(--ease-out);
+  }
+  .footer a:hover {
+    color: var(--text);
+    translate: 3px 0;
+    text-decoration: none;
   }
   .footer strong {
     display: block;

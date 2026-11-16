@@ -9,7 +9,7 @@ function destination(): string {
   const next = new URLSearchParams(window.location.search).get("next");
   return next &&
     (/^\/(?:interview|report)\/[a-f0-9-]{36}$/.test(next) ||
-      ["/start", "/history", "/settings"].includes(next))
+      ["/start", "/dashboard", "/history", "/settings"].includes(next))
     ? next
     : "/start";
 }
@@ -93,7 +93,7 @@ export default function LoginPage() {
         <a href="/" className="brand">
           <span className="brand-mark">ML</span>Master Leeter
         </a>
-        <section className="setup-card auth-card" aria-labelledby="login-title">
+        <section className="setup-card auth-card" data-card="signal quiet" data-enter aria-labelledby="login-title">
           <div className="eyebrow">Your next interview starts here</div>
           <h1 id="login-title">
             {sent

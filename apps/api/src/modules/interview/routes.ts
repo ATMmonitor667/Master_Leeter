@@ -529,7 +529,9 @@ export async function registerInterviewModule(app: FastifyInstance, opts: Interv
       reviewStore.push(id, { requestId: body.data.requestId, question: body.data.question, reply: answer, createdAt: new Date().toISOString() });
       return reply.send({ turns: reviewStore.get(id) });
     } catch (error) {
-      req.log.error({ sessionId: id, errorType: error instanceof Error ? error.name : typeof error }, "review failed");
+      // Kind and status only: enough to tell a quota from a malformed reply, with no content.
+      const failure = error as { kind?: unknown; status?: unknown };
+      req.log.error({ sessionId: id, errorType: error instanceof Error ? error.name : typeof error, kind: failure.kind, status: failure.status }, "review failed");
       return reply.code(502).send({ error: "REVIEW_PROVIDER_FAILED" });
     } finally { reviewInFlight.delete(id); }
   });

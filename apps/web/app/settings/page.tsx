@@ -144,7 +144,7 @@ export default function SettingsPage() {
           </a>
           <AccountMenu />
         </nav>
-        <header className="settings-heading">
+        <header className="settings-heading" data-enter>
           <div className="eyebrow">Your workspace</div>
           <h1>Preferences and privacy</h1>
           <p>
@@ -157,7 +157,7 @@ export default function SettingsPage() {
             {error}
           </div>
         )}
-        <section className="settings-card">
+        <section className="settings-card" data-card="quiet" data-enter>
           <h2>Appearance</h2>
           <p>These preferences are saved on this device.</p>
           <fieldset>
@@ -202,7 +202,7 @@ export default function SettingsPage() {
           </p>
         </section>
         {receipt && (
-          <section className="settings-receipt" role="status">
+          <section className="settings-receipt" data-card="signal quiet" role="status">
             <h2>Practice data deletion completed</h2>
             <p>
               {receipt.sessionIds.length} interview
@@ -222,7 +222,7 @@ export default function SettingsPage() {
             </a>
           </section>
         )}
-        <section className="settings-card">
+        <section className="settings-card" data-card="quiet" data-enter>
           <h2>Erase all practice data</h2>
           <p>
             This removes interview access, candidate-authored event content,
@@ -260,7 +260,7 @@ export default function SettingsPage() {
             </button>
           </div>
         </section>
-        <section className="settings-card danger-zone">
+        <section className="settings-card danger-zone" data-card="quiet" data-enter>
           <h2>Delete account</h2>
           <p>
             This first completes the practice-data deletion above, then

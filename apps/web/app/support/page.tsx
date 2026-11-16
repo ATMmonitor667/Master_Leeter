@@ -15,7 +15,7 @@ export default function SupportPage() {
           </a>
           <AccountMenu />
         </nav>
-        <header>
+        <header data-enter>
           <div className="eyebrow">Beta support</div>
           <h1>Something went wrong?</h1>
           <p>
@@ -24,7 +24,7 @@ export default function SupportPage() {
             investigate without reading your transcript.
           </p>
         </header>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>Before contacting support</h2>
           <p>
             For microphone problems, confirm browser permission, select the
@@ -33,7 +33,7 @@ export default function SupportPage() {
             few minutes and retry once.
           </p>
         </section>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>Private diagnostic reports</h2>
           <p>
             The in-app report includes only category, connection and voice
@@ -43,7 +43,7 @@ export default function SupportPage() {
             expires after 30 days.
           </p>
         </section>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>Contact</h2>
           {email ? (
             <p>
@@ -61,7 +61,7 @@ export default function SupportPage() {
             transcripts or microphone recordings.
           </p>
         </section>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>Urgent privacy request</h2>
           <p>
             Use Settings for data or account deletion. If the app reports a

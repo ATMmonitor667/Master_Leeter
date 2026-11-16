@@ -37,7 +37,7 @@ export function DimensionCard({
   const confidence = confidenceLabel(dimension.confidence);
 
   return (
-    <section className="dimension-card">
+    <section className="dimension-card" data-card data-reveal>
       <header className="dimension-header">
         <h3>{DIMENSION_LABELS[dimension.dimension] ?? dimension.dimension}</h3>
         <div className="dimension-score">

@@ -156,7 +156,7 @@ export default function HistoryPage() {
           </a>
           <AccountMenu />
         </nav>
-        <header className="history-heading">
+        <header className="history-heading" data-enter>
           <div>
             <div className="eyebrow">Your practice record</div>
             <h1>Interview history</h1>
@@ -180,7 +180,7 @@ export default function HistoryPage() {
           </div>
         )}
         {!loading && sessions.length === 0 && !error && (
-          <section className="history-empty">
+          <section className="history-empty" data-card="quiet" data-enter>
             <h2>No interviews yet.</h2>
             <p>Your active and completed interviews will appear here.</p>
             <a className="secondary-button" href="/start">
@@ -214,7 +214,7 @@ export default function HistoryPage() {
                     }).format(new Date(previous.createdAt))) && (
                   <h2 className="history-month">{month}</h2>
                 )}
-                <article className="history-card">
+                <article className="history-card" data-card data-enter>
                   <div>
                     <span
                       className={`history-status ${completed ? "complete" : "active"}`}
