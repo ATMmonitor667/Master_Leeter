@@ -1,3 +1,4 @@
+import { evaluationView } from "./chat-evidence.js";
 import type { FastifyInstance } from "fastify";
 import { scenarioRef } from "../scenario/loader.js";
 import type { EventLog } from "../session/event-log.js";
@@ -138,7 +139,8 @@ export class EvaluationQueue {
     if (!claim) return;
 
     try {
-      const events = await this.eventLog.read(sessionId);
+      // Text interviews are graded through a read-only evidence projection.
+      const events = evaluationView(await this.eventLog.read(sessionId));
       if (events.length === 0) throw new Error("no events for session");
       const scenario = await this.scenarioFor?.(sessionId);
       const context = scenario === undefined ? {} : { scenario };

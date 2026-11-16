@@ -9,7 +9,13 @@ import {
   pcm16ToFloat,
   resample,
 } from "./audio";
-import { frameDb } from "./vad";
+
+/** Frame level in dBFS. */
+function frameDb(frame: Float32Array): number {
+  let sum = 0;
+  for (const sample of frame) sum += sample * sample;
+  return 10 * Math.log10(Math.max(1e-12, sum / Math.max(1, frame.length)));
+}
 
 /**
  * Every bug this file can have produces audio that still plays.

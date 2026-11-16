@@ -2,5 +2,6 @@
 import { colors } from './tokens';
 export function editorTheme(dark: boolean) {
   const mode = dark ? 'dark' : 'light';
-  return { base: dark ? 'vs-dark' as const : 'vs' as const, inherit: true, rules: [{token: 'comment', foreground: colors.muted[mode].slice(1)}, {token: 'keyword', foreground: colors.accent[mode].slice(1)}, {token: 'string', foreground: colors.ok[mode].slice(1)}, {token: 'number', foreground: colors.warn[mode].slice(1)}], colors: { 'editor.background': colors['bg-soft'][mode], 'editor.foreground': colors.text[mode], 'editorLineNumber.foreground': colors.muted[mode], 'editor.selectionBackground': colors['blue-soft'][mode], 'editorCursor.foreground': colors.accent[mode] } };
+  const hex = (name: keyof typeof colors) => colors[name][mode];
+  return { base: dark ? 'vs-dark' as const : 'vs' as const, inherit: true, rules: [{token: 'comment', foreground: hex('muted').slice(1)}, {token: 'keyword', foreground: hex('violet').slice(1)}, {token: 'string', foreground: hex('ok').slice(1)}, {token: 'number', foreground: hex('warn').slice(1)}, {token: 'type', foreground: hex('accent').slice(1)}], colors: { 'editor.background': hex('editor'), 'editor.foreground': hex('text'), 'editorLineNumber.foreground': hex('muted'), 'editorLineNumber.activeForeground': hex('text'), 'editor.lineHighlightBackground': hex('panel'), 'editor.selectionBackground': hex('blue-soft'), 'editorCursor.foreground': hex('text'), 'editorGutter.background': hex('editor') } };
 }

@@ -1,693 +1,458 @@
 "use client";
 
-import type { InterviewState, ServerMessage } from "@master-leeter/contracts";
 import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import cockpit from "../../../components/Cockpit.module.css";
-import dialogs from "../../../components/Dialogs.module.css";
-import { CockpitPanels } from "../../../components/CockpitPanels";
-import { ThemeToggle, usePreferences } from "../../../components/Preferences";
-import { Icon } from "../../../components/ui/Icon";
+import type { CueKind, RoomSnapshot, RunReport, Speaker } from "@master-leeter/contracts";
 import { CodeEditor } from "../../../components/CodeEditor";
-import {
-  InterviewerStatus,
-  type InterviewerState,
-} from "../../../components/InterviewerStatus";
-import { Notepad } from "../../../components/Notepad";
-import { SpeechCaption } from "../../../components/SpeechCaption";
-import { StageProgress, STAGE_LABELS } from "../../../components/StageProgress";
-import { Timer } from "../../../components/Timer";
-import { VoiceControls } from "../../../components/VoiceControls";
-import { SessionClient } from "../../../lib/session-client";
-import { apiFetch } from "../../../lib/api-client";
-import { apiBaseUrl } from "../../../lib/public-config";
-import { connectSessionTransport } from "../../../lib/session-transport";
-import { useDialogFocus } from "../../../lib/use-dialog-focus";
-import {
-  VoiceSession,
-  type VoiceDeviceState,
-  type VoiceStatus,
-} from "../../../lib/voice-session";
+import { Brand } from "../../../components/Shell";
+import { ThemeToggle } from "../../../components/Preferences";
+import { InterviewerSignal, type SignalState } from "../../../components/signal/InterviewerSignal";
+import { Button, Dialog } from "../../../components/ui/Primitives";
+import { Icon } from "../../../components/ui/Icon";
+import { SignInRequired } from "../../../lib/api-client";
+import { LiveSession, type LiveState } from "../../../lib/live/live-session";
+import { roomApi, RoomError } from "../../../lib/room-client";
+import s from "./Room.module.css";
 
 /**
- * The candidate workspace (M2-3).
+ * The interview room. One room for both formats:
  *
- * What is deliberately absent, and must stay absent:
+ *   left rail   voice: presence orb, live captions, transcript
+ *               chat:  message thread and composer
+ *   right       problem card, code editor, test results
  *
- *   - The problem statement. Not in the DOM, not in a data attribute, not in a
- *     network payload. It reaches the candidate through the voice agent or not
- *     at all (invariant 2).
- *   - A chat transcript. A scrolling log of what the interviewer said turns
- *     listening back into reading.
- *   - Any indication of what the interviewer is considering. Showing "probe
- *     pending" would let the candidate play the gate rather than the interview.
- *
- * What is present is a code editor, somewhere to think, voice status, and the
- * time. The interviewer observes revisions without a submit ceremony.
+ * In a voice interview the browser talks straight to the realtime model; this
+ * page only renders what that conversation reports.
  */
 
-const STARTER = `# Write your Python solution here.
-# Talk through your assumptions before you begin.
+interface Line { id: string; speaker: Speaker; text: string; pending?: boolean }
 
-`;
+const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 
-type SupportCategory = "VOICE" | "CONNECTION" | "SAVING" | "REPORT" | "OTHER";
-type SupportState = "IDLE" | "SENDING" | "SENT" | "ERROR";
-
-export default function InterviewPage({
-  params,
-}: {
-  params: Promise<{ sessionId: string }>;
-}) {
+export default function InterviewRoom({ params }: { params: Promise<{ sessionId: string }> }) {
   const { sessionId } = use(params);
-  const { announce } = usePreferences();
+  const [room, setRoom] = useState<RoomSnapshot | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const [code, setCode] = useState(STARTER);
+  const [code, setCode] = useState("");
+  const revision = useRef(0);
   const [notes, setNotes] = useState("");
+  const [run, setRun] = useState<RunReport | null>(null);
+  const [running, setRunning] = useState(false);
   const [remaining, setRemaining] = useState(0);
-  const [stage, setStage] = useState<InterviewState>("ORAL_PROBLEM_DELIVERY");
-  const [interviewer, setInterviewer] = useState<InterviewerState>("LISTENING");
-  const [connected, setConnected] = useState(false);
-  const [pendingSaves, setPendingSaves] = useState(0);
+  const [started, setStarted] = useState(false);
+  const [hintsUsed, setHintsUsed] = useState(0);
+  const [showProblem, setShowProblem] = useState(true);
+  const [bottomTab, setBottomTab] = useState<"tests" | "notes">("tests");
+  const [mobileTab, setMobileTab] = useState<"talk" | "code">("talk");
+  const [confirmEnd, setConfirmEnd] = useState(false);
   const [ending, setEnding] = useState(false);
-  const [confirmingEnd, setConfirmingEnd] = useState(false);
-  const [reportingProblem, setReportingProblem] = useState(false);
-  const [supportCategory, setSupportCategory] =
-    useState<SupportCategory>("VOICE");
-  const [supportState, setSupportState] = useState<SupportState>("IDLE");
-  const [supportReportId, setSupportReportId] = useState("");
-  const [supportReference, setSupportReference] = useState("");
-  const [restored, setRestored] = useState(false);
-  const [resumeCursor, setResumeCursor] = useState({
-    clientSeq: 0,
-    codeRevision: 0,
-  });
-  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("IDLE");
-  const [voiceDevices, setVoiceDevices] = useState<VoiceDeviceState | null>(
-    null,
-  );
-  const [voiceMuted, setVoiceMuted] = useState(false);
-  const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [captionInterim, setCaptionInterim] = useState("");
-  const [captionLines, setCaptionLines] = useState<string[]>([]);
+  const [debug, setDebug] = useState(false);
 
-  const clientRef = useRef<SessionClient | null>(null);
-  const voiceRef = useRef<VoiceSession | null>(null);
+  // Voice
+  const live = useRef<LiveSession | null>(null);
+  const [voice, setVoice] = useState<LiveState | null>(null);
+  // Chat
+  const [thread, setThread] = useState<Line[]>([]);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const retryTurn = useRef<{ requestId: string; text: string; cue?: CueKind } | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const sentRevision = useRef(-1);
 
-  const onServerMessage = useCallback(
-    (msg: ServerMessage) => {
-      switch (msg.kind) {
-        case "STATE":
-          setRemaining(msg.remainingSeconds);
-          setStage(msg.state);
-          setInterviewer(msg.interviewerStatus);
-          break;
-        case "ACTION":
-          if (msg.utteranceId) {
-            voiceRef.current?.speak(
-              {
-                action: msg.action,
-                utteranceId: msg.utteranceId,
-                ...(msg.audio ? { audio: msg.audio } : {}),
-              },
-              msg.serverTiming as
-                | {
-                    decisionMs?: number;
-                    classifierMs?: number;
-                    classifierSource?: string;
-                  }
-                | undefined,
-            );
-          }
-          break;
-        case "ERROR":
-          if (msg.code === "SESSION_ENDED")
-            window.location.href = `/report/${sessionId}`;
-          break;
-        default:
-          break;
-      }
-    },
-    [sessionId],
-  );
+  const fail = useCallback((error: unknown) => {
+    if (error instanceof SignInRequired) {
+      window.location.assign(`/login?next=${encodeURIComponent(`/interview/${sessionId}`)}`);
+      return "";
+    }
+    return error instanceof Error ? error.message : "Something went wrong. Please retry.";
+  }, [sessionId]);
 
-  /**
-   * Restore before connecting (M7-1).
-   *
-   * A refresh mid-interview should cost the candidate nothing but a moment.
-   * State comes from the append-only event log rather than localStorage: the
-   * server already holds the evidence, and a client-side cache could disagree
-   * with the log the evaluator reads.
-   */
+  // ── Load / restore ────────────────────────────────────────────────────
   useEffect(() => {
-    let cancelled = false;
-
-    apiFetch(`/v1/interview-sessions/${sessionId}/resume`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (cancelled || !data) return setRestored(true);
-        if (data.ended) {
-          window.location.href = `/report/${sessionId}`;
-          return;
-        }
-        if (data.code) setCode(data.code);
-        if (data.notes) setNotes(data.notes);
-        if (typeof data.remainingSeconds === "number")
-          setRemaining(data.remainingSeconds);
-        if (typeof data.state === "string")
-          setStage(data.state as InterviewState);
-        setResumeCursor({
-          clientSeq:
-            typeof data.nextClientSeq === "number" ? data.nextClientSeq : 0,
-          codeRevision:
-            typeof data.codeRevision === "number" ? data.codeRevision : 0,
+    setDebug(new URLSearchParams(window.location.search).get("debug") === "1");
+    try { setShowProblem(localStorage.getItem("ml-oral-only") !== "1"); } catch { /* default on */ }
+    let active = true;
+    roomApi.snapshot(sessionId).then((snapshot) => {
+      if (!active) return;
+      if (snapshot.ended) { window.location.replace(`/report/${sessionId}`); return; }
+      setRoom(snapshot);
+      setCode(snapshot.code?.text ?? snapshot.problem.starterCode);
+      revision.current = snapshot.code?.revision ?? 0;
+      sentRevision.current = snapshot.code?.revision ?? -1;
+      setNotes(snapshot.notes);
+      setRun(snapshot.lastRun);
+      setRemaining(snapshot.remainingSeconds);
+      setStarted(snapshot.started);
+      setHintsUsed(snapshot.hintsUsed);
+      const lines = snapshot.transcript.map((t) => ({ id: `s${t.seq}`, speaker: t.speaker, text: t.text }));
+      if (snapshot.format === "CHAT") setThread(lines);
+      else {
+        const session = new LiveSession({
+          mint: (handle) => roomApi.mint(sessionId, handle),
+          upload: (events) => roomApi.upload(sessionId, events),
+          reactToRuns: snapshot.style === "SUPPORTIVE",
+          initialLines: lines,
+          started: snapshot.started,
         });
-        setRestored(true);
-      })
-      .catch(() => setRestored(true));
+        live.current = session;
+        session.subscribe(setVoice);
+        if (snapshot.code) session.setCode(snapshot.code.revision, snapshot.code.text);
+      }
+    }).catch((error) => { if (active) setLoadError(fail(error) || null); });
+    return () => { active = false; live.current?.dispose(); live.current = null; };
+  }, [sessionId, fail]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId]);
+  const isVoice = room?.format === "VOICE";
+  const voiceStarted = voice?.started ?? false;
+  const liveStarted = isVoice ? voiceStarted : started;
+
+  // ── Clock and time cues ───────────────────────────────────────────────
+  const cued = useRef({ five: false, wrap: false, ended: false });
+  useEffect(() => {
+    if (!liveStarted || !room) return;
+    const timer = setInterval(() => setRemaining((value) => Math.max(0, value - 1)), 1_000);
+    return () => clearInterval(timer);
+  }, [liveStarted, room]);
+
+  const sendCue = useCallback((kind: CueKind, n?: number) => {
+    if (!room) return;
+    if (room.format === "VOICE") live.current?.cue(kind, n);
+    else void chatTurn("", kind);
+  }, [room]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!restored) return;
-    const client = new SessionClient({
-      sessionId,
-      initialClientSeq: resumeCursor.clientSeq,
-      initialCodeRevision: resumeCursor.codeRevision,
-      onServerMessage,
-      onConnectionChange: setConnected,
-      onPendingChange: setPendingSaves,
-      // A 40-minute session will drop. Re-dial rather than stranding the
-      // candidate's buffered edits.
-      reconnectDelayMs: 1500,
-      connect: (handlers) =>
-        connectSessionTransport(sessionId, handlers, setVoiceError),
-    });
+    if (!liveStarted || !room || room.expectedSeconds < 600) return;
+    if (remaining <= 300 && remaining > 240 && !cued.current.five) { cued.current.five = true; sendCue("TIME", 5); }
+    if (remaining <= 45 && remaining > 0 && !cued.current.wrap) { cued.current.wrap = true; sendCue("TIME", 0); }
+    if (remaining === 0 && !cued.current.ended) { cued.current.ended = true; void finish(); }
+  }, [remaining, liveStarted, room, sendCue]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    client.connect();
-    clientRef.current = client;
-
-    return () => {
-      client.disconnect();
-      clientRef.current = null;
-    };
-  }, [
-    sessionId,
-    onServerMessage,
-    restored,
-    resumeCursor.clientSeq,
-    resumeCursor.codeRevision,
-  ]);
-
-  /**
-   * Start voice on request, never on load.
-   *
-   * A microphone that opens itself is hostile, and the candidate should be able
-   * to read the workspace before anything is listening.
-   */
-  const onVoiceStart = useCallback(
-    async (deviceId?: string) => {
-      setVoiceError(null);
-
-      // A retry can follow a partially-started session (permission, worklet or
-      // provider failure). Release that session before opening another one so
-      // its devicechange listener, tracks and reconnect timers cannot survive
-      // behind the replacement.
-      const previous = voiceRef.current;
-      voiceRef.current = null;
-      await previous?.stop().catch(() => {});
-
-      const session = new VoiceSession({
-        sessionId,
-        apiBase: apiBaseUrl(),
-        ...(deviceId ? { deviceId } : {}),
-        onStatus: (status) => {
-          setVoiceStatus(status);
-          if (status === "LISTENING") setVoiceError(null);
-        },
-        onError: (err) => setVoiceError(err.message),
-        // Fired on OS device changes and after an automatic recovery, so the
-        // pickers keep showing what is really capturing and playing.
-        onDeviceChange: setVoiceDevices,
-        // The events M4-2 measures silenceMs between. They carry the VAD's
-        // onset timestamps, not the moment they were sent.
-        onSpeechBoundary: (boundary) =>
-          clientRef.current?.speechBoundary(
-            boundary.type,
-            boundary.atMs,
-            boundary.prosody,
-            boundary.interimTranscript,
-          ),
-        onTranscript: ({ text, final }) => {
-          if (final) {
-            setCaptionInterim("");
-            setCaptionLines((lines) => [...lines.slice(-11), text]);
-            clientRef.current?.speechFinal(text);
-          } else {
-            setCaptionInterim(text);
-          }
-        },
-      });
-
-      voiceRef.current = session;
-      await session.start().catch(() => {
-        // Already surfaced through onError; the rejection is the same failure.
-      });
-    },
-    [sessionId],
-  );
-
-  /**
-   * Change microphone without leaving the round.
-   *
-   * Deliberately not stop() + start(): that would re-mint a credential and
-   * replay the opening handshake. Interview time is server-owned and keeps
-   * running, so a device swap must stay cheap.
-   */
-  const onSwitchDevice = useCallback((deviceId?: string) => {
-    voiceRef.current?.switchMicrophone(deviceId).catch((err: unknown) => {
-      setVoiceError(
-        err instanceof Error ? err.message : "Could not switch microphone.",
-      );
-    });
-  }, []);
-
-  const onSwitchSpeaker = useCallback((deviceId?: string) => {
-    voiceRef.current?.switchSpeaker(deviceId).catch((err: unknown) => {
-      setVoiceError(
-        err instanceof Error ? err.message : "Could not switch speaker.",
-      );
-    });
-  }, []);
-
-  const onVoiceStop = useCallback(() => {
-    void voiceRef.current?.stop();
-    voiceRef.current = null;
-    setVoiceMuted(false);
-    setVoiceDevices(null);
-  }, []);
-
-  const onToggleMute = useCallback(() => {
-    if (!voiceRef.current) return;
-    setVoiceMuted((current) => {
-      voiceRef.current?.setMuted(!current);
-      return !current;
-    });
-  }, []);
-
-  // Releases the microphone on unmount. A session left holding a live capture
-  // indicator after navigating away is alarming and looks like a bug.
-  useEffect(() => () => void voiceRef.current?.stop(), []);
-
-  const onCodeChange = useCallback((text: string) => {
+  // ── Code ──────────────────────────────────────────────────────────────
+  const onCode = useCallback((text: string) => {
     setCode(text);
-    clientRef.current?.codeChanged(text);
+    revision.current += 1;
+    live.current?.setCode(revision.current, text);
   }, []);
 
-  const onNotesChange = useCallback((text: string) => {
-    setNotes(text);
-    clientRef.current?.notesChanged(text);
-  }, []);
-
-  useEffect(() => {
-    const flushWhenHidden = () => {
-      if (document.visibilityState === "hidden") clientRef.current?.flush();
-    };
-    document.addEventListener("visibilitychange", flushWhenHidden);
-    return () =>
-      document.removeEventListener("visibilitychange", flushWhenHidden);
-  }, []);
-
-  const onEnd = useCallback(async () => {
-    setEnding(true);
-
+  const runTests = useCallback(async () => {
+    if (running) return;
+    setRunning(true); setNotice(null); setBottomTab("tests");
     try {
-      // Manual VAD must close the current provider turn before the final app
-      // cursor is chosen. This bounded wait lets a spoken answer that ends on
-      // the button click enter the same acknowledged/sealed evidence stream.
-      await voiceRef.current?.finishInput();
-      const finalClientSeq =
-        (await clientRef.current?.flushAndWaitForAcknowledgement()) ?? -1;
-      const response = await apiFetch(
-        `/v1/interview-sessions/${sessionId}/end`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ finalClientSeq }),
-        },
-      );
-      if (!response.ok)
-        throw new Error("Could not complete this interview. Please retry.");
-      window.location.href = `/report/${sessionId}`;
+      const report = await roomApi.run(sessionId, code, revision.current);
+      setRun(report);
+      if (isVoice) live.current?.runFinished(report.summary);
+      else sentRevision.current = revision.current; // the run stored this revision
+    } catch (error) { setNotice(fail(error) || null); }
+    finally { setRunning(false); }
+  }, [running, sessionId, code, isVoice, fail]);
+
+  // ── Chat ──────────────────────────────────────────────────────────────
+  async function chatTurn(text: string, cue?: CueKind, existing?: { requestId: string }) {
+    if (busy) return;
+    const requestId = existing?.requestId ?? crypto.randomUUID();
+    retryTurn.current = { requestId, text, ...(cue ? { cue } : {}) };
+    setBusy(true); setChatError(null);
+    const replyId = `r-${requestId}`;
+    setThread((lines) => [
+      ...lines.filter((line) => line.id !== replyId && line.id !== `c-${requestId}`),
+      ...(text ? [{ id: `c-${requestId}`, speaker: "CANDIDATE" as const, text }] : []),
+      { id: replyId, speaker: "INTERVIEWER" as const, text: "", pending: true },
+    ]);
+    try {
+      const attach = revision.current !== sentRevision.current && code.trim() !== "";
+      const snapshot = await roomApi.chat(sessionId, {
+        requestId, text, ...(cue ? { cue } : {}),
+        ...(attach ? { code: { revision: revision.current, text: code } } : {}),
+      }, (piece) => setThread((lines) => lines.map((line) => line.id === replyId ? { ...line, text: line.text + piece } : line)));
+      if (attach) sentRevision.current = revision.current;
+      retryTurn.current = null;
+      setThread(snapshot.transcript.map((t) => ({ id: `s${t.seq}`, speaker: t.speaker, text: t.text })));
+      setStarted(snapshot.started);
+      setHintsUsed(snapshot.hintsUsed);
+      if (cue === "START") setRemaining(snapshot.remainingSeconds);
+      if (text) setDraft((current) => (current.trim() === text ? "" : current));
     } catch (error) {
-      setEnding(false);
-      setVoiceError((error as Error).message);
-    }
-  }, [sessionId]);
+      setThread((lines) => lines.filter((line) => line.id !== replyId));
+      if (error instanceof RoomError && error.code === "SESSION_ENDED") { window.location.assign(`/report/${sessionId}`); return; }
+      setChatError(fail(error) || null);
+    } finally { setBusy(false); }
+  }
 
-  const openProblemReport = useCallback(() => {
-    setSupportCategory("VOICE");
-    setSupportState("IDLE");
-    setSupportReference("");
-    setSupportReportId(crypto.randomUUID());
-    setReportingProblem(true);
-  }, []);
+  // ── Buttons shared by both formats ────────────────────────────────────
+  const hintsLeft = room ? Math.max(0, room.hintsAllowed - hintsUsed) : 0;
+  function hint() {
+    if (!room || hintsLeft === 0) return;
+    const n = hintsUsed + 1;
+    setHintsUsed(n);
+    sendCue("HINT", n);
+  }
 
-  const sendProblemReport = useCallback(async () => {
-    if (!supportReportId) return;
-    setSupportState("SENDING");
+  async function finish() {
+    if (ending) return;
+    setEnding(true);
     try {
-      const response = await apiFetch(
-        `/v1/interview-sessions/${sessionId}/support-incidents`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            reportId: supportReportId,
-            category: supportCategory,
-            consentDiagnostics: true,
-            diagnostics: {
-              connected,
-              online: navigator.onLine,
-              visibility:
-                document.visibilityState === "hidden" ? "hidden" : "visible",
-              pendingSaves,
-              stage,
-              voiceStatus,
-            },
-          }),
-        },
-      );
-      const body = (await response.json().catch(() => ({}))) as {
-        incidentId?: string;
-      };
-      if (!response.ok || !body.incidentId) throw new Error("REPORT_FAILED");
-      setSupportReference(body.incidentId);
-      setSupportState("SENT");
-    } catch {
-      setSupportState("ERROR");
+      if (notes.trim()) {
+        await roomApi.upload(sessionId, [{ type: "NOTES", id: crypto.randomUUID(), text: notes.slice(0, 20_000), at: new Date().toISOString() }]).catch(() => {});
+      }
+      if (live.current) {
+        live.current.setCode(revision.current, code);
+        await live.current.stop();
+      } else if (revision.current !== sentRevision.current && code.trim()) {
+        await roomApi.upload(sessionId, [{ type: "CODE", id: crypto.randomUUID(), revision: revision.current, text: code, at: new Date().toISOString() }]).catch(() => {});
+      }
+      await roomApi.end(sessionId);
+      window.location.assign(`/report/${sessionId}`);
+    } catch (error) {
+      setEnding(false); setConfirmEnd(false);
+      setNotice(fail(error) || "The interview could not be ended. Retry.");
     }
-  }, [
-    connected,
-    pendingSaves,
-    sessionId,
-    stage,
-    supportCategory,
-    supportReportId,
-    voiceStatus,
-  ]);
+  }
 
-  const closeEndDialog = useCallback(() => {
-    if (!ending) setConfirmingEnd(false);
-  }, [ending]);
-  const closeSupportDialog = useCallback(() => {
-    if (supportState !== "SENDING") setReportingProblem(false);
-  }, [supportState]);
-  const endDialogRef = useDialogFocus<HTMLDialogElement>(
-    confirmingEnd,
-    closeEndDialog,
-  );
-  const supportDialogRef = useDialogFocus<HTMLDialogElement>(
-    reportingProblem,
-    closeSupportDialog,
-  );
+  // Ctrl+M toggles "thinking quietly"; Ctrl+Enter runs the tests.
   useEffect(() => {
-    if (supportState === "SENT")
-      supportDialogRef.current
-        ?.querySelector<HTMLElement>("[data-autofocus]")
-        ?.focus();
-  }, [supportState, supportDialogRef]);
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.key.toLowerCase() === "m" && live.current && voice) { event.preventDefault(); live.current.setMuted(!voice.muted); }
+      if (event.key === "Enter" && !(event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); void runTests(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [voice, runTests]);
 
-  useEffect(() => {
-    if (restored)
-      announce(
-        connected
-          ? "Connected to interview"
-          : "Reconnecting. Keep this tab open; edits are queued.",
-        2,
-      );
-  }, [connected, restored]);
-  useEffect(() => {
-    announce("Interview stage: " + STAGE_LABELS[stage], 1);
-  }, [stage]);
-  useEffect(() => {
-    if (restored)
-      announce(
-        pendingSaves ? "Edits are waiting to save" : "All edits acknowledged",
-        0,
-      );
-  }, [pendingSaves === 0, restored]);
-  const header = useMemo(
-    () => (
-      <header className="workspace-header">
-        <div className="workspace-header-left">
-          <div className="brand">
-            <span className="brand-mark">ML</span>
-            <span className="brand-name">Master Leeter</span>
-          </div>
-          <span className={`connection-state${connected ? "" : " offline"}`}>
-            <span className="status-dot" />
-            {connected ? "Connected" : "Reconnecting"}
-          </span>
-        </div>
-        <StageProgress stage={stage} />
-        <div className="workspace-header-right">
-          <VoiceControls
-            status={voiceStatus}
-            muted={voiceMuted}
-            error={voiceError}
-            onStart={onVoiceStart}
-            onStop={onVoiceStop}
-            onToggleMute={onToggleMute}
-            deviceState={voiceDevices}
-            onSwitchDevice={onSwitchDevice}
-            onSwitchSpeaker={onSwitchSpeaker}
-          />
-          <InterviewerStatus
-            state={voiceStatus === "SPEAKING" ? "SPEAKING" : interviewer}
-          />
-          <Timer
-            remainingSeconds={remaining}
-            running={connected && stage !== "ORAL_PROBLEM_DELIVERY"}
-            ready={restored}
-          />
-          <details className="overflow-menu">
-            <summary aria-label="Interview actions">
-              <Icon name="more" />
-            </summary>
-            <div className="overflow-actions">
-              <ThemeToggle />
-              <a href="/settings" target="_blank" rel="noopener">
-                Preferences
-              </a>
-              <button
-                onClick={openProblemReport}
-                className="ghost-button problem-button"
-              >
-                Report a problem
-              </button>
-              {/* Deliberately plain. Ending an interview is a decision, not a
-              call to action, and a prominent button invites misclicks. */}
-              <button
-                onClick={() => setConfirmingEnd(true)}
-                disabled={ending}
-                className="ghost-button end-button"
-              >
-                {ending ? "Completing…" : "Complete interview"}
-              </button>
-            </div>
-          </details>
-        </div>
-      </header>
-    ),
-    [
-      connected,
-      interviewer,
-      remaining,
-      onEnd,
-      ending,
-      voiceStatus,
-      voiceMuted,
-      voiceError,
-      voiceDevices,
-      onVoiceStart,
-      onVoiceStop,
-      onToggleMute,
-      onSwitchDevice,
-      onSwitchSpeaker,
-      openProblemReport,
-      stage,
-    ],
-  );
+  const levels = useMemo(() => () => live.current?.levels() ?? { input: 0, output: 0 }, []);
+  const scroller = useRef<HTMLDivElement>(null);
+  const lines: Line[] = isVoice ? (voice?.lines ?? []) : thread;
+  useEffect(() => { scroller.current?.scrollTo({ top: scroller.current.scrollHeight }); }, [lines.length, voice?.caption?.text, thread.at(-1)?.text]);
+
+  if (loadError) {
+    return (
+      <div className={s.blocked}>
+        <Brand />
+        <h1>This interview can't be opened</h1>
+        <p role="alert">{loadError}</p>
+        <div className={s.row}><a className={s.link} href="/start">Start a new interview</a><a className={s.link} href="/history">History</a></div>
+      </div>
+    );
+  }
+  if (!room) return <div className={s.blocked} aria-busy="true"><Brand /><p>Opening the room…</p></div>;
+
+  const status: SignalState = voice?.status ?? "idle";
+  const connected = isVoice ? ["ready", "listening", "thinking", "speaking"].includes(status) : true;
 
   return (
-    <section
-      className={`${cockpit.workspace} workspace voice-${voiceStatus.toLowerCase()}`}
-    >
-      {header}
-
-      {(voiceStatus === "IDLE" || voiceStatus === "FAILED") && (
-        <div className="voice-onboarding">
-          <span className="voice-onboarding-icon" aria-hidden="true">
-            ⌁
-          </span>
-          <span>
-            <strong>
-              {voiceStatus === "FAILED"
-                ? "Voice needs another try"
-                : "Your interview is waiting"}
-            </strong>
-            <small>
-              {voiceStatus === "FAILED"
-                ? "Check your microphone and reconnect when ready."
-                : "Start voice to hear the problem. Your timer starts after the brief."}
-            </small>
-          </span>
-          <span className="voice-onboarding-stage">
-            01 · {STAGE_LABELS[stage]}
-          </span>
+    <div className={s.room} data-mobile={mobileTab} data-speaking={status === "speaking"}>
+      <header className={s.top}>
+        <div className={s.topLeft}>
+          <Brand />
+          <span className={s.badge}>{isVoice ? "Voice" : "Chat"} · {room.style.toLowerCase()}</span>
         </div>
-      )}
-
-      {!connected && restored && (
-        <div className="recovery-strip">
-          Reconnecting. Keep this tab open.{" "}
-          {pendingSaves
-            ? pendingSaves + " updates waiting to save."
-            : "No updates waiting to save."}
-        </div>
-      )}
-      <CockpitPanels
-        onMute={onToggleMute}
-        editor={
-          <CodeEditor
-            value={code}
-            language="python"
-            onChange={onCodeChange}
-            saveState={
-              !connected ? "offline" : pendingSaves > 0 ? "saving" : "saved"
-            }
-          />
-        }
-        notes={<Notepad value={notes} onChange={onNotesChange} />}
-        captions={
-          <SpeechCaption
-            active={voiceStatus === "LISTENING" && !voiceMuted}
-            interim={captionInterim}
-            lines={captionLines}
-          />
-        }
-      />
-
-      {confirmingEnd && (
-        <dialog
-          ref={endDialogRef}
-          tabIndex={-1}
-          className={dialogs.dialog}
-          aria-labelledby="end-title"
-        >
-          <span className="dialog-kicker">Complete this session?</span>
-          <h2 id="end-title">
-            Your report will use everything captured so far.
-          </h2>
-          <p>
-            You can&apos;t return to the live interview after ending it. Your
-            latest code and notes will be saved first.
-          </p>
-          <div className="dialog-actions">
-            <button
-              data-autofocus
-              className="secondary-button"
-              onClick={closeEndDialog}
-            >
-              Keep interviewing
-            </button>
-            <button className="danger-button" onClick={onEnd} disabled={ending}>
-              {ending ? "Saving final inputs…" : "Complete and view report"}
-            </button>
+        {isVoice && <div className={s.topCenter}><InterviewerSignal state={status} levels={levels} /></div>}
+        <div className={s.topRight}>
+          <div className={s.timer} aria-label={`${Math.floor(remaining / 60)} minutes ${remaining % 60} seconds remaining`}>
+            <span>{clock(remaining)}</span><small>{liveStarted ? "remaining" : "not started"}</small>
           </div>
-        </dialog>
-      )}
+          {isVoice && voice && connected && (
+            <Button size="sm" variant={voice.muted ? "primary" : "secondary"} aria-pressed={voice.muted}
+              onClick={() => live.current?.setMuted(!voice.muted)} title="Stop sending audio so you can think aloud privately (Ctrl+M)">
+              <Icon name={voice.muted ? "mic-off" : "mic"} /> {voice.muted ? "Thinking quietly" : "Mic on"}
+            </Button>
+          )}
+          <ThemeToggle />
+          <Button size="sm" variant="danger" onClick={() => setConfirmEnd(true)}>End</Button>
+        </div>
+      </header>
 
-      {reportingProblem && (
-        <dialog
-          ref={supportDialogRef}
-          tabIndex={-1}
-          className={dialogs.dialog}
-          aria-labelledby="support-title"
-        >
-          <span className="dialog-kicker">Private diagnostic report</span>
-          <h2 id="support-title">Report a problem</h2>
-          {supportState === "SENT" ? (
-            <>
-              <p role="status">
-                Your report was saved. Reference:{" "}
-                <code>{supportReference}</code>
+      {isVoice && status === "reconnecting" && <div className={s.strip} role="status">Reconnecting voice… Your code is still editable. This can take up to a minute.</div>}
+      {notice && <div className={s.strip} data-kind="error" role="alert">{notice} <button onClick={() => setNotice(null)}>Dismiss</button></div>}
+
+      <nav className={s.mobileTabs} aria-label="Room sections">
+        <button aria-pressed={mobileTab === "talk"} onClick={() => setMobileTab("talk")}>Conversation</button>
+        <button aria-pressed={mobileTab === "code"} onClick={() => setMobileTab("code")}>Code</button>
+      </nav>
+
+      <div className={s.body}>
+        {/* ── Left rail: the conversation ─────────────────────────────── */}
+        <aside className={s.rail} aria-label="Conversation">
+          {isVoice && (
+            <div className={s.presence}>
+              <InterviewerSignal state={status} size={88} levels={levels} showHelper />
+              {(status === "idle" || status === "failed") && (
+                <div className={s.join}>
+                  {voice?.error && <p role="alert" className={s.error}>{voice.error}</p>}
+                  <Button variant="primary" onClick={() => void live.current?.connect()}>
+                    <Icon name="mic" /> {status === "failed" ? "Retry" : "Connect microphone"}
+                  </Button>
+                  <small>Your browser will ask for microphone access. Audio goes to the voice model and is not recorded here.</small>
+                </div>
+              )}
+              {status === "ready" && (
+                <div className={s.join}>
+                  <Button variant="primary" size="lg" onClick={() => { live.current?.begin(); }}>Start interview</Button>
+                  <small>The interviewer will greet you and present the problem. The {Math.round(room.expectedSeconds / 60)}-minute clock starts now.</small>
+                </div>
+              )}
+              {voice?.stalled && (
+                <p className={s.stalled} role="alert">The interviewer didn't respond. <button onClick={() => live.current?.retry()}>Retry</button></p>
+              )}
+            </div>
+          )}
+
+          <div className={s.thread} ref={scroller} tabIndex={0} aria-label="Transcript" aria-live="off">
+            {!lines.length && !voice?.caption && (
+              <p className={s.empty}>
+                {isVoice ? "What you and the interviewer say appears here." : started ? "" : "Press Start to receive the problem."}
               </p>
-              <p>The diagnostic record expires after 30 days.</p>
-              <div className="dialog-actions">
-                <button
-                  data-autofocus
-                  className="primary-button"
-                  onClick={closeSupportDialog}
-                >
-                  Done
-                </button>
+            )}
+            {lines.map((line) => (
+              <div key={line.id} className={s.line} data-speaker={line.speaker}>
+                <small>{line.speaker === "INTERVIEWER" ? "Interviewer" : "You"}</small>
+                <p>{line.text || (line.pending ? <span className={s.typing} aria-label="Interviewer is typing"><i /><i /><i /></span> : null)}</p>
               </div>
-            </>
-          ) : (
-            <>
-              <p>
-                This sends connection, voice, stage, save-backlog, online, and
-                page-visibility state. It never sends your code, notes,
-                transcript, audio, device names, or free text.
-              </p>
-              <label htmlFor="support-category">What stopped working?</label>
-              <select
-                data-autofocus
-                id="support-category"
-                value={supportCategory}
-                onChange={(event) =>
-                  setSupportCategory(event.target.value as SupportCategory)
-                }
-                disabled={supportState === "SENDING"}
-              >
-                <option value="VOICE">Voice or microphone</option>
-                <option value="CONNECTION">Connection</option>
-                <option value="SAVING">Code or notes saving</option>
-                <option value="REPORT">Final report</option>
-                <option value="OTHER">Something else</option>
-              </select>
-              {supportState === "ERROR" && (
-                <p className="support-error" role="alert">
-                  The report could not be saved. Retry, or use the Support page
-                  after the interview.
+            ))}
+            {isVoice && voice?.caption && (
+              <div className={s.line} data-speaker={voice.caption.speaker} data-live="true">
+                <small>{voice.caption.speaker === "INTERVIEWER" ? "Interviewer" : "You"}</small>
+                <p>{voice.caption.text}</p>
+              </div>
+            )}
+          </div>
+
+          {!isVoice && !started && (
+            <div className={s.join}>
+              {chatError && <p role="alert" className={s.error}>{chatError}</p>}
+              <Button variant="primary" size="lg" loading={busy} onClick={() => void chatTurn("", "START", retryTurn.current ?? undefined)}>Start interview</Button>
+              <small>The {Math.round(room.expectedSeconds / 60)}-minute clock starts when the interviewer presents the problem.</small>
+            </div>
+          )}
+
+          {liveStarted && (
+            <div className={s.chips}>
+              <button onClick={hint} disabled={hintsLeft === 0 || busy || !connected} title="Ask for the next hint">
+                Hint <span>{hintsLeft} left</span>
+              </button>
+              <button onClick={() => sendCue("REPEAT")} disabled={busy || !connected}>Repeat problem</button>
+              <button onClick={() => sendCue("DONE")} disabled={busy || !connected}>I'm done with this part</button>
+            </div>
+          )}
+
+          {liveStarted && (
+            <form className={s.composer} onSubmit={(event) => {
+              event.preventDefault();
+              const text = draft.trim();
+              if (!text) return;
+              if (isVoice) { live.current?.typed(text); setDraft(""); }
+              else void chatTurn(text);
+            }}>
+              {chatError && (
+                <p role="alert" className={s.error}>{chatError}{" "}
+                  {retryTurn.current && <button type="button" onClick={() => { const t = retryTurn.current!; void chatTurn(t.text, t.cue, t); }}>Retry</button>}
                 </p>
               )}
-              <div className="dialog-actions">
-                <button
-                  className="secondary-button"
-                  onClick={closeSupportDialog}
-                  disabled={supportState === "SENDING"}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="primary-button"
-                  onClick={sendProblemReport}
-                  disabled={supportState === "SENDING"}
-                >
-                  {supportState === "SENDING"
-                    ? "Sending…"
-                    : "Send diagnostic report"}
-                </button>
-              </div>
-            </>
+              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={isVoice ? 1 : 3}
+                placeholder={isVoice ? "Type instead of speaking…" : "Message the interviewer. Enter sends, Shift+Enter adds a line."}
+                aria-label={isVoice ? "Type instead of speaking" : "Message the interviewer"}
+                disabled={!connected}
+                onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
+              <Button type="submit" variant="primary" size="sm" disabled={!draft.trim() || busy || !connected}>Send</Button>
+            </form>
           )}
-        </dialog>
+          {!isVoice && liveStarted && <p className={s.sees}>The interviewer can see your code (rev {revision.current}).</p>}
+        </aside>
+
+        {/* ── Right: problem, code, tests ─────────────────────────────── */}
+        <section className={s.work} aria-label="Workspace">
+          <details className={s.problem} open={showProblem && liveStarted} onToggle={(event) => {
+            const open = (event.currentTarget as HTMLDetailsElement).open;
+            if (liveStarted) { setShowProblem(open); try { localStorage.setItem("ml-oral-only", open ? "0" : "1"); } catch { /* not persisted */ } }
+          }}>
+            <summary>
+              <span>Problem</span>
+              <small>{liveStarted ? (showProblem ? "Hide for oral-only practice" : "Hidden: oral only. Click to show.") : "Shown once the interview starts"}</small>
+            </summary>
+            {liveStarted && (
+              <div className={s.problemBody}>
+                <p>{room.problem.writtenBrief}</p>
+                <pre className={s.signature}>{room.problem.starterCode.split("\n")[0]}</pre>
+                {room.problem.constraints.length > 0 && <ul>{room.problem.constraints.map((c, i) => <li key={i}>{c}</li>)}</ul>}
+                <div className={s.examples}>
+                  {room.problem.examples.map((example, i) => (
+                    <div key={i}>
+                      <code>{example.input}</code><span aria-hidden> → </span><code>{example.output}</code>
+                      {example.note && <small>{example.note}</small>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </details>
+
+          <div className={s.editor}>
+            <CodeEditor value={code} language={room.language} onChange={onCode} saveState="saved" />
+          </div>
+
+          <div className={s.bottom}>
+            <div className={s.bottomBar}>
+              <div role="tablist" className={s.tabs}>
+                <button role="tab" aria-selected={bottomTab === "tests"} onClick={() => setBottomTab("tests")}>Tests</button>
+                <button role="tab" aria-selected={bottomTab === "notes"} onClick={() => setBottomTab("notes")}>Notes</button>
+              </div>
+              <Button size="sm" variant="primary" loading={running} onClick={() => void runTests()} title="Run the tests (Ctrl+Enter)">
+                <Icon name="play" /> {running ? "Running…" : `Run ${room.problem.totalTests} tests`}
+              </Button>
+            </div>
+            {bottomTab === "notes" ? (
+              <textarea className={s.notes} value={notes} onChange={(event) => setNotes(event.target.value)} spellCheck={false}
+                aria-label="Private notes" placeholder="Private notes: constraints, examples, complexity…" />
+            ) : (
+              <RunPanel run={run} running={running} />
+            )}
+          </div>
+        </section>
+      </div>
+
+      {debug && voice && (
+        <div className={s.debug} aria-hidden>
+          speech end → first audio · last {voice.latency.last ?? "–"} ms · p50 {voice.latency.p50 ?? "–"} · p95 {voice.latency.p95 ?? "–"} · {voice.latency.turns} turns · {status}
+        </div>
       )}
-    </section>
+
+      {confirmEnd && (
+        <Dialog title="End this interview?" onClose={() => setConfirmEnd(false)}>
+          <p>Your code and the conversation are saved and your report is prepared. You can't reopen the room afterwards.</p>
+          <div className={s.row}>
+            <Button onClick={() => setConfirmEnd(false)} disabled={ending}>Keep going</Button>
+            <Button variant="danger" loading={ending} onClick={() => void finish()}>End interview</Button>
+          </div>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
+function RunPanel({ run, running }: { run: RunReport | null; running: boolean }) {
+  if (running && !run) return <p className={s.runEmpty}>Running your code against the tests…</p>;
+  if (!run) return <p className={s.runEmpty}>Run the tests to see results here. Hidden tests report pass or fail only.</p>;
+  return (
+    <div className={s.run} data-status={run.status} aria-live="polite">
+      <div className={s.runHead}>
+        <strong>{run.status === "PASSED" ? "All tests passed" : run.status === "ERROR" ? "The code did not run" : `${run.passed} of ${run.total} passed`}</strong>
+        <small>rev {run.revision} · {run.method === "EXECUTED" ? "executed in a sandbox" : "predicted by a model, not executed — may be wrong"}</small>
+      </div>
+      {run.stderr && <pre className={s.stderr}>{run.stderr}</pre>}
+      <ol className={s.cases}>
+        {run.outcomes.map((outcome) => (
+          <li key={outcome.index} data-passed={outcome.passed}>
+            <span className={s.verdict}>{outcome.passed ? "Pass" : "Fail"}</span>
+            {outcome.hidden ? <span className={s.hidden}>Hidden test {outcome.index + 1}</span> : (
+              <span className={s.case}>
+                <code>{outcome.input}</code>
+                {!outcome.passed && <small>{outcome.error ? `raised ${outcome.error}` : `got ${outcome.got}`} · expected {outcome.expected}</small>}
+              </span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }

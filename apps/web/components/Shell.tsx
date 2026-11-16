@@ -28,6 +28,7 @@ export function Navigation() {
     <nav className={s.nav} aria-label="Main">
       <Brand />
       <div className={s.links}>
+        <Link href="/dashboard">Dashboard</Link>
         <Link href="/history">History</Link>
         <Link href="/support">Help</Link>
         <ThemeToggle />
@@ -50,6 +51,7 @@ export function Footer() {
       <div>
         <strong>Practice</strong>
         <Link href="/start">Start an interview</Link>
+        <Link href="/dashboard">Dashboard</Link>
         <Link href="/history">Your history</Link>
         <Link href="/faq">What to expect</Link>
       </div>

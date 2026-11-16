@@ -1,0 +1,240 @@
+/*
+ * The shared surface and motion system.
+ *
+ * data-card            an interactive panel: obsidian gradient, a spotlight and a
+ *                      signal edge that follow the pointer, a 2px lift.
+ *   ~="tilt"           adds a small pointer tilt (set by lib/motion.ts)
+ *   ~="signal"         keeps the gradient edge lit: one primary card per page
+ *   ~="quiet"          no lift: for large containers and forms
+ * data-enter[="n"]     rises in when mounted (CSS only), staggered by n
+ * data-reveal          rises in when scrolled into view (needs lib/motion.ts;
+ *                      content stays visible if the script never arrives)
+ *
+ * Nothing here is used inside the interview room.
+ */
+@layer utilities {
+  [data-card] {
+    --mx: 50%;
+    --my: 0%;
+    --rx: 0deg;
+    --ry: 0deg;
+    --lift: 0px;
+    position: var(--card-position, relative);
+    isolation: isolate;
+    border: 1px solid var(--card-border, var(--line));
+    border-radius: var(--radius-panel);
+    background: var(
+      --card-bg,
+      linear-gradient(165deg, var(--panel-raised) 0%, var(--panel) 52%, color-mix(in srgb, var(--panel) 72%, var(--bg-soft)) 100%)
+    );
+    box-shadow:
+      inset 0 1px 0 var(--card-highlight),
+      0 14px 30px -20px var(--card-shade);
+    transition:
+      transform 180ms var(--ease-out),
+      border-color 180ms var(--ease-out),
+      box-shadow 260ms var(--ease-out),
+      opacity 520ms var(--ease-expo) var(--rd, 0ms),
+      translate 520ms var(--ease-expo) var(--rd, 0ms);
+  }
+  /* Spotlight: sits above the card's background and below its content. */
+  [data-card]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(340px circle at var(--mx) var(--my), color-mix(in srgb, var(--accent) 17%, transparent), transparent 64%);
+    opacity: 0;
+    transition: opacity 260ms var(--ease-out);
+  }
+  /* Signal edge: a 1px ring only, never a fill. */
+  [data-card]::after {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    padding: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(260px circle at var(--mx) var(--my), var(--signal), var(--accent) 42%, transparent 76%);
+    -webkit-mask: linear-gradient(black 0 0) content-box, linear-gradient(black 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(black 0 0) content-box exclude, linear-gradient(black 0 0);
+    opacity: 0;
+    transition: opacity 260ms var(--ease-out);
+  }
+  [data-card~="signal"]::after {
+    background: linear-gradient(120deg, var(--accent) 0%, var(--signal) 46%, var(--violet) 100%);
+    opacity: 0.9;
+  }
+  [data-card]:focus-within::after {
+    opacity: 1;
+  }
+  @media (hover: hover) {
+    [data-card]:hover {
+      --lift: -2px;
+      border-color: var(--card-border, var(--border));
+      box-shadow:
+        inset 0 1px 0 var(--card-highlight),
+        0 22px 44px -22px var(--card-shade);
+      transform: perspective(900px) rotateX(var(--rx)) rotateY(var(--ry)) translateY(var(--lift));
+    }
+    [data-card~="quiet"]:hover {
+      --lift: 0px;
+    }
+    [data-card]:hover::before,
+    [data-card]:hover::after {
+      opacity: 1;
+    }
+  }
+
+  /* ── Entrances ───────────────────────────────────────────────────────── */
+  @keyframes ml-rise {
+    from {
+      opacity: 0;
+      translate: 0 16px;
+    }
+  }
+  @keyframes ml-shimmer {
+    to {
+      background-position: -200% 0;
+    }
+  }
+  [data-enter] {
+    animation: ml-rise 560ms var(--ease-expo) both;
+    animation-delay: calc(var(--i, 0) * 70ms);
+  }
+  [data-enter="1"] { --i: 1; }
+  [data-enter="2"] { --i: 2; }
+  [data-enter="3"] { --i: 3; }
+  [data-enter="4"] { --i: 4; }
+  [data-enter="5"] { --i: 5; }
+  [data-enter="6"] { --i: 6; }
+
+  [data-reveal]:not([data-card]) {
+    transition:
+      opacity 520ms var(--ease-expo) var(--rd, 0ms),
+      translate 520ms var(--ease-expo) var(--rd, 0ms);
+  }
+  html[data-motion] [data-reveal]:not([data-revealed]) {
+    opacity: 0;
+    translate: 0 20px;
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────────────── */
+  .primary-button,
+  .secondary-button,
+  .ghost-button {
+    transition:
+      background var(--fast) var(--ease),
+      border-color var(--fast) var(--ease),
+      box-shadow 220ms var(--ease-out),
+      scale 120ms var(--ease-out);
+  }
+  .primary-button {
+    position: relative;
+    overflow: hidden;
+  }
+  /* One sheen sweep per hover, never a loop. */
+  .primary-button::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(110deg, transparent 25%, color-mix(in srgb, var(--on-accent) 26%, transparent) 47%, transparent 66%);
+    translate: -120% 0;
+  }
+  .primary-button:hover:not(:disabled)::after {
+    translate: 120% 0;
+    transition: translate 640ms var(--ease-expo);
+  }
+  .primary-button:hover:not(:disabled) {
+    box-shadow: 0 10px 26px -12px var(--accent);
+  }
+  .secondary-button:hover {
+    border-color: var(--accent);
+  }
+  :is(.primary-button, .secondary-button, .ghost-button):active:not(:disabled) {
+    scale: 0.98;
+  }
+  :is(a, button) svg:has(use[href$="#arrow"]) {
+    transition: translate 160ms var(--ease-out);
+  }
+  :is(a, button):hover svg:has(use[href$="#arrow"]) {
+    translate: 3px 0;
+  }
+
+  /* ── Ambient light behind pages that carry the main navigation ───────── */
+  /* The navigation's glass strip is wider than the viewport by design. */
+  main:has(nav[aria-label="Main"]) {
+    overflow-x: clip;
+  }
+  body:has(nav[aria-label="Main"]) {
+    background:
+      radial-gradient(ellipse 58% 100% at 82% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 70%) no-repeat 0 0 / 100% 620px,
+      radial-gradient(ellipse 42% 100% at 6% 0%, color-mix(in srgb, var(--violet) 8%, transparent), transparent 70%) no-repeat 0 0 / 100% 520px,
+      var(--bg);
+  }
+
+  /* ── Disclosure: height animates where the browser can do it ─────────── */
+  [data-accordion] {
+    interpolate-size: allow-keywords;
+  }
+  [data-accordion] details::details-content {
+    block-size: 0;
+    overflow: clip;
+    opacity: 0;
+    transition:
+      block-size 260ms var(--ease-out),
+      opacity 260ms var(--ease-out),
+      content-visibility 260ms allow-discrete;
+  }
+  [data-accordion] details[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+  }
+  [data-accordion] summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    list-style: none;
+    cursor: pointer;
+  }
+  [data-accordion] summary::-webkit-details-marker {
+    display: none;
+  }
+  [data-accordion] summary::after {
+    content: "";
+    flex: none;
+    width: 9px;
+    height: 9px;
+    margin-right: 4px;
+    border-right: 1.5px solid var(--accent);
+    border-bottom: 1.5px solid var(--accent);
+    rotate: 45deg;
+    transition: rotate 220ms var(--ease-out);
+  }
+  [data-accordion] details[open] > summary::after {
+    rotate: 225deg;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-enter] {
+      animation: none;
+    }
+    [data-card]:hover {
+      transform: none;
+    }
+    .primary-button::after {
+      display: none;
+    }
+  }
+  @media (forced-colors: active) {
+    [data-card]::before,
+    [data-card]::after {
+      display: none;
+    }
+  }
+}

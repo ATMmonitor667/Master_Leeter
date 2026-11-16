@@ -7,6 +7,7 @@ import { use, useCallback, useEffect, useState } from "react";
 import { DimensionCard } from "../../../components/DimensionCard";
 import type { IndependentGrade, SessionReport } from "../../../lib/report";
 import { apiFetch } from "../../../lib/api-client";
+import { ReviewPanel } from "../../../components/ReviewPanel";
 
 /**
  * Post-session report (M6-3).
@@ -92,7 +93,7 @@ export default function ReportPage({
   if (state.kind === "loading" || state.kind === "pending") {
     return (
       <Shell>
-        <div className="report-state">
+        <div className="report-state" data-card="quiet" data-enter>
           <div>
             <div className="report-spinner" />
             <h1>
@@ -116,7 +117,7 @@ export default function ReportPage({
   if (state.kind === "error") {
     return (
       <Shell>
-        <div className="report-state report-state-error">
+        <div className="report-state report-state-error" data-card="quiet" data-enter>
           <h1>Your report is unavailable.</h1>
           <p role="alert">{state.message}</p>
           <button className="primary-button" onClick={() => void fetchReport()}>
@@ -158,7 +159,7 @@ export default function ReportPage({
         </button>
       </nav>
 
-      <header className="report-hero">
+      <header className="report-hero" data-enter>
         {/* Non-interactive on purpose: this sits behind prose. A mesh that
             chases the cursor under text you are trying to read is decoration
             fighting the content. */}
@@ -186,7 +187,7 @@ export default function ReportPage({
       </div>
 
       <section className="report-highlights" aria-label="Session highlights">
-        <div className="highlight-card positive">
+        <div className="highlight-card positive" data-card data-enter="1">
           <span className="highlight-label">Strongest signal</span>
           <strong>
             {strongest?.dimension.replaceAll("_", " ") ?? "Not enough evidence"}
@@ -195,7 +196,7 @@ export default function ReportPage({
             {strongest ? `${strongest.score.toFixed(1)} / 4 · estimate` : "—"}
           </span>
         </div>
-        <div className="highlight-card focus">
+        <div className="highlight-card focus" data-card data-enter="2">
           <span className="highlight-label">Best next focus</span>
           <strong>
             {focus?.dimension.replaceAll("_", " ") ?? "Gather more evidence"}
@@ -204,7 +205,7 @@ export default function ReportPage({
             {focus ? `${focus.score.toFixed(1)} / 4 · estimate` : "—"}
           </span>
         </div>
-        <div className="highlight-card neutral">
+        <div className="highlight-card neutral" data-card data-enter="3">
           <span className="highlight-label">Interview footprint</span>
           <strong>
             {report.probesAsked.length + report.hintsUsed.length} interventions
@@ -332,6 +333,7 @@ export default function ReportPage({
           ))}
         </dl>
       </Panel>
+      <ReviewPanel sessionId={sessionId} />
     </Shell>
   );
 }
@@ -354,7 +356,7 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="report-panel">
+    <section className="report-panel" data-card="quiet" data-reveal>
       <h2>{title}</h2>
       {children}
     </section>
@@ -369,7 +371,7 @@ function GradeCard({
   grade: IndependentGrade;
 }) {
   return (
-    <article className="grader-card">
+    <article className="grader-card" data-card data-reveal>
       <header>
         <div>
           <span className="highlight-label">Independent AI grader</span>

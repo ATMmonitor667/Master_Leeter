@@ -14,7 +14,7 @@ export default function PrivacyPage() {
           </a>
           <AccountMenu />
         </nav>
-        <header>
+        <header data-enter>
           <div className="eyebrow">Privacy</div>
           <h1>Your interview is private practice.</h1>
           <p>
@@ -22,7 +22,7 @@ export default function PrivacyPage() {
             beta implemented by this application.
           </p>
         </header>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>What is processed</h2>
           <p>
             We process your sign-in identity, finalized speech transcript, code,
@@ -32,7 +32,7 @@ export default function PrivacyPage() {
             audio. Master Leeter does not retain raw microphone audio.
           </p>
         </section>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>Retention</h2>
           <p>
             Raw pasted resume text expires after 24 hours and can be erased
@@ -43,7 +43,7 @@ export default function PrivacyPage() {
             erased after recovery.
           </p>
         </section>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>AI providers</h2>
           <p>
             Live voice, classification, resume analysis and grading send only
@@ -52,7 +52,7 @@ export default function PrivacyPage() {
             instructions that can change interview or privacy policy.
           </p>
         </section>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>Your controls</h2>
           <p>
             History lets you export or erase individual interviews. Settings can
@@ -62,7 +62,7 @@ export default function PrivacyPage() {
             recreate erased data.
           </p>
         </section>
-        <section>
+        <section data-card="quiet" data-reveal>
           <h2>Beta support</h2>
           <p>
             The live interview can send a consented diagnostic report containing

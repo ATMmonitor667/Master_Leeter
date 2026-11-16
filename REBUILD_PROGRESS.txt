@@ -1,0 +1,111 @@
+MASTER LEETER -- REBUILD PROGRESS LOG
+=====================================
+Source tasks: LIVE_INTERVIEW_REBUILD_PLAN.txt (behaviour/architecture) and
+              Master_Leeter_Futuristic_3D_Master_Design.txt (visual design).
+Branch: live-interview (cut from feature/adaptive-interviewer @ 219c3bc)
+Safety tag: pre-live-rebuild  (git checkout pre-live-rebuild restores everything)
+
+STATE (2026-11-15)
+The rebuild compiles, builds and runs. Commit 22f4003 holds the server rewrite,
+the new room, setup screen and orb. The work listed under "DONE 2026-11-15" is
+in the working tree and NOT committed.
+
+DECISIONS TAKEN (the plan's recommended options, section 2)
+  D1 Response Gate retired for voice: YES. Realtime model runs the conversation.
+  D2 Provider: Gemini 3.8 Live. OpenAI A/B NOT done (no OpenAI key in env).
+  D3 Problems: own-words ProblemSpec bank in content/problems + paste-your-own.
+  D4 Production machinery (admission, privacy, support, recovery): frozen.
+  D5 Written problem shown in voice mode: toggle, default on.
+  Where the two txt files conflict (design doc says "no visible problem, no
+  transcript, keep the gate"), the rebuild plan wins on behaviour and the design
+  doc wins on look.
+
+STEP 1 SPIKE RESULTS (measured 2026-11-14, gemini-3.8-live, this machine)
+  a. Automatic server VAD works. Replies arrive on their own.
+  b. Spoken question -> first audio: 454 / 483 / 565 ms after end of speech
+     (3 turns, silenceDurationMs 600, synthetic TTS speech as input; small sample).
+     Text cue (realtimeInput.text) -> first audio: 0.7-1.9 s.
+  c. 9 s of think-aloud muttering: no spoken words, one 0.8 s non-verbal sound.
+  d. clientContent with turnComplete:false injects [CODE] silently; the model
+     then answers questions about that code.
+  e. Resumption works and keeps context WHEN the reconnect is >= ~60 s after the
+     previous connect. A second live connection inside ~1 minute is refused with
+     close 1011 "Resource has been exhausted". The client must retry reconnects
+     with backoff (up to ~70 s) and show "Reconnecting".
+  Wire format confirmed: token minted via POST v1beta/auth_tokens with
+  bidiGenerateContentSetup; browser opens the Constrained WS and sends
+  {setup:{model}}; server sends voiceActivity, serverContent.modelTurn (PCM 24k),
+  inputTranscription / outputTranscription, interrupted, turnComplete,
+  sessionResumptionUpdate.newHandle, goAway.
+
+DONE (in commit 22f4003)
+  [x] contracts: src/interview.ts; gate/candidate-state/chat types removed
+  [x] content/problems/*.yaml: 5 specs with reference solutions
+  [x] api: modules/interview (problem, prompt, live, pin, transcript, review,
+      routes), runner rewrite, src/index.ts rewired, old modules and their
+      tests deleted, root scripts cleaned, problems:verify + live:check added
+  [x] web: lib/live/{provider,gemini-live,audio-io,live-session,latency},
+      one room at /interview/[sessionId] for voice + chat, one-screen /start,
+      InterviewerSignal orb, design tokens, old voice code deleted
+
+DONE 2026-11-15 (working tree, uncommitted)
+  [x] Production web build was resolving a STALE packages/contracts/dist (from
+      September) and failing to find codeContext/cueText. The web build script
+      now builds contracts first.
+  [x] check:ui failure fixed (colour literal in Setup.module.css)
+  [x] .env.example rewritten for LIVE_MODEL / LIVE_VOICE / CHAT_MODEL / JUDGE0_URL;
+      REALTIME_MODEL, REALTIME_VOICE, TTS_*, CLASSIFIER_*, OBSERVER_* removed
+  [x] Landing: Cognition Core (three.js in a lazy chunk, SVG poster fallback for
+      reduced motion / data saver / <=480 px / no WebGL / context loss), new
+      hero, storyboard sections, copy rewritten to match the rebuilt product
+  [x] /dashboard from the session-list API (measured values only), nav links,
+      login redirect allow-list, no-store headers, robots
+  [x] FAQ copy corrected (code runs, lengths, styles, audio handling)
+  [x] CLAUDE.md and README rewritten for the new architecture
+  [x] Review failures now log the provider error kind and status
+
+UI PASS 2026-11-15, late (working tree, uncommitted)
+  [x] Shared card and motion system: app/styles/surfaces.css + lib/motion.ts
+      (pointer spotlight, signal edge, tilt, mount and scroll reveals), applied to
+      landing, dashboard, start, history, settings, report, login, faq, privacy,
+      support. Sticky glass nav, button sheen, accordions. Room left untouched.
+  [x] typecheck, web tests, check:ui, tokens:check pass. Screenshots of landing
+      (dark/light/390), dashboard, start, history, settings, faq: no overflow.
+  [ ] NOT verified: production build and check:ui-budget (dev server was running,
+      0.7 GB RAM free; landing was at 109.9 of 110 KiB before this pass), and the
+      report page restyle (dev compile worker crashed with HTTP 500 on /report and
+      /interview while memory was low; retry after restarting dev:web).
+
+VERIFIED 2026-11-15
+  pnpm typecheck                       pass (contracts, api, web)
+  pnpm test                            pass (4 + 177 + 56)
+  pnpm problems:verify                 5 of 5 reference solutions pass 8/8
+  web build, check:ui, check:ui-budget, tokens:check, check:sorted   pass
+      landing 109.9 of 110 KiB initial JS; three.js is not in it
+  pnpm live:check (real provider, no microphone)   PASS
+      opening first audio 690 ms; silent [CODE] stayed silent; code question
+      answered in 816 ms
+  Chat interview through the API       brief, clarification from constraints,
+      injection refused, code question, hint, run (PREDICTED), restore, end,
+      report READY, review debrief and follow-up all returned
+  Screenshots (headless Chromium)      landing dark/light/390, dashboard,
+      start, chat room, voice room: no console errors, no horizontal overflow
+
+NOT DONE / NOT VERIFIED
+  [ ] A full spoken interview with a real microphone in the room UI. Everything
+      voice-related above used typed cues or synthetic speech.
+  [ ] Reconnect across the ~10 minute connection limit inside the room UI.
+  [ ] Quiet during long think-aloud, hint leakage, report quality: unmeasured.
+      One report said the candidate "asked no clarifying questions" when one
+      had been asked; evaluator accuracy needs a look.
+  [ ] One review request returned 502 (provider error) and did not reproduce.
+  [ ] Database: the local DATABASE_URL was not usable, so the API ran IN MEMORY.
+      Postgres-backed sessions were not exercised on this branch.
+  [ ] Judge0: not running; every run so far was a model prediction.
+  [ ] OpenAI A/B (plan step 5): needs a paid OpenAI key; not started.
+  [ ] Design doc items not built: dashboard sidebar shell, GSAP scroll scenes,
+      Blender/GLB asset (the core is procedural), visual-effects setting,
+      report/settings restyle, e2e UI tests, axe audit.
+  [ ] scripts/check-bundle.mjs still scans content/scenarios, not content/problems.
+  [ ] apps/api/.env.local and .env still set REALTIME_MODEL / REALTIME_VOICE
+      (ignored now; the voice is the LIVE_VOICE default, Charon).

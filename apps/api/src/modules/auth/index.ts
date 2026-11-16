@@ -108,28 +108,18 @@ export function registerAccessControl(app: FastifyInstance, opts: {
     if (!route.startsWith("/v1/") || req.method === "OPTIONS") return;
     const origin = req.headers.origin;
     if (opts.authenticator && origin && origin !== opts.webOrigin) return reply.code(403).send({ error: "ORIGIN_NOT_ALLOWED" });
-    if (route === "/v1/scenarios" && req.method === "GET") return;
+    if (route === "/v1/problems" && req.method === "GET") return;
     if (!opts.authenticator) return;
     reply.header("Cache-Control", "no-store");
     try {
       const id = (req.params as { id?: string }).id;
-      if (route === "/v1/interview-sessions/:id/events") {
-        // Browser WebSocket APIs cannot attach an Authorization header. Only a
-        // fresh ticket obtained through authenticated HTTP may open this route.
-        if (origin !== opts.webOrigin || !id) return reply.code(403).send({ error: "ORIGIN_NOT_ALLOWED" });
-        const query = z.object({ ticket: z.string().max(100) }).strict().safeParse(req.query);
-        req.principal = query.success ? await opts.tickets.take(query.data.ticket, id) : null;
-        if (!req.principal) throw new AuthError("UNAUTHORIZED");
-      } else {
-        const match = /^Bearer ([^\s]+)$/i.exec(req.headers.authorization ?? "");
-        if (!match) throw new AuthError("UNAUTHORIZED");
-        req.principal = await opts.authenticator.verify(match[1]!);
-      }
+      const match = /^Bearer ([^\s]+)$/i.exec(req.headers.authorization ?? "");
+      if (!match) throw new AuthError("UNAUTHORIZED");
+      req.principal = await opts.authenticator.verify(match[1]!);
       if (id && (route.startsWith("/v1/interview-sessions/:id") || route.startsWith("/v1/privacy/sessions/:id"))) {
         if (!z.string().uuid().safeParse(id).success) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
         const session = await opts.sessions.get(id);
         if (!session || session.userId !== req.principal.userId) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
-        if (route.endsWith("/events") && session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
       }
       // Regeneration is an operator function until a verified admin role exists.
       if (route.endsWith("/report/regenerate")) return reply.code(403).send({ error: "OPERATOR_ONLY" });
@@ -139,12 +129,4 @@ export function registerAccessControl(app: FastifyInstance, opts: {
     }
   });
   app.get("/v1/me", async (req) => ({ userId: userIdFor(req), authentication: opts.authenticator ? "supabase" : "development" }));
-  app.post("/v1/interview-sessions/:id/socket-ticket", async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const session = await opts.sessions.get(id);
-    if (!session) return reply.code(404).send({ error: "UNKNOWN_SESSION" });
-    if (session.endedAt) return reply.code(409).send({ error: "SESSION_ENDED" });
-    const principal = req.principal ?? { userId: userIdFor(req), expiresAt: Date.now() + 55 * 60_000 };
-    return reply.header("Cache-Control", "no-store").send({ ticket: await opts.tickets.issue(id, principal) });
-  });
 }

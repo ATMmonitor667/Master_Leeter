@@ -100,6 +100,10 @@ export function redactEvent(event: SessionEvent): SessionEvent {
 
 /** Event types whose entire payload goes, because none of it is structural. */
 const FULLY_REDACTED: ReadonlySet<EventType> = new Set<EventType>([
+  "TRANSCRIPT_TURN",
+  "CHAT_TURN",
+  "CHAT_CONTEXT",
+  "CHAT_REVIEW_TURN",
   "SPEECH_FINAL",
   "CLARIFICATION_ANSWERED",
   "PROBE_ASKED",

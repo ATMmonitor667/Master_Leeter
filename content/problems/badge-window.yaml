@@ -1,0 +1,59 @@
+id: badge-window
+title: Longest Substring Without Repeating Characters
+concept: Longest run of consecutive items with no repeats, found with a moving window.
+difficulty: MEDIUM
+topics: [sliding window, hashing]
+statement: >
+  A security desk records the badge id of everyone who badges in, in order. Find the
+  length of the longest stretch of consecutive badge-ins in which no badge id appears
+  twice.
+signature:
+  name: longest_clean_stretch
+  params:
+    - { name: scans, type: "list[str]" }
+  returns: int
+constraints:
+  - Up to 300000 scans in a day.
+  - The stretch must be consecutive; you cannot skip entries.
+  - Return the length, not the stretch. An empty day returns 0.
+  - Badge ids are opaque strings; do not assume a small alphabet.
+examples:
+  - { args: [["A", "B", "C", "A", "D"]], expected: 4, note: "B, C, A, D is the longest stretch." }
+  - { args: [["A", "A", "A"]], expected: 1 }
+  - { args: [[]], expected: 0 }
+tests:
+  - { args: [["A", "B", "C", "A", "D"]], expected: 4 }
+  - { args: [["A", "A", "A", "A"]], expected: 1 }
+  - { args: [[]], expected: 0, hidden: true }
+  - { args: [["A", "B", "C", "D", "E"]], expected: 5, hidden: true }
+  - { args: [["A"]], expected: 1, hidden: true }
+  - { args: [["A", "B", "C", "B", "D", "E", "F"]], expected: 5, hidden: true }
+  - { args: [["A", "A", "B", "C", "D", "E"]], expected: 5, hidden: true }
+  - { args: [["A", "B", "B", "A"]], expected: 2, hidden: true }
+hints:
+  - Think about what has to be true of the stretch you are currently looking at.
+  - You are re-checking positions you already cleared. Could you keep a stretch and adjust it instead of rebuilding it?
+  - Keep a start and an end. Move the end forward one at a time, and when the new badge is already inside, move the start forward past its earlier position.
+followUps:
+  - Now return the actual stretch, the badge ids in order, not just its length. What changes?
+  - Change the rule. A stretch is allowed as long as no badge appears more than twice in it. How does your approach adapt?
+privateNotes:
+  approach: Moving window with a map from badge to its last index; on a repeat, jump the start to max(start, last + 1).
+  complexity: O(n) time, O(n) space
+  mistakes:
+    - Moving the start backwards when the repeated badge was last seen before the current window.
+    - Rebuilding the window from scratch on every repeat, giving quadratic time.
+referenceSolution: |
+  def longest_clean_stretch(scans):
+      last = {}
+      start = best = 0
+      for i, s in enumerate(scans):
+          if s in last and last[s] >= start:
+              start = last[s] + 1
+          last[s] = i
+          best = max(best, i - start + 1)
+      return best
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  notes: Authored from the longest-distinct-run concept. No third-party statement consulted.

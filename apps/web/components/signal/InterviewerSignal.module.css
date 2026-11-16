@@ -1,0 +1,93 @@
+@layer components {
+  .signal {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    --state: var(--muted);
+  }
+  .signal[data-state="connecting"],
+  .signal[data-state="reconnecting"] { --state: var(--warn); }
+  .signal[data-state="ready"],
+  .signal[data-state="listening"] { --state: var(--ok); }
+  .signal[data-state="speaking"] { --state: var(--signal); }
+  .signal[data-state="failed"] { --state: var(--err); }
+
+  .orb {
+    position: relative;
+    flex: none;
+    display: grid;
+    place-items: center;
+    --level: 0;
+  }
+  .halo {
+    position: absolute;
+    inset: -22%;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--state) 0%, transparent 68%);
+    opacity: calc(0.05 + var(--level) * 0.3);
+    transform: scale(calc(1 + var(--level) * 0.12));
+  }
+  .signal[data-state="idle"] .halo,
+  .signal[data-state="thinking"] .halo,
+  .signal[data-state="failed"] .halo { opacity: 0; }
+
+  .ring { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .track { fill: none; stroke: var(--line); stroke-width: 1.5; }
+  .arc {
+    fill: none;
+    stroke: var(--state);
+    stroke-width: 2;
+    stroke-linecap: round;
+    transition: stroke 120ms linear;
+  }
+  /* A segmented ring turns only while a real connection attempt is pending. */
+  .signal[data-state="connecting"] .arc,
+  .signal[data-state="reconnecting"] .arc {
+    stroke-dasharray: 18 9;
+    transform-origin: center;
+    animation: turn 2s linear infinite;
+  }
+  .signal[data-state="thinking"] .arc { stroke-dasharray: 3 6; }
+
+  .core {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6%;
+    width: 52%;
+    height: 52%;
+  }
+  .core i {
+    display: block;
+    flex: 1;
+    max-width: 4px;
+    border-radius: 2px;
+    background: var(--state);
+    height: calc(14% + var(--level) * var(--bar) * 86%);
+    opacity: 0;
+  }
+  .signal[data-state="speaking"] .core i { opacity: 1; }
+  /* Listening: one steady dot, not bouncing bars. */
+  .signal[data-state="listening"] .core i:nth-child(3),
+  .signal[data-state="ready"] .core i:nth-child(3),
+  .signal[data-state="thinking"] .core i:nth-child(3) {
+    opacity: 1;
+    height: 22%;
+    max-width: none;
+    flex: 0 0 22%;
+    border-radius: 50%;
+  }
+
+  .copy { display: grid; min-width: 0; line-height: 1.25; }
+  .copy small { color: var(--muted); font-size: 0.8125rem; }
+  .copy strong { font-weight: 600; font-size: 0.9375rem; color: var(--text); }
+  .helper { color: var(--muted); font-size: 0.8125rem; margin-top: 2px; }
+
+  @keyframes turn { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .arc { animation: none !important; }
+    .halo { transform: none; }
+  }
+}

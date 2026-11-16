@@ -60,6 +60,13 @@ export function Preferences({ children }: { children: ReactNode }) {
       localStorage.setItem("ml-read-captions", String(value));
     } catch {}
   };
+  // Pointer spotlight and scroll reveals load after hydration, in their own chunk.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let gone = false;
+    void import("../lib/motion").then((motion) => { if (!gone) stop = motion.startMotion(); }).catch(() => {});
+    return () => { gone = true; stop?.(); };
+  }, []);
   useEffect(() => {
     let prefix = false;
     const handler = (event: KeyboardEvent) => {

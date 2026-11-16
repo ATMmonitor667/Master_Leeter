@@ -198,6 +198,64 @@ export class GeminiClient {
       throw new GeminiError("Gemini returned unparseable JSON despite schema", "MALFORMED");
     }
   }
+
+  /**
+   * Streams a multi-turn text reply, yielding each piece as it arrives.
+   *
+   * Used by the chat interviewer so the first words show in a few hundred
+   * milliseconds instead of after the whole reply is generated.
+   */
+  async *streamText(req: {
+    system: string;
+    turns: ReadonlyArray<{ role: "user" | "model"; text: string }>;
+    temperature?: number;
+    maxOutputTokens?: number;
+    thinkingBudget?: number;
+  }): AsyncGenerator<string> {
+    if (!this.opts.apiKey) throw new GeminiError("no Gemini API key configured", "NO_KEY");
+    const url = `${this.opts.baseUrl ?? DEFAULT_BASE_URL}/models/${encodeURIComponent(
+      this.opts.model,
+    )}:streamGenerateContent?alt=sse`;
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": this.opts.apiKey },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: req.system }] },
+          contents: req.turns.map((turn) => ({ role: turn.role, parts: [{ text: turn.text }] })),
+          generationConfig: {
+            temperature: req.temperature ?? 0.7,
+            ...(req.maxOutputTokens ? { maxOutputTokens: req.maxOutputTokens } : {}),
+            ...(req.thinkingBudget !== undefined ? { thinkingConfig: { thinkingBudget: req.thinkingBudget } } : {}),
+          },
+        }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      const name = (err as Error)?.name;
+      throw new GeminiError((err as Error).message, name === "TimeoutError" || name === "AbortError" ? "TIMEOUT" : "HTTP");
+    }
+    if (res.status === 429) throw new GeminiError("Gemini rate limit exceeded", "RATE_LIMITED", 429);
+    if (!res.ok || !res.body) throw new GeminiError(`Gemini responded ${res.status}`, "HTTP", res.status);
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      buffer += decoder.decode(chunk, { stream: true });
+      let newline: number;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line.startsWith("data:")) continue;
+        let parsed: GenerateContentResponse;
+        try { parsed = JSON.parse(line.slice(5)) as GenerateContentResponse; } catch { continue; }
+        if (parsed.promptFeedback?.blockReason) throw new GeminiError("Gemini blocked the prompt", "MALFORMED");
+        const piece = (parsed.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? "").join("");
+        if (piece) yield piece;
+      }
+    }
+  }
 }
 
 /**

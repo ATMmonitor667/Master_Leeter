@@ -1,7 +1,8 @@
 import { runtimeConfig } from "../src/config.js";
 import { PgDatabase, databaseConfig } from "../src/modules/session/pg-database.js";
 import { authenticatorFromEnv } from "../src/modules/auth/index.js";
-import { questionBankFromEnv } from "../src/modules/scenario/question-bank.js";
+import { loadProblemBank } from "../src/modules/interview/problem.js";
+import { PROBLEMS_ROOT } from "../src/index.js";
 import { assertDurableSchema } from "../src/storage.js";
 
 async function main() {
@@ -14,7 +15,7 @@ async function main() {
   const config = runtimeConfig({ ...process.env, NODE_ENV: "production" });
   databaseConfig(config.databaseUrl!);
   authenticatorFromEnv(process.env);
-  questionBankFromEnv(process.env, new Map());
+  if ((await loadProblemBank(PROBLEMS_ROOT)).length === 0) throw new Error("PROBLEM_BANK_EMPTY");
   if (config.release === "development") throw new Error("RELEASE_ID_REQUIRED");
   console.log("Production configuration valid (values withheld).");
   if (args[0] !== "--database") {

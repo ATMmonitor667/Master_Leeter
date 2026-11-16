@@ -4,7 +4,6 @@ import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { usePreferences } from "./Preferences";
 import { editorTheme } from "../lib/monaco-theme";
-import { PanelLabel } from "./Notepad";
 
 // The default loader fetches Monaco from a CDN. Interview code must stay on
 // our origin, and the site's CSP intentionally rejects third-party scripts.
@@ -34,11 +33,13 @@ export function CodeEditor({
   language,
   onChange,
   saveState = "saved",
+  readOnly = false,
 }: {
   value: string;
   language: string;
   onChange: (text: string) => void;
-  saveState?: "saved" | "saving" | "offline";
+  saveState?: "saved" | "saving" | "offline" | "draft";
+  readOnly?: boolean;
 }) {
   const { theme, fontSize, setFontSize } = usePreferences();
   const [systemDark, setSystemDark] = useState(true);
@@ -52,7 +53,7 @@ export function CodeEditor({
   const dark = theme === "dark" || (theme === "system" && systemDark);
   return (
     <div className="editor-shell">
-      <PanelLabel>
+      <div className="panel-label">
         <span>{language} · solution.py</span>
         <span className="editor-options">
           <label>
@@ -73,12 +74,12 @@ export function CodeEditor({
           <span className={`save-state ${saveState}`}>
             {saveState === "saved"
               ? "Saved"
-              : saveState === "offline"
+              : saveState === "draft" ? "Not submitted" : saveState === "offline"
                 ? "Waiting for connection"
                 : "Saving…"}
           </span>
         </span>
-      </PanelLabel>
+      </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Editor
           height="100%"
@@ -91,6 +92,7 @@ export function CodeEditor({
           value={value}
           onChange={(v) => onChange(v ?? "")}
           options={{
+            readOnly,
             fontSize,
             fontFamily: "var(--mono)",
             minimap: { enabled: false },

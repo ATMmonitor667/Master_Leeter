@@ -1,0 +1,79 @@
+MASTER LEETER -- TEXT AI INTERVIEWER REQUIREMENTS
+Date: October 12, 2026
+
+1. PURPOSE
+Add a complete text-only alternative to the voice interview. The candidate reads
+the problem in a ChatGPT-style conversation, asks questions, submits written
+reasoning, writes code, and receives interviewer replies in the same conversation.
+No microphone permission, speech recognition, voice connection, or audio is needed.
+The existing voice interview remains available as a separate format.
+
+2. SETUP
+- Offer Voice and Chat formats in interview setup.
+- Chat supports Coding, Resume, and Resume + Coding interview focuses.
+- Reuse the existing resume paste, consent, extraction, and fact-review workflow.
+- Resume-focused interviews require at least one confirmed resume fact.
+- Use the existing Gemini text provider; "GPT-like" describes the interface.
+- Pin the format, focus, scenario, and confirmed resume context to the session.
+
+3. CANDIDATE WORKSPACE
+- Conversation panel on the side of the coding/reasoning workspace on desktop;
+  usable stacked panels on smaller screens.
+- Clearly labeled interviewer and candidate messages in chronological order.
+- A question/answer box for conversational replies and clarification questions.
+- A separate thoughts/approach box with an explicit Submit thoughts action.
+- A Python code editor with Submit code and the existing run-feedback capability.
+- Submitting code shares an explicit snapshot with the interviewer; typing alone
+  does not trigger a model reply. Questions and thoughts also require submission.
+- Resume-only interviews emphasize written answers rather than the code editor.
+- Loading, empty, failure, retry, completed, and read-only states are visible.
+- Preserve unsent drafts during recoverable request failures. Restore submitted
+  messages and code from durable server history after refresh.
+- Keyboard-accessible labels, focus states, and restrained live announcements.
+
+4. INTERVIEW BEHAVIOR
+- Coding interviews begin with the scenario's complete authorized problem text.
+  Prepared sessions may use the existing validated AI restatement. Never invent
+  a different task, unsupported constraints, hidden tests, or an extra task count.
+- Ask questions, discuss an approach, implement, then discuss tests/complexity.
+- Explicit text submissions are turns; voice silence timers do not gate them.
+- Respond to each accepted submission, maintaining prior conversation context.
+- Answer factual clarifications using canonical scenario facts. If unspecified,
+  say so or ask the candidate to state an assumption. Respect disclosure rules.
+- Use concise, relevant follow-up questions. Do not write the candidate's solution
+  or leak hidden solution material. Respect the selected support mode for hints.
+- Resume questions refer to confirmed projects, skills, and experience. Follow
+  up on the candidate's answer, ownership, decisions, tradeoffs, and outcomes.
+- Treat resume, candidate text, and code as untrusted data, not system instructions.
+- Combined mode starts with resume discussion and has an explicit Start coding
+  action that introduces the pinned problem in the same conversation.
+
+5. RELIABILITY AND STORAGE
+- Authenticate and authorize every chat read/write against session ownership.
+- Persist chat turns in the existing append-only event log, with idempotency and
+  ordered turn numbers. A lost response/retry must not duplicate a submission.
+- Concurrent tabs must not overwrite history or create divergent conversations.
+- Reject empty/oversized inputs, stale turns, wrong-format requests, and new
+  submissions after completion. Provider failures must not erase drafts or be
+  presented as genuine model feedback. Bound provider waits.
+- Keep API keys server-side. Use only the minimal approved scenario context.
+- Resume context and conversation content must participate in session/account
+  privacy deletion. No new audio retention is introduced.
+- Ending a chat preserves its transcript for review. This release does not apply
+  a coding rubric to resume answers or invent an unvalidated resume score.
+
+6. ACCEPTANCE CHECKS
+- Start chat, receive problem, ask clarification, submit approach, submit code,
+  request run feedback, and finish without using any voice API.
+- Resume and combined modes use only checked resume facts; combined mode moves
+  to the pinned coding problem on explicit request.
+- Refresh restores conversation and submitted code. Failed requests can retry.
+- Duplicate requests yield one turn; stale/concurrent conflicting turns reject.
+- Other users cannot read chat or inject messages; ended sessions reject writes.
+- Tests cover provider errors, canonical answers, hidden-context exclusion,
+  persistence, privacy redaction, and format isolation. Run affected typechecks
+  and browser checks where available; document limits of live provider validation.
+
+7. DESIGN EXCEPTION AUTHORIZED BY THIS REQUEST
+The historical voice-only rule against displaying the problem or transcript does
+not apply to explicit Chat sessions. Voice sessions retain their existing behavior.

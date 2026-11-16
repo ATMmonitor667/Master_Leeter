@@ -5,6 +5,7 @@ import "./styles/reset.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/utilities.css";
+import "./styles/surfaces.css";
 import { Preferences, OfflineStrip } from "../components/Preferences";
 const inter = localFont({
   src: "../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2",
@@ -49,7 +50,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{const t=localStorage.getItem('ml-theme');document.documentElement.dataset.theme=['light','dark','system'].includes(t)?t:'dark'}catch{}",
+              "try{const t=localStorage.getItem('ml-theme');document.documentElement.dataset.theme=['light','dark','system'].includes(t)?t:'dark'}catch{}" +
+              // Scroll reveals start hidden only while the motion script is expected; if it never arrives, show everything.
+              "try{if(!matchMedia('(prefers-reduced-motion: reduce)').matches){const d=document.documentElement.dataset;d.motion='pending';setTimeout(()=>{if(d.motion==='pending')delete d.motion},3500)}}catch{}",
           }}
         />
         <a className="skip-link" href="#main-content">

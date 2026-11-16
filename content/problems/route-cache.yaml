@@ -1,0 +1,71 @@
+id: route-cache
+title: LRU Cache
+concept: Fixed-capacity key-value store that evicts the least recently used entry.
+difficulty: HARD
+topics: [data structure design, hashing, linked lists]
+statement: >
+  A delivery service stores computed routes in a store that can hold only a fixed number
+  of entries. When it is full and a new route must be stored, the entry that has gone
+  unused for the longest time is thrown out. A successful lookup counts as a use. Write a
+  function that takes the capacity and a list of operations and returns the result of
+  every lookup, in order. An operation is ["put", key, value] or ["get", key]. A lookup
+  returns the stored value, or null when the key is not present.
+signature:
+  name: run_cache
+  params:
+    - { name: capacity, type: int }
+    - { name: operations, type: "list[list[str]]" }
+  returns: "list[str | None]"
+constraints:
+  - Capacity is at least 1 and at most 1000.
+  - Up to 100000 operations; both operations should take constant time.
+  - A successful lookup makes that entry the most recently used.
+  - Storing an existing key replaces its value and refreshes its recency without evicting anything.
+  - Single caller; no concurrency.
+examples:
+  - { args: [2, [["put", "A", "r1"], ["put", "B", "r2"], ["get", "A"], ["put", "C", "r3"], ["get", "B"]]], expected: ["r1", null], note: "Looking up A made B the least recently used, so storing C removed B." }
+  - { args: [1, [["put", "A", "r1"], ["put", "B", "r2"], ["get", "A"]]], expected: [null] }
+  - { args: [2, [["put", "A", "r1"], ["put", "A", "r9"], ["put", "B", "r2"], ["get", "A"]]], expected: ["r9"], note: "Storing A again replaces the value and evicts nothing." }
+tests:
+  - { args: [2, [["put", "A", "r1"], ["put", "B", "r2"], ["get", "A"], ["put", "C", "r3"], ["get", "B"]]], expected: ["r1", null] }
+  - { args: [1, [["put", "A", "r1"], ["put", "B", "r2"], ["get", "A"]]], expected: [null] }
+  - { args: [2, [["put", "A", "r1"], ["put", "A", "r9"], ["put", "B", "r2"], ["get", "A"]]], expected: ["r9"], hidden: true }
+  - { args: [2, [["put", "A", "r1"], ["put", "B", "r2"], ["get", "A"], ["put", "C", "r3"], ["get", "A"]]], expected: ["r1", "r1"], hidden: true }
+  - { args: [2, [["put", "A", "r1"], ["put", "B", "r2"], ["get", "Z"], ["put", "C", "r3"], ["get", "A"]]], expected: [null, null], hidden: true }
+  - { args: [2, [["put", "A", "r1"], ["put", "B", "r2"], ["get", "B"], ["get", "B"], ["put", "C", "r3"], ["get", "A"]]], expected: ["r2", "r2", null], hidden: true }
+  - { args: [3, []], expected: [], hidden: true }
+  - { args: [2, [["put", "A", "r1"], ["put", "B", "r2"], ["put", "A", "r5"], ["put", "C", "r3"], ["get", "B"], ["get", "A"]]], expected: [null, "r5"], hidden: true }
+hints:
+  - You need two different things quickly, finding by key and finding the oldest. Does one structure give you both?
+  - Searching for the least recently used entry costs time on every insert. What would let you know it immediately?
+  - Keep the entries in an order you maintain as you go, so the eviction candidate is always at one end, alongside a map for direct lookup.
+followUps:
+  - Several threads now use this store at once. What breaks, and what would you do about it?
+  - Routes go stale. Every entry now also expires ten minutes after it was stored. How does the design change?
+privateNotes:
+  approach: Hash map from key to a node in a doubly linked list (or an ordered map); move to front on use, evict from the back.
+  complexity: O(1) per operation, O(capacity) space
+  mistakes:
+    - Not refreshing recency on a successful lookup or on overwrite.
+    - Scanning for the oldest entry, making inserts linear.
+referenceSolution: |
+  from collections import OrderedDict
+  def run_cache(capacity, operations):
+      store, out = OrderedDict(), []
+      for op in operations:
+          if op[0] == "get":
+              if op[1] in store:
+                  store.move_to_end(op[1]); out.append(store[op[1]])
+              else:
+                  out.append(None)
+          else:
+              if op[1] in store:
+                  store.move_to_end(op[1])
+              store[op[1]] = op[2]
+              if len(store) > capacity:
+                  store.popitem(last=False)
+      return out
+provenance:
+  type: ORIGINAL
+  author: Rahat
+  notes: Authored from the least-recently-used eviction concept. No third-party statement consulted.
